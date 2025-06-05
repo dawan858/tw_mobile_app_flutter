@@ -237,7 +237,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     
     // Only use Flutter Geolocator for UI updates when app is in foreground
     const LocationSettings locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.medium,
+      accuracy: LocationAccuracy.bestForNavigation,
     );
     
     _positionStreamSubscription = Geolocator.getPositionStream(

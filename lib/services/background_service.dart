@@ -7,11 +7,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:intl/intl.dart';
+import 'sync_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+  final syncService = SyncService();
 
   // Initialize notification channel
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
@@ -47,6 +51,7 @@ Future<void> initializeService() async {
 
   // Start the service immediately
   await service.startService();
+  await syncService.startPeriodicSync();
 }
 
 @pragma('vm:entry-point')
@@ -75,15 +80,13 @@ void onStart(ServiceInstance service) async {
   // Initialize location settings
   const LocationSettings locationSettings = LocationSettings(
     accuracy: LocationAccuracy.bestForNavigation,
-    //distanceFilter: 10, // Only update if moved 10 meters
-    //timeLimit: Duration(seconds: 5), // Minimum time between updates
   );
 
   // Get last known position
   Position? lastPosition;
   DateTime? lastUpdateTime;
-  const minUpdateInterval = Duration(seconds: 5);
-  const minDistance = 10.0; // meters
+  const minUpdateInterval = Duration(seconds: 3);
+  const minDistance = 5.0;
 
   // Start periodic task
   Timer.periodic(const Duration(seconds: 5), (timer) async {
@@ -114,8 +117,8 @@ void onStart(ServiceInstance service) async {
             lastPosition = position;
             lastUpdateTime = now;
 
-            // Send to server
-            await _sendLocationToServer(position);
+            // Queue for sync
+            await _queueLocationData(position);
           }
         }
 
@@ -141,33 +144,34 @@ void onStart(ServiceInstance service) async {
   });
 }
 
-Future<void> _sendLocationToServer(Position position) async {
+Future<void> _queueLocationData(Position position) async {
   try {
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? 'unknown';
     
-    final response = await http.post(
-      Uri.parse('http://ec2-3-83-201-132.compute-1.amazonaws.com:3000/api/location'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'accuracy': position.accuracy,
-        'altitude': position.altitude,
-        'speed': position.speed,
-        'heading': position.heading,
-        'imei': imei,
-        'timestamp': DateTime.now().toIso8601String(),
-      }),
-    );
+    final locationData = {
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracy': position.accuracy,
+      'altitude': position.altitude,
+      'speed': position.speed,
+      'heading': position.heading,
+      'imei': imei,
+      'timestamp': DateTime.now().toIso8601String(),
+      'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
+      'gmtSettings': "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}",
+      'igStatus': 1,
+      'localPrimaryId': DateTime.now().millisecondsSinceEpoch % 100000,
+      'name': imei,
+      'phoneNo': (await DeviceInfoPlugin().androidInfo).model,
+      'provider': 'fused',
+      'reason': 'Location Update',
+      'versionNo': 'v ${(await DeviceInfoPlugin().androidInfo).version.release}',
+    };
 
-    if (response.statusCode != 200) {
-      print('Failed to send location data: ${response.statusCode}');
-      print('Response body: ${response.body}');
-    } else {
-      print('Successfully sent location data');
-    }
+    // Queue the data for sync
+    await SyncService().queueLocationData(locationData);
   } catch (e) {
-    print('Error sending location data: $e');
+    print('Error queueing location data: $e');
   }
 } 
