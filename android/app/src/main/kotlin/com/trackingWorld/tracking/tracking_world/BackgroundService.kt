@@ -16,6 +16,8 @@ import android.util.Log
 import android.os.PowerManager
 import android.content.Context
 import android.location.Location
+import android.location.LocationManager
+import android.location.GnssStatus
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
@@ -28,8 +30,16 @@ import android.content.ContentValues
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.ExecutorService
+import io.flutter.embedding.engine.FlutterEngineCache
 
 class BackgroundService : Service() {
+    companion object {
+        @JvmStatic
+        var totalSatellites: Int = 0
+        @JvmStatic
+        var connectedSatellites: Int = 0
+    }
+
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private val CHANNEL_ID = "tracking_service"
@@ -45,6 +55,11 @@ class BackgroundService : Service() {
     private val syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var isSyncing = false
+    private var lastLocation: Location? = null
+    private val MIN_BEARING_CHANGE = 10.0f // Minimum bearing change to consider it a turn
+    private val MIN_SPEED_FOR_MOVEMENT = 1.0f // Minimum speed in m/s to consider it movement
+    private val MIN_DISTANCE = 5.0f // Minimum distance in meters to consider movement
+    private lateinit var gnssStatusCallback: GnssStatus.Callback
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 1) {
         override fun onCreate(db: SQLiteDatabase) {
@@ -56,7 +71,7 @@ class BackgroundService : Service() {
                     accuracy REAL,
                     altitude REAL,
                     speed REAL,
-                    heading REAL,
+                    bearing REAL,
                     imei TEXT,
                     timestamp TEXT,
                     deviceRDT TEXT,
@@ -125,7 +140,7 @@ class BackgroundService : Service() {
                         put("accuracy", cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy")))
                         put("altitude", cursor.getDouble(cursor.getColumnIndexOrThrow("altitude")))
                         put("speed", cursor.getDouble(cursor.getColumnIndexOrThrow("speed")))
-                        put("heading", cursor.getDouble(cursor.getColumnIndexOrThrow("heading")))
+                        put("bearing", cursor.getDouble(cursor.getColumnIndexOrThrow("bearing")))
                         put("imei", cursor.getString(cursor.getColumnIndexOrThrow("imei")))
                         put("timestamp", cursor.getString(cursor.getColumnIndexOrThrow("timestamp")))
                         put("deviceRDT", cursor.getString(cursor.getColumnIndexOrThrow("deviceRDT")))
@@ -220,11 +235,13 @@ class BackgroundService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "GPS Tracking Service",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "This channel is used for GPS tracking notifications"
                 setSound(null, null)
                 enableVibration(false)
+                setShowBadge(false)
+                enableLights(false)
             }
             
             val notificationManager = getSystemService(NotificationManager::class.java)
@@ -235,14 +252,79 @@ class BackgroundService : Service() {
     private fun setupLocationUpdates() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         
+        // Setup GNSS Status Callback
+        gnssStatusCallback = object : GnssStatus.Callback() {
+            override fun onStarted() {
+                Log.d("BackgroundService", "GNSS started")
+            }
+
+            override fun onStopped() {
+                Log.d("BackgroundService", "GNSS stopped")
+            }
+
+            override fun onFirstFix(ttffMillis: Int) {
+                Log.d("BackgroundService", "First GNSS fix after $ttffMillis ms")
+            }
+
+            override fun onSatelliteStatusChanged(status: GnssStatus) {
+                totalSatellites = status.satelliteCount
+                connectedSatellites = 0
+                
+                for (i in 0 until status.satelliteCount) {
+                    if (status.usedInFix(i)) {
+                        connectedSatellites++
+                    }
+                }
+                
+                Log.d("BackgroundService", "Satellites - Total: $totalSatellites, Connected: $connectedSatellites")
+                
+                // Just update the static variables for MainActivity to access
+            }
+        }
+
+        // Register GNSS Status Callback
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                locationManager.registerGnssStatusCallback(gnssStatusCallback)
+            }
+        }
+        
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
                     Log.d("BackgroundService", "Location update: ${location.latitude}, ${location.longitude}")
-                    updateNotification("GPS Tracking Active", "Location: ${location.latitude}, ${location.longitude}")
+                    updateNotification(
+                        "GPS Tracking Active", 
+                        "Location: ${location.latitude}, ${location.longitude}\n" +
+                        "Satellites: $connectedSatellites/$totalSatellites"
+                    )
                     saveLocationData(location)
                 }
             }
+        }
+    }
+
+    private fun calculateReason(currentLocation: Location): String {
+        if (lastLocation == null) {
+            return "Initial Position"
+        }
+
+        // Calculate speed in m/s
+        val speed = currentLocation.speed
+
+        // Calculate bearing change
+        val bearingChange = Math.abs(currentLocation.bearing - lastLocation!!.bearing)
+        val normalizedBearingChange = if (bearingChange > 180) 360 - bearingChange else bearingChange
+
+        // Calculate distance moved
+        val distance = currentLocation.distanceTo(lastLocation!!)
+
+        // Determine reason based on movement patterns
+        return when {
+            speed < MIN_SPEED_FOR_MOVEMENT && distance < MIN_DISTANCE -> "Idle"
+            normalizedBearingChange > MIN_BEARING_CHANGE -> "Turn"
+            else -> "Move"
         }
     }
 
@@ -252,13 +334,20 @@ class BackgroundService : Service() {
             val imei = prefs.getString("flutter.imei", "unknown") ?: "unknown"
             val currentTime = System.currentTimeMillis()
 
+            // Calculate reason for movement
+            val reason = calculateReason(location)
+
+            // Fix speed: round to 2 decimals, set to 0.0 if less than 0.1
+            val rawSpeed = location.speed
+            val fixedSpeed = if (rawSpeed < 0.1) 0.0 else String.format("%.2f", rawSpeed).toDouble()
+
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
                 put("accuracy", location.accuracy)
                 put("altitude", location.altitude)
-                put("speed", location.speed)
-                put("heading", location.bearing)
+                put("speed", fixedSpeed)
+                put("bearing", location.bearing)
                 put("imei", imei)
                 put("timestamp", java.time.Instant.now().toString())
                 put("deviceRDT", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
@@ -268,7 +357,7 @@ class BackgroundService : Service() {
                 put("name", imei)
                 put("phoneNo", Build.MODEL)
                 put("provider", "fused")
-                put("reason", "Location Update")
+                put("reason", reason)
                 put("versionNo", "v ${Build.VERSION.RELEASE}")
                 put("sync_status", 0)
                 put("created_at", currentTime)
@@ -276,7 +365,10 @@ class BackgroundService : Service() {
 
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
-            Log.d("BackgroundService", "Saved location data with ID: $id")
+            Log.d("BackgroundService", "Saved location data with ID: $id, Reason: $reason")
+            
+            // Update last location after saving
+            lastLocation = location
             
             // Try to sync immediately
             if (!isSyncing) {
@@ -299,8 +391,11 @@ class BackgroundService : Service() {
         .setContentTitle("GPS Tracking")
         .setContentText("Initializing...")
         .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
         .setOngoing(true)
+        .setCategory(NotificationCompat.CATEGORY_SERVICE)
+        .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        .setStyle(NotificationCompat.DecoratedCustomViewStyle())
         .build()
 
     private fun updateNotification(title: String, content: String) {
@@ -308,8 +403,11 @@ class BackgroundService : Service() {
             .setContentTitle(title)
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .build()
 
         val notificationManager = getSystemService(NotificationManager::class.java)
@@ -346,6 +444,10 @@ class BackgroundService : Service() {
         Log.d("BackgroundService", "Service being destroyed")
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
+            }
             syncExecutor.shutdown()
             networkExecutor.shutdown()
         } catch (e: Exception) {

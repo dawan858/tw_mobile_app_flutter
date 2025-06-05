@@ -26,6 +26,7 @@ class MainActivity: FlutterActivity() {
     private var flutterEngine: FlutterEngine? = null
     private var autoStartTracking = false
     private var startedBy = ""
+    private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
 
     private val REQUIRED_PERMISSIONS = arrayOf(
         Manifest.permission.READ_PHONE_STATE,
@@ -93,6 +94,21 @@ class MainActivity: FlutterActivity() {
                 }
                 "isServiceRunning" -> {
                     result.success(isServiceRunning(BackgroundService::class.java))
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Satellite Channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SATELLITE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getSatelliteData" -> {
+                    val totalSatellites = BackgroundService.totalSatellites
+                    val connectedSatellites = BackgroundService.connectedSatellites
+                    result.success(mapOf(
+                        "totalSatellites" to totalSatellites,
+                        "connectedSatellites" to connectedSatellites
+                    ))
                 }
                 else -> result.notImplemented()
             }

@@ -34,7 +34,7 @@ class DatabaseHelper {
         accuracy REAL,
         altitude REAL,
         speed REAL,
-        heading REAL,
+        bearing REAL,
         imei TEXT,
         timestamp TEXT,
         deviceRDT TEXT,
@@ -93,5 +93,27 @@ class DatabaseHelper {
       where: 'sync_status = ?',
       whereArgs: [1],
     );
+  }
+
+  Future<List<Map<String, dynamic>>> getExceptionLogs() async {
+    final db = await database;
+    return await db.query(
+      'exception_logs',
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  Future<void> clearExceptionLogs() async {
+    final db = await database;
+    await db.delete('exception_logs');
+  }
+
+  Future<void> insertExceptionLog({required String main, String details = ''}) async {
+    final db = await database;
+    await db.insert('exception_logs', {
+      'main': main,
+      'details': details,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
   }
 } 

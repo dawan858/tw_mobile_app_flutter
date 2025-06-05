@@ -77,6 +77,10 @@ class _GPSTrackerState extends State<GPSTracker> {
   int _time = 1738227867703;
   String _versionNo = "v 250111";
   
+  // Satellite data
+  int _totalSatellites = 0;
+  int _connectedSatellites = 0;
+  
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isTracking = false;
   final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
@@ -84,6 +88,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   static const platform = MethodChannel('com.trackingWorld.tracking/device_info');
   static const serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
+  static const MethodChannel satelliteChannel = MethodChannel('com.trackingWorld.tracking/satellite');
   
   @override
   void initState() {
@@ -109,8 +114,12 @@ class _GPSTrackerState extends State<GPSTracker> {
       }
     });
 
+    // Get satellite data once after permissions and service checks
+    _getSatelliteData();
+
     // Check if service is already running
     _checkServiceStatus();
+    _startTracking();
   }
   
   @override
@@ -374,31 +383,64 @@ class _GPSTrackerState extends State<GPSTracker> {
     }
   }
 
+  Future<void> _getSatelliteData() async {
+    try {
+      final result = await satelliteChannel.invokeMethod('getSatelliteData');
+      if (result != null) {
+        setState(() {
+          _totalSatellites = result['totalSatellites'] ?? 0;
+          _connectedSatellites = result['connectedSatellites'] ?? 0;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error getting satellite data: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return WelcomeScreen(
       imei: _imei,
       version: _versionNo,
-      onInfoTap: () {
+      trackingData: {
+        'totalSatellites': _totalSatellites.toString(),
+        'connectedSatellites': _connectedSatellites.toString(),
+        'status': _isTracking ? 'Location Found' : 'Not Tracking',
+        'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
+        'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
+        'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
+        'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
+        'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
+        'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
+        'lastPollTime': _deviceRDT,
+        'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+        'gmt': _gmtSettings,
+        'pendingData': '0', // This would require sync service info
+        'server': 'Connected', // This would require network status check
+        'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+      },
+      onInfoTap: () async {
+        await _getSatelliteData();
+        setState(() {}); // Ensure UI is updated with latest satellite data
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => LiveStatusScreen(
               trackingData: {
-                'totalSatellites': '45', // Replace with real value if available
-                'connectedSatellites': '10', // Replace with real value if available
+                'totalSatellites': _totalSatellites.toString(),
+                'connectedSatellites': _connectedSatellites.toString(),
                 'status': _isTracking ? 'Location Found' : 'Not Tracking',
-                'latitude': _latitude.toStringAsFixed(6),
-                'longitude': _longitude.toStringAsFixed(6),
-                'altitude': _altitude.toStringAsFixed(3),
-                'angle': _bearing.toStringAsFixed(3),
-                'speed': _speed.toStringAsFixed(3),
-                'accuracy': _accuracy.toStringAsFixed(3),
+                'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
+                'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
+                'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
+                'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
+                'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
+                'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
                 'lastPollTime': _deviceRDT,
                 'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
                 'gmt': _gmtSettings,
-                'pendingData': '0', // Replace with real value if available
-                'server': 'Connected', // Replace with real value if available
+                'pendingData': '0',
+                'server': 'Connected',
                 'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
               },
             ),

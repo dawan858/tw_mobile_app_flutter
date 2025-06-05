@@ -87,6 +87,36 @@ void onStart(ServiceInstance service) async {
   DateTime? lastUpdateTime;
   const minUpdateInterval = Duration(seconds: 3);
   const minDistance = 5.0;
+  const minBearingChange = 10.0; // Minimum bearing change to consider it a turn
+  const minSpeedForMovement = 1.0; // Minimum speed in m/s to consider it movement
+
+  String calculateReason(Position current, Position? previous) {
+    if (previous == null) return 'Initial Position';
+    
+    // Calculate speed in m/s
+    final speed = current.speed;
+    
+    // Calculate bearing change
+    final bearingChange = (current.heading - previous.heading).abs();
+    final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
+    
+    // Calculate distance moved
+    final distance = Geolocator.distanceBetween(
+      previous.latitude,
+      previous.longitude,
+      current.latitude,
+      current.longitude,
+    );
+
+    // Determine reason based on movement patterns
+    if (speed < minSpeedForMovement && distance < minDistance) {
+      return 'Idle';
+    } else if (normalizedBearingChange > minBearingChange) {
+      return 'Turn';
+    } else {
+      return 'Move';
+    }
+  }
 
   // Start periodic task
   Timer.periodic(const Duration(seconds: 5), (timer) async {
@@ -113,12 +143,15 @@ void onStart(ServiceInstance service) async {
                 position.longitude,
               ) > minDistance) {
             
+            // Calculate reason for movement
+            final reason = calculateReason(position, lastPosition);
+            
             // Update last position and time
             lastPosition = position;
             lastUpdateTime = now;
 
-            // Queue for sync
-            await _queueLocationData(position);
+            // Queue for sync with calculated reason
+            await _queueLocationData(position, reason);
           }
         }
 
@@ -144,7 +177,7 @@ void onStart(ServiceInstance service) async {
   });
 }
 
-Future<void> _queueLocationData(Position position) async {
+Future<void> _queueLocationData(Position position, String reason) async {
   try {
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? 'unknown';
@@ -155,17 +188,17 @@ Future<void> _queueLocationData(Position position) async {
       'accuracy': position.accuracy,
       'altitude': position.altitude,
       'speed': position.speed,
-      'heading': position.heading,
+      'bearing': position.heading,
       'imei': imei,
       'timestamp': DateTime.now().toIso8601String(),
       'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
       'gmtSettings': "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}",
       'igStatus': 1,
       'localPrimaryId': DateTime.now().millisecondsSinceEpoch % 100000,
-      'name': imei,
-      'phoneNo': (await DeviceInfoPlugin().androidInfo).model,
+      'name': (await DeviceInfoPlugin().androidInfo).model,
+      'phoneNo': (await DeviceInfoPlugin().androidInfo).serialNumber,
       'provider': 'fused',
-      'reason': 'Location Update',
+      'reason': reason,
       'versionNo': 'v ${(await DeviceInfoPlugin().androidInfo).version.release}',
     };
 

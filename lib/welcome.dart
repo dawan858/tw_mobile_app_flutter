@@ -1,11 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'verification_screen.dart';
 
-class WelcomeScreen extends StatelessWidget {
+class WelcomeScreen extends StatefulWidget {
   final String imei;
   final String version;
   final VoidCallback onInfoTap;
-  const WelcomeScreen({Key? key, required this.imei, required this.version, required this.onInfoTap}) : super(key: key);
+  final Map<String, String> trackingData;
+  const WelcomeScreen({Key? key, required this.imei, required this.version, required this.onInfoTap, required this.trackingData}) : super(key: key);
+
+  @override
+  State<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<WelcomeScreen> {
+  int _versionTapCount = 0;
+  DateTime? _lastTapTime;
+
+  void _handleVersionTap() {
+    final now = DateTime.now();
+    if (_lastTapTime == null || now.difference(_lastTapTime!) > Duration(seconds: 2)) {
+      _versionTapCount = 1;
+    } else {
+      _versionTapCount++;
+      if (_versionTapCount == 5) {
+        _versionTapCount = 0;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => VerificationScreen(trackingData: widget.trackingData),
+          ),
+        );
+        return;
+      }
+    }
+    _lastTapTime = now;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +99,7 @@ class WelcomeScreen extends StatelessWidget {
                             Padding(
                               padding: const EdgeInsets.only(left: 40.0),
                               child: Text(
-                                imei,
+                                widget.imei,
                                 style: TextStyle(color: const Color(0xFF3e4095), fontSize: fontSize * 1.1, fontWeight: FontWeight.w500),
                               ),
                             ),
@@ -90,7 +119,7 @@ class WelcomeScreen extends StatelessWidget {
                         flex: 2,
                         child: Center(
                           child: QrImageView(
-                            data: imei,
+                            data: widget.imei,
                             version: QrVersions.auto,
                             size: qrSize,
                           ),
@@ -110,7 +139,7 @@ class WelcomeScreen extends StatelessWidget {
                         child: Padding(
                           padding: EdgeInsets.only(left: 40, bottom: 8),
                           child: GestureDetector(
-                            onTap: onInfoTap,
+                            onTap: widget.onInfoTap,
                             child: Icon(Icons.info, color: const Color(0xFF3e4095), size: 45),
                           ),
                         ),
@@ -140,9 +169,12 @@ class WelcomeScreen extends StatelessWidget {
                         alignment: Alignment.bottomRight,
                         child: Padding(
                           padding: const EdgeInsets.only(right: 60, bottom: 25),
-                          child: Text(
-                            version,
-                            style: TextStyle(color: const Color(0xFF3e4095), fontSize: fontSize * 0.8),
+                          child: GestureDetector(
+                            onTap: _handleVersionTap,
+                            child: Text(
+                              widget.version,
+                              style: TextStyle(color: const Color(0xFF3e4095), fontSize: fontSize * 0.8),
+                            ),
                           ),
                         ),
                       ),
