@@ -56,7 +56,6 @@ class BackgroundService : Service() {
     private fun createNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
         .setContentTitle("GPS Tracking")
         .setContentText("Tracking service is running")
-        .setSmallIcon(R.mipmap.ic_launcher)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
         .setOngoing(true)
         .build()

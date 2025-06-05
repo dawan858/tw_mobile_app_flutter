@@ -9,6 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'services/api_service.dart';
 import 'services/background_service.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'welcome.dart';
+import 'live_status_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,11 +32,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,  
       title: 'GPS Tracker',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.blue,
-          brightness: Brightness.dark,
+          brightness: Brightness.light,
         ),
         useMaterial3: true,
       ),
@@ -372,55 +376,35 @@ class _GPSTrackerState extends State<GPSTracker> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('GPS Tracker'),
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Status: ${_isTracking ? "Tracking" : "Not Tracking"}',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 10),
-                    Text('accuracy: ${_accuracy.toStringAsFixed(1)}'),
-                    Text('altitude: ${_altitude.toStringAsFixed(0)}'),
-                    Text('bearing: ${_bearing.toStringAsFixed(0)}'),
-                    Text('deviceRDT: "$_deviceRDT"'),
-                    Text('emailAddress: "$_emailAddress"'),
-                    Text('gmtSettings: "$_gmtSettings"'),
-                    Text('igStatus: $_igStatus'),
-                    Text('imei: "$_imei"'),
-                    Text('latitude: $_latitude'),
-                    Text('localPrimaryId: $_localPrimaryId'),
-                    Text('longitude: $_longitude'),
-                    Text('name: "$_name"'),
-                    Text('phoneNo: "$_phoneNo"'),
-                    Text('provider: "$_provider"'),
-                    Text('reason: "$_reason"'),
-                    Text('speed: ${_speed.toStringAsFixed(0)}'),
-                    Text('time: $_time'),
-                    Text('versionNo: "$_versionNo"'),
-                  ],
-                ),
-              ),
+    return WelcomeScreen(
+      imei: _imei,
+      version: _versionNo,
+      onInfoTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => LiveStatusScreen(
+              trackingData: {
+                'totalSatellites': '45', // Replace with real value if available
+                'connectedSatellites': '10', // Replace with real value if available
+                'status': _isTracking ? 'Location Found' : 'Not Tracking',
+                'latitude': _latitude.toStringAsFixed(6),
+                'longitude': _longitude.toStringAsFixed(6),
+                'altitude': _altitude.toStringAsFixed(3),
+                'angle': _bearing.toStringAsFixed(3),
+                'speed': _speed.toStringAsFixed(3),
+                'accuracy': _accuracy.toStringAsFixed(3),
+                'lastPollTime': _deviceRDT,
+                'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+                'gmt': _gmtSettings,
+                'pendingData': '0', // Replace with real value if available
+                'server': 'Connected', // Replace with real value if available
+                'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+              },
             ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isTracking ? _stopTracking : _startTracking,
-        label: Text(_isTracking ? 'Stop Tracking' : 'Start Tracking'),
-        icon: Icon(_isTracking ? Icons.stop : Icons.play_arrow),
-      ),
+          ),
+        );
+      },
     );
   }
 }
