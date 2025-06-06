@@ -1,14 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class ConfigurationScreen extends StatefulWidget {
-  final String version;
-  const ConfigurationScreen({Key? key, required this.version}) : super(key: key);
+  const ConfigurationScreen({Key? key}) : super(key: key);
 
   @override
   State<ConfigurationScreen> createState() => _ConfigurationScreenState();
 }
 
 class _ConfigurationScreenState extends State<ConfigurationScreen> {
+  String _appVersion = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _appVersion = 'v${info.version}';
+    });
+  }
+
   // Preloaded values (replace with your actual config source)
   final Map<String, TextEditingController> controllers = {
     'gpsTimer': TextEditingController(text: '5'),
@@ -47,14 +62,14 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
-    final double titleFontSize = isTablet ? 38.0 : 28.0;
-    final double labelFontSize = isTablet ? 22.0 : 16.0;
-    final double fieldFontSize = isTablet ? 22.0 : 16.0;
-    final double iconSize = isTablet ? 32.0 : 24.0;
-    final double buttonFontSize = isTablet ? 28.0 : 20.0;
-    final double buttonHeight = isTablet ? 70.0 : 56.0;
-    final double borderRadius = isTablet ? 18.0 : 12.0;
-    final double verticalSpacing = isTablet ? 32.0 : 20.0;
+    final double titleFontSize = isTablet ? 22.0 : 18.0;
+    final double labelFontSize = isTablet ? 18.0 : 14.0;
+    final double fieldFontSize = isTablet ? 18.0 : 14.0;
+    final double iconSize = isTablet ? 24.0 : 20.0;
+    final double buttonFontSize = isTablet ? 18.0 : 16.0;
+    final double buttonHeight = isTablet ? 48.0 : 44.0;
+    final double borderRadius = isTablet ? 16.0 : 12.0;
+    final double verticalSpacing = isTablet ? 24.0 : 16.0;
     final double logoSize = isTablet ? 60.0 : 40.0;
 
     return Scaffold(
@@ -64,27 +79,94 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
         iconTheme: const IconThemeData(color: Colors.black),
       ),
       body: SafeArea(
-        child: Column(
-          children: [
-            SizedBox(height: verticalSpacing),
-            Center(
-              child: Text(
-                'CONFIGURATION',
-                style: TextStyle(
-                  fontSize: titleFontSize,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black,
-                ),
-              ),
-            ),
-            SizedBox(height: verticalSpacing),
-            Expanded(
-              child: ListView.separated(
-                padding: EdgeInsets.symmetric(horizontal: isTablet ? 32 : 16),
-                itemCount: fields.length,
-                separatorBuilder: (_, __) => SizedBox(height: verticalSpacing / 2),
-                itemBuilder: (context, index) {
-                  final field = fields[index];
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 700),
+            child: ListView.separated(
+              padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16),
+              itemCount: fields.length + 3, // title + fields + save + bottom row
+              separatorBuilder: (_, __) => SizedBox(height: verticalSpacing / 2),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return Column(
+                    children: [
+                      SizedBox(height: verticalSpacing),
+                      Center(
+                        child: Text(
+                          'CONFIGURATION',
+                          style: TextStyle(
+                            fontSize: titleFontSize,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: verticalSpacing),
+                    ],
+                  );
+                } else if (index == fields.length + 1) {
+                  return Padding(
+                    padding: EdgeInsets.symmetric(vertical: verticalSpacing),
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: buttonHeight,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Color(0xFF3e4095),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(buttonHeight / 2),
+                          ),
+                        ),
+                        onPressed: () {
+                          // TODO: Save logic
+                          final config = { for (var f in fields) f['key']: controllers[f['key']]!.text };
+                          // Save config as needed
+                        },
+                        child: Text(
+                          'SAVE',
+                          style: TextStyle(fontSize: buttonFontSize, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  );
+                } else if (index == fields.length + 2) {
+                  // Bottom row with version and logo
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.bottomLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 16, bottom: 8),
+                            child: Text(
+                              _appVersion,
+                              style: TextStyle(
+                                color: Color(0xFF3e4095),
+                                fontSize: buttonFontSize * 0.8,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.bottomRight,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 16, bottom: 8),
+                            child: Image.asset(
+                              'assets/tw.png',
+                              width: logoSize,
+                              height: logoSize,
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                } else {
+                  final field = fields[index - 1];
                   return Container(
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.grey, width: 1.2),
@@ -129,69 +211,10 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
                       ],
                     ),
                   );
-                },
-              ),
+                }
+              },
             ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: isTablet ? 32 : 16, vertical: verticalSpacing),
-              child: SizedBox(
-                width: double.infinity,
-                height: buttonHeight,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Color(0xFF3e4095),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(buttonHeight / 2),
-                    ),
-                  ),
-                  onPressed: () {
-                    // TODO: Save logic
-                    // Collect all values from controllers
-                    final config = { for (var f in fields) f['key']: controllers[f['key']]!.text };
-                    // Save config as needed
-                  },
-                  child: Text(
-                    'SAVE',
-                    style: TextStyle(fontSize: buttonFontSize, color: Colors.white),
-                  ),
-                ),
-              ),
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.bottomLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: 16, bottom: 8),
-                      child: Text(
-                        widget.version,
-                        style: TextStyle(
-                          color: Color(0xFF3e4095),
-                          fontSize: buttonFontSize * 0.8,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.bottomRight,
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 16, bottom: 8),
-                      child: Image.asset(
-                        'assets/tw.png',
-                        width: logoSize,
-                        height: logoSize,
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );

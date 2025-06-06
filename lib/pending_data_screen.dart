@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'services/database_helper.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class PendingDataScreen extends StatefulWidget {
   const PendingDataScreen({Key? key}) : super(key: key);
@@ -10,12 +11,20 @@ class PendingDataScreen extends StatefulWidget {
 
 class _PendingDataScreenState extends State<PendingDataScreen> {
   late Future<List<Map<String, dynamic>>> _pendingDataFuture;
-  final String version = 'v 250111'; // You can pass this as a parameter if needed
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
     _pendingDataFuture = DatabaseHelper().getUnsyncedData();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _appVersion = 'v${info.version}';
+    });
   }
 
   @override
@@ -90,7 +99,7 @@ class _PendingDataScreenState extends State<PendingDataScreen> {
                     child: Padding(
                       padding: const EdgeInsets.only(left: 16, bottom: 8),
                       child: Text(
-                        version,
+                        _appVersion,
                         style: TextStyle(
                           color: Color(0xFF3e4095),
                           fontSize: itemFontSize,

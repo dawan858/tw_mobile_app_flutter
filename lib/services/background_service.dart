@@ -118,43 +118,21 @@ void onStart(ServiceInstance service) async {
     }
   }
 
-  // Start periodic task
-  Timer.periodic(const Duration(seconds: 5), (timer) async {
+  // Start periodic task for instant updates (every second)
+  Timer.periodic(const Duration(seconds: 1), (timer) async {
     if (service is AndroidServiceInstance) {
       try {
-        // Check if we should update location
-        final now = DateTime.now();
-        final shouldUpdate = lastPosition == null ||
-            lastUpdateTime == null ||
-            now.difference(lastUpdateTime!) > minUpdateInterval;
-
-        if (shouldUpdate) {
-          // Get current position
-          final position = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.bestForNavigation,
-          );
-
-          // Check if we've moved enough
-          if (lastPosition == null ||
-              Geolocator.distanceBetween(
-                lastPosition!.latitude,
-                lastPosition!.longitude,
-                position.latitude,
-                position.longitude,
-              ) > minDistance) {
-            
-            // Calculate reason for movement
-            final reason = calculateReason(position, lastPosition);
-            
-            // Update last position and time
-            lastPosition = position;
-            lastUpdateTime = now;
-
-            // Queue for sync with calculated reason
-            await _queueLocationData(position, reason);
-          }
-        }
-
+        // Get current position
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.bestForNavigation,
+        );
+        // Calculate reason for movement (for analytics/logging, not filtering)
+        final reason = calculateReason(position, lastPosition);
+        // Always queue/send location data instantly
+        await _queueLocationData(position, reason);
+        // Update last position and time
+        lastPosition = position;
+        lastUpdateTime = DateTime.now();
         // Update notification
         service.setForegroundNotificationInfo(
           title: "GPS Tracking Active",

@@ -16,14 +16,14 @@ class _VerificationScreenState extends State<VerificationScreen> {
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
-    final double padding = isTablet ? 48.0 : 24.0;
-    final double titleFontSize = isTablet ? 38.0 : 28.0;
-    final double textFieldFontSize = isTablet ? 28.0 : 20.0;
-    final double labelFontSize = isTablet ? 22.0 : 16.0;
-    final double buttonFontSize = isTablet ? 28.0 : 20.0;
-    final double buttonHeight = isTablet ? 70.0 : 56.0;
-    final double borderRadius = isTablet ? 24.0 : 16.0;
-    final double verticalSpacing = isTablet ? 60.0 : 40.0;
+    final double padding = isTablet ? 32.0 : 16.0;
+    final double titleFontSize = isTablet ? 28.0 : 18.0;
+    final double textFieldFontSize = isTablet ? 22.0 : 16.0;
+    final double labelFontSize = isTablet ? 18.0 : 14.0;
+    final double buttonFontSize = isTablet ? 22.0 : 16.0;
+    final double buttonHeight = isTablet ? 56.0 : 44.0;
+    final double borderRadius = isTablet ? 20.0 : 12.0;
+    final double verticalSpacing = isTablet ? 40.0 : 20.0;
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
@@ -107,7 +107,6 @@ class _VerificationScreenState extends State<VerificationScreen> {
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
                             builder: (_) => SettingsScreen(
-                              version: "v1.0.0",
                               trackingData: widget.trackingData,
                             ),
                           ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'verification_screen.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class WelcomeScreen extends StatefulWidget {
   final String imei;

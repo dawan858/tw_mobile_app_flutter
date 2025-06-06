@@ -50,7 +50,7 @@ class BackgroundService : Service() {
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
-    private val serverUrl = "http://ec2-3-83-201-132.compute-1.amazonaws.com:3000/api/location"
+    private val serverUrl = "http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api/location"
     private lateinit var dbHelper: LocationDatabaseHelper
     private val syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -299,6 +299,7 @@ class BackgroundService : Service() {
                         "Location: ${location.latitude}, ${location.longitude}\n" +
                         "Satellites: $connectedSatellites/$totalSatellites"
                     )
+                    // Always save/send location data instantly
                     saveLocationData(location)
                 }
             }
@@ -354,8 +355,11 @@ class BackgroundService : Service() {
                 put("gmtSettings", "GMT+${java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 3600}:00 ${java.time.Year.now().value}")
                 put("igStatus", 1)
                 put("localPrimaryId", currentTime % 100000)
-                put("name", imei)
-                put("phoneNo", Build.MODEL)
+                put("name", Build.MODEL)
+                val serial = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Build.getSerial() else Build.SERIAL
+                } catch (e: Exception) { "unknown" }
+                put("phoneNo", serial)
                 put("provider", "fused")
                 put("reason", reason)
                 put("versionNo", "v ${Build.VERSION.RELEASE}")

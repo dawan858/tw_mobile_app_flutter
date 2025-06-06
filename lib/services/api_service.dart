@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = 'http://ec2-3-83-201-132.compute-1.amazonaws.com:3000/api';
+  static const String baseUrl = 'http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api';
 
   Future<bool> sendLocationData(Map<String, dynamic> locationData) async {
     try {

@@ -12,6 +12,7 @@ import 'services/background_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'welcome.dart';
 import 'live_status_screen.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -75,7 +76,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   String _provider = "fused";
   String _reason = "Turn";
   int _time = 1738227867703;
-  String _versionNo = "v 250111";
+  String _appVersion = '';
   
   // Satellite data
   int _totalSatellites = 0;
@@ -93,6 +94,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   @override
   void initState() {
     super.initState();
+    _loadAppVersion();
     _checkAllPermissions();
     _getDeviceInfo();
     _saveImei();
@@ -149,7 +151,6 @@ class _GPSTrackerState extends State<GPSTracker> {
       final androidInfo = await deviceInfo.androidInfo;
       setState(() {
         _phoneNo = androidInfo.model;
-        _versionNo = "v ${androidInfo.version.release}";
       });
     } catch (e) {
       debugPrint('Error getting device info: $e');
@@ -199,6 +200,11 @@ class _GPSTrackerState extends State<GPSTracker> {
         _showPermissionDialog('Background Location');
         return;
       }
+    }
+
+    // Request storage permission for Android 12 and below
+    if (await Permission.storage.isDenied) {
+      await Permission.storage.request();
     }
 
     // If all permissions are granted, proceed with initialization
@@ -308,7 +314,7 @@ class _GPSTrackerState extends State<GPSTracker> {
       'reason': _reason,
       'speed': _speed,
       'time': _time,
-      'versionNo': _versionNo,
+      'versionNo': _appVersion,
       'timestamp': DateTime.now().toIso8601String(),
     };
     
@@ -397,11 +403,18 @@ class _GPSTrackerState extends State<GPSTracker> {
     }
   }
 
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _appVersion = 'v${info.version}';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return WelcomeScreen(
       imei: _imei,
-      version: _versionNo,
+      version: _appVersion,
       trackingData: {
         'totalSatellites': _totalSatellites.toString(),
         'connectedSatellites': _connectedSatellites.toString(),
