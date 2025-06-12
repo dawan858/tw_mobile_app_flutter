@@ -52,14 +52,30 @@ class BackgroundService : Service() {
         .build()
     private val serverUrl = "http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api/location"
     private lateinit var dbHelper: LocationDatabaseHelper
-    private val syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    private var syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var isSyncing = false
     private var lastLocation: Location? = null
-    private val MIN_BEARING_CHANGE = 10.0f // Minimum bearing change to consider it a turn
-    private val MIN_SPEED_FOR_MOVEMENT = 1.0f // Minimum speed in m/s to consider it movement
-    private val MIN_DISTANCE = 5.0f // Minimum distance in meters to consider movement
+    private val MIN_BEARING_CHANGE = 10.0f // Default minimum bearing change to consider it a turn
+    private val MIN_SPEED_FOR_MOVEMENT = 3.6f // Default minimum speed in km/h to consider it movement
+    private val MIN_DISTANCE = 5.0f // Default minimum distance in meters to consider movement
+    private val MIN_SPEED_FOR_TURN = 5.0f // Default minimum speed in km/h to consider a turn valid
     private lateinit var gnssStatusCallback: GnssStatus.Callback
+    private var lastSyncTime: Long = 0
+    private var lastLocationUpdateTime: Long = 0
+    private var lastProcessedLocation: Location? = null
+    private var isMoving: Boolean = false
+    private var lastMovementTime: Long = 0
+    private var lastStopTime: Long = 0
+
+    // Configuration parameters with defaults
+    private var gpsTimer: Int = 5 // Default 5 seconds
+    private var uploadTimer: Int = 10 // Default 10 minutes
+    private var angleThreshold: Float = 45f // Default 45 degrees
+    private var overSpeedingThreshold: Float = 60f // Default 60 km/h
+    private var distanceThreshold: Float = 1000f // Default 1000 meters
+    private var movingTimer: Int = 60 // Default 60 seconds
+    private var stopTimer: Int = 130 // Default 130 seconds
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 1) {
         override fun onCreate(db: SQLiteDatabase) {
@@ -95,12 +111,70 @@ class BackgroundService : Service() {
         }
     }
 
+    private fun loadConfiguration() {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            
+            // Load configuration values with defaults
+            gpsTimer = prefs.getInt("flutter.gpsTimer", 5)
+            uploadTimer = prefs.getInt("flutter.uploadTimer", 10)
+            angleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
+            overSpeedingThreshold = prefs.getFloat("flutter.overSpeedingThreshold", 60f)
+            distanceThreshold = prefs.getFloat("flutter.distanceThreshold", 1000f)
+            movingTimer = prefs.getInt("flutter.movingTimer", 60)
+            stopTimer = prefs.getInt("flutter.stopTimer", 130)
+
+            // Update intervals based on configuration
+            updateLocationRequestInterval()
+            updateSyncInterval()
+            
+            Log.d("BackgroundService", "Configuration loaded successfully")
+        } catch (e: Exception) {
+            Log.e("BackgroundService", "Error loading configuration: ${e.message}")
+        }
+    }
+
+    private fun updateLocationRequestInterval() {
+        try {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+            val locationRequest = LocationRequest.create().apply {
+                priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+                interval = gpsTimer * 1000L // Convert seconds to milliseconds
+                fastestInterval = (gpsTimer / 2) * 1000L // Half of the interval
+                maxWaitTime = gpsTimer * 2000L // Double the interval
+            }
+
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    Looper.getMainLooper()
+                )
+                Log.d("BackgroundService", "Location updates interval updated to ${gpsTimer} seconds")
+            }
+        } catch (e: Exception) {
+            Log.e("BackgroundService", "Error updating location request interval: ${e.message}")
+        }
+    }
+
+    private fun updateSyncInterval() {
+        syncExecutor.shutdown()
+        syncExecutor = Executors.newSingleThreadScheduledExecutor()
+        syncExecutor.scheduleAtFixedRate({
+            if (!isSyncing) {
+                syncData()
+            }
+        }, uploadTimer.toLong(), uploadTimer.toLong(), TimeUnit.MINUTES)
+        Log.d("BackgroundService", "Sync interval updated to ${uploadTimer} minutes")
+    }
+
     override fun onCreate() {
         super.onCreate()
         Log.d("BackgroundService", "Service created")
         dbHelper = LocationDatabaseHelper(this)
         acquireWakeLock()
         createNotificationChannel()
+        loadConfiguration() // Load configuration before setting up location updates
         setupLocationUpdates()
         startPeriodicSync()
     }
@@ -290,19 +364,56 @@ class BackgroundService : Service() {
             }
         }
         
+        val locationRequest = LocationRequest.create().apply {
+            priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+            interval = gpsTimer * 1000L // Use configured GPS timer
+            fastestInterval = (gpsTimer / 2) * 1000L // Half of the interval
+            maxWaitTime = gpsTimer * 2000L // Double the interval
+        }
+
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
-                    Log.d("BackgroundService", "Location update: ${location.latitude}, ${location.longitude}")
-                    updateNotification(
-                        "GPS Tracking Active", 
-                        "Location: ${location.latitude}, ${location.longitude}\n" +
-                        "Satellites: $connectedSatellites/$totalSatellites"
-                    )
-                    // Always save/send location data instantly
-                    saveLocationData(location)
+                    val currentTime = System.currentTimeMillis()
+                    val timeSinceLastUpdate = currentTime - lastLocationUpdateTime
+                    val distance = lastLocation?.distanceTo(location) ?: 0f
+                    val speed = location.speed * 3.6f // Convert to km/h
+
+                    if (
+                        timeSinceLastUpdate >= gpsTimer * 1000L ||
+                        distance >= distanceThreshold ||
+                        speed >= overSpeedingThreshold
+                    ) {
+                        Log.d("BackgroundService", "Processing location update: ${location.latitude}, ${location.longitude}")
+                        updateNotification(
+                            "GPS Tracking Active", 
+                            "Location: ${location.latitude}, ${location.longitude}\n" +
+                            "Satellites: $connectedSatellites/$totalSatellites"
+                        )
+                        saveLocationData(location)
+                        lastLocationUpdateTime = currentTime
+                        lastLocation = location
+                        Log.d("BackgroundService", "Location data saved and synced. Next update in ${gpsTimer} seconds")
+                    } else {
+                        Log.d("BackgroundService", "Skipping location update - no trigger met (timer, distance, speed)")
+                    }
                 }
             }
+        }
+
+        try {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    Looper.getMainLooper()
+                )
+                Log.d("BackgroundService", "Location updates started with interval: ${gpsTimer} seconds")
+            } else {
+                Log.e("BackgroundService", "Location permission not granted")
+            }
+        } catch (e: Exception) {
+            Log.e("BackgroundService", "Error starting location updates", e)
         }
     }
 
@@ -311,8 +422,8 @@ class BackgroundService : Service() {
             return "Initial Position"
         }
 
-        // Calculate speed in m/s
-        val speed = currentLocation.speed
+        // Calculate speed in km/h
+        val speed = currentLocation.speed * 3.6f
 
         // Calculate bearing change
         val bearingChange = Math.abs(currentLocation.bearing - lastLocation!!.bearing)
@@ -321,39 +432,80 @@ class BackgroundService : Service() {
         // Calculate distance moved
         val distance = currentLocation.distanceTo(lastLocation!!)
 
-        // Determine reason based on movement patterns
+        // Update movement status
+        if (speed > 1 || distance > 5) {
+            if (!isMoving) {
+                isMoving = true
+                lastMovementTime = System.currentTimeMillis()
+            }
+            lastStopTime = System.currentTimeMillis()
+        } else {
+            if (isMoving && (System.currentTimeMillis() - lastStopTime) > stopTimer * 1000L) {
+                isMoving = false
+            }
+        }
+
+        // Determine reason based on movement patterns and configuration
         return when {
-            speed < MIN_SPEED_FOR_MOVEMENT && distance < MIN_DISTANCE -> "Idle"
-            normalizedBearingChange > MIN_BEARING_CHANGE -> "Turn"
-            else -> "Move"
+            // Check for over-speeding
+            speed > overSpeedingThreshold -> "Over Speeding"
+            
+            // Check if the device is moving at all
+            !isMoving -> "Idle"
+            
+            // Check for turns using configured angle threshold
+            speed >= 5 && normalizedBearingChange > angleThreshold -> "Turn"
+            
+            // If moving but not turning, it's a move
+            isMoving -> "Move"
+            
+            // Default case for very small movements
+            else -> "Idle"
+        }
+    }
+
+    private fun shouldProcessLocation(location: Location): Boolean {
+        if (lastLocation == null) return true
+        
+        val distance = lastLocation!!.distanceTo(location)
+        val speed = location.speed * 3.6f // Convert to km/h
+        
+        return distance > 5 || speed > 1 || 
+               (System.currentTimeMillis() - lastLocationUpdateTime) >= gpsTimer * 1000L
+    }
+
+    private fun getImei(): String {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.getString("flutter.imei", "unknown") ?: "unknown"
+        } catch (e: Exception) {
+            Log.e("BackgroundService", "Error getting IMEI: ${e.message}")
+            "unknown"
         }
     }
 
     private fun saveLocationData(location: Location) {
         try {
-            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val imei = prefs.getString("flutter.imei", "unknown") ?: "unknown"
             val currentTime = System.currentTimeMillis()
-
-            // Calculate reason for movement
+            val imei = getImei()
             val reason = calculateReason(location)
-
-            // Fix speed: round to 2 decimals, set to 0.0 if less than 0.1
-            val rawSpeed = location.speed
-            val fixedSpeed = if (rawSpeed < 0.1) 0.0 else String.format("%.2f", rawSpeed).toDouble()
-
+            
+            // Convert speed from m/s to km/h for storage
+            var fixedSpeed = location.speed * 3.6f
+            if (fixedSpeed < 0) fixedSpeed = 0f
+            
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
                 put("accuracy", location.accuracy)
                 put("altitude", location.altitude)
-                put("speed", fixedSpeed)
+                put("speed", fixedSpeed) // Now storing speed in km/h
                 put("bearing", location.bearing)
                 put("imei", imei)
                 put("timestamp", java.time.Instant.now().toString())
                 put("deviceRDT", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
                 put("gmtSettings", "GMT+${java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 3600}:00 ${java.time.Year.now().value}")
-                put("igStatus", 1)
+                put("igStatus", 1L) // Explicitly use Long type
                 put("localPrimaryId", currentTime % 100000)
                 put("name", Build.MODEL)
                 val serial = try {
@@ -373,11 +525,6 @@ class BackgroundService : Service() {
             
             // Update last location after saving
             lastLocation = location
-            
-            // Try to sync immediately
-            if (!isSyncing) {
-                syncData()
-            }
         } catch (e: Exception) {
             Log.e("BackgroundService", "Error saving location data: ${e.message}", e)
             e.printStackTrace()
@@ -421,9 +568,9 @@ class BackgroundService : Service() {
     private fun startLocationUpdates() {
         val locationRequest = LocationRequest.create().apply {
             priority = LocationRequest.PRIORITY_HIGH_ACCURACY
-            interval = 5000 // 5 seconds
-            fastestInterval = 3000 // 3 seconds
-            maxWaitTime = 10000 // 10 seconds
+            interval = gpsTimer * 1000L // Use configured GPS timer
+            fastestInterval = (gpsTimer / 2) * 1000L // Half of the interval
+            maxWaitTime = gpsTimer * 2000L // Double the interval
         }
 
         try {
@@ -433,7 +580,7 @@ class BackgroundService : Service() {
                     locationCallback,
                     Looper.getMainLooper()
                 )
-                Log.d("BackgroundService", "Location updates started")
+                Log.d("BackgroundService", "Location updates started with interval: ${gpsTimer} seconds")
             } else {
                 Log.e("BackgroundService", "Location permission not granted")
             }

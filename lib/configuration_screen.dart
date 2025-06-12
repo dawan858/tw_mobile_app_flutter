@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'services/config_service.dart';
 
 class ConfigurationScreen extends StatefulWidget {
   const ConfigurationScreen({Key? key}) : super(key: key);
@@ -10,37 +11,9 @@ class ConfigurationScreen extends StatefulWidget {
 
 class _ConfigurationScreenState extends State<ConfigurationScreen> {
   String _appVersion = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAppVersion();
-  }
-
-  Future<void> _loadAppVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    setState(() {
-      _appVersion = 'v${info.version}';
-    });
-  }
-
-  // Preloaded values (replace with your actual config source)
-  final Map<String, TextEditingController> controllers = {
-    'gpsTimer': TextEditingController(text: '5'),
-    'configTimer': TextEditingController(text: '60'),
-    'uploadTimer': TextEditingController(text: '10'),
-    'retryCounter': TextEditingController(text: '10'),
-    'angleThreshold': TextEditingController(text: '45'),
-    'overSpeedingThreshold': TextEditingController(text: '60'),
-    'travelStartTimer': TextEditingController(text: '20'),
-    'travelStopTimer': TextEditingController(text: '20'),
-    'movingTimer': TextEditingController(text: '60'),
-    'stopTimer': TextEditingController(text: '130'),
-    'distanceThreshold': TextEditingController(text: '1000'),
-    'heartbeatTimer': TextEditingController(text: '30'),
-    'liveStatusUpdateTimer': TextEditingController(text: '30'),
-    'baseUrl': TextEditingController(text: 'https://connectlive.commtw.com:446/twconnectlive/TrackingServices.asmx'),
-  };
+  final ConfigService _configService = ConfigService();
+  final Map<String, TextEditingController> controllers = {};
+  bool _isLoading = true;
 
   final List<Map<String, dynamic>> fields = [
     {'key': 'gpsTimer', 'label': 'GPS TIMER', 'icon': Icons.my_location},
@@ -56,11 +29,77 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     {'key': 'distanceThreshold', 'label': 'DISTANCE THRESHOLD', 'icon': Icons.import_export},
     {'key': 'heartbeatTimer', 'label': 'HEARTBEAT TIMER', 'icon': Icons.sync},
     {'key': 'liveStatusUpdateTimer', 'label': 'LIVE STATUS UPDATE TIMER', 'icon': Icons.refresh},
-    {'key': 'baseUrl', 'label': 'BASE URL', 'icon': Icons.link},
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+    _loadConfiguration();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _appVersion = 'v${info.version}';
+    });
+  }
+
+  Future<void> _loadConfiguration() async {
+    setState(() => _isLoading = true);
+    try {
+      final config = await _configService.getConfig();
+      
+      // Initialize controllers with current values
+      config.forEach((key, value) {
+        controllers[key] = TextEditingController(text: value.toString());
+      });
+      
+      setState(() => _isLoading = false);
+    } catch (e) {
+      print('Error loading configuration: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _saveConfiguration() async {
+    try {
+      final newConfig = <String, dynamic>{};
+      controllers.forEach((key, controller) {
+        final value = controller.text;
+        if (ConfigService.defaultConfig[key] is int) {
+          newConfig[key] = int.parse(value);
+        } else if (ConfigService.defaultConfig[key] is double) {
+          newConfig[key] = double.parse(value);
+        } else {
+          newConfig[key] = value;
+        }
+      });
+
+      await _configService.updateConfig(newConfig);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Configuration saved successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error saving configuration: $e')),
+        );
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
     final double titleFontSize = isTablet ? 22.0 : 18.0;
     final double labelFontSize = isTablet ? 18.0 : 14.0;
@@ -81,7 +120,7 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: 700),
+            constraints: const BoxConstraints(maxWidth: 700),
             child: ListView.separated(
               padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16),
               itemCount: fields.length + 3, // title + fields + save + bottom row
@@ -112,16 +151,12 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
                       height: buttonHeight,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Color(0xFF3e4095),
+                          backgroundColor: const Color(0xFF3e4095),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(buttonHeight / 2),
                           ),
                         ),
-                        onPressed: () {
-                          // TODO: Save logic
-                          final config = { for (var f in fields) f['key']: controllers[f['key']]!.text };
-                          // Save config as needed
-                        },
+                        onPressed: _saveConfiguration,
                         child: Text(
                           'SAVE',
                           style: TextStyle(fontSize: buttonFontSize, color: Colors.white),
@@ -141,7 +176,7 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
                             child: Text(
                               _appVersion,
                               style: TextStyle(
-                                color: Color(0xFF3e4095),
+                                color: const Color(0xFF3e4095),
                                 fontSize: buttonFontSize * 0.8,
                                 fontWeight: FontWeight.w600,
                               ),
@@ -198,6 +233,7 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
                                 child: TextField(
                                   controller: controllers[field['key']],
                                   style: TextStyle(fontSize: fieldFontSize),
+                                  keyboardType: TextInputType.number,
                                   decoration: const InputDecoration(
                                     border: InputBorder.none,
                                     isDense: true,
@@ -218,5 +254,11 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    controllers.values.forEach((controller) => controller.dispose());
+    super.dispose();
   }
 } 

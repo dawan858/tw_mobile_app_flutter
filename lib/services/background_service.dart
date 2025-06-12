@@ -128,11 +128,29 @@ void onStart(ServiceInstance service) async {
         );
         // Calculate reason for movement (for analytics/logging, not filtering)
         final reason = calculateReason(position, lastPosition);
-        // Always queue/send location data instantly
-        await _queueLocationData(position, reason);
-        // Update last position and time
-        lastPosition = position;
-        lastUpdateTime = DateTime.now();
+        // Configuration checks
+        final prefs = await SharedPreferences.getInstance();
+        final gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
+        final distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
+        final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
+        final now = DateTime.now();
+        final timeSinceLastUpdate = lastUpdateTime == null ? null : now.difference(lastUpdateTime!).inSeconds;
+        final distance = lastPosition == null ? null : Geolocator.distanceBetween(
+          lastPosition!.latitude, lastPosition!.longitude,
+          position.latitude, position.longitude,
+        );
+        final speed = position.speed * 3.6; // m/s to km/h
+        final clampedSpeed = speed < 0 ? 0 : speed;
+        if (
+          (timeSinceLastUpdate != null && timeSinceLastUpdate >= gpsTimer) ||
+          (distance != null && distance >= distanceThreshold) ||
+          clampedSpeed >= overSpeedingThreshold ||
+          lastPosition == null || lastUpdateTime == null
+        ) {
+          await _queueLocationData(position, reason);
+          lastPosition = position;
+          lastUpdateTime = now;
+        }
         // Update notification
         service.setForegroundNotificationInfo(
           title: "GPS Tracking Active",

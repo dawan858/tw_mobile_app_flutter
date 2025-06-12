@@ -9,18 +9,51 @@ import com.google.android.gms.location.*
 import android.util.Log
 import android.content.Context
 import android.location.Location
+import android.content.SharedPreferences
 
 class GpsTrackingService : Service() {
     private var fusedLocationClient: FusedLocationProviderClient? = null
     private var locationCallback: LocationCallback? = null
     private val CHANNEL_ID = "GpsTrackingChannel"
     private val NOTIFICATION_ID = 1
+    private var igStatus = 1 // Set to 1 when service starts
+    private var lastLocationUpdateTime: Long = 0
+    private var lastProcessedLocation: Location? = null
+    private var gpsTimer: Int = 5 // Default 5 seconds
+    private var uploadTimer: Int = 10 // Default 10 minutes
+    private var angleThreshold: Float = 45f // Default 45 degrees
+    private var overSpeedingThreshold: Float = 60f // Default 60 km/h
+    private var distanceThreshold: Float = 1000f // Default 1000 meters
+    private var movingTimer: Int = 60 // Default 60 seconds
+    private var stopTimer: Int = 130 // Default 130 seconds
+    private var lastLocation: Location? = null
+    private var lastUpdateTime: Long = 0
+    private var isMoving: Boolean = false
+    private var lastMovementTime: Long = 0
+    private var lastStopTime: Long = 0
 
     override fun onCreate() {
         super.onCreate()
+        loadConfiguration()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         setupLocationUpdates()
+    }
+
+    private fun loadConfiguration() {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            gpsTimer = prefs.getInt("flutter.gpsTimer", 5)
+            uploadTimer = prefs.getInt("flutter.uploadTimer", 10)
+            angleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
+            overSpeedingThreshold = prefs.getFloat("flutter.overSpeedingThreshold", 60f)
+            distanceThreshold = prefs.getFloat("flutter.distanceThreshold", 1000f)
+            movingTimer = prefs.getInt("flutter.movingTimer", 60)
+            stopTimer = prefs.getInt("flutter.stopTimer", 130)
+            Log.d("GpsTrackingService", "Configuration loaded successfully")
+        } catch (e: Exception) {
+            Log.e("GpsTrackingService", "Error loading configuration: ${e.message}")
+        }
     }
 
     private fun createNotificationChannel() {
@@ -51,24 +84,44 @@ class GpsTrackingService : Service() {
     }
 
     private fun setupLocationUpdates() {
+        Log.d("GpsTrackingService", "Setting up location updates with interval: $gpsTimer seconds")
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000)
-            .setMinUpdateIntervalMillis(5000)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, gpsTimer * 1000L)
+            .setMinUpdateIntervalMillis(gpsTimer * 1000L)
+            .setMaxUpdateDelayMillis(gpsTimer * 2000L)
             .build()
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
-                    // Send location to Flutter
-                    val intent = Intent("com.example.tracking_world.LOCATION_UPDATE")
-                    intent.putExtra("latitude", location.latitude)
-                    intent.putExtra("longitude", location.longitude)
-                    intent.putExtra("accuracy", location.accuracy)
-                    intent.putExtra("altitude", location.altitude)
-                    intent.putExtra("speed", location.speed)
-                    intent.putExtra("bearing", location.bearing)
-                    sendBroadcast(intent)
+                    val currentTime = System.currentTimeMillis()
+                    val timeSinceLastUpdate = currentTime - lastLocationUpdateTime
+                    val distance = lastLocation?.distanceTo(location) ?: 0f
+                    val speed = location.speed * 3.6f // Convert to km/h
+
+                    if (
+                        timeSinceLastUpdate >= gpsTimer * 1000L ||
+                        distance >= distanceThreshold ||
+                        speed >= overSpeedingThreshold
+                    ) {
+                        Log.d("GpsTrackingService", "Processing location update: ${location.latitude}, ${location.longitude}")
+                        val intent = Intent("com.example.tracking_world.LOCATION_UPDATE")
+                        intent.putExtra("latitude", location.latitude)
+                        intent.putExtra("longitude", location.longitude)
+                        intent.putExtra("accuracy", location.accuracy)
+                        intent.putExtra("altitude", location.altitude)
+                        intent.putExtra("speed", speed)
+                        intent.putExtra("bearing", location.bearing)
+                        intent.putExtra("igStatus", igStatus)
+                        // Add reason if needed
+                        sendBroadcast(intent)
+                        lastLocationUpdateTime = currentTime
+                        lastLocation = location
+                        Log.d("GpsTrackingService", "Location data processed. Next update in $gpsTimer seconds")
+                    } else {
+                        Log.d("GpsTrackingService", "Skipping location update - no trigger met (timer, distance, speed)")
+                    }
                 }
             }
         }
@@ -79,12 +132,24 @@ class GpsTrackingService : Service() {
                 locationCallback!!,
                 Looper.getMainLooper()
             )
+            Log.d("GpsTrackingService", "Location updates requested successfully")
         } catch (e: SecurityException) {
             Log.e("GpsTrackingService", "Error requesting location updates", e)
         }
     }
 
+    private fun shouldProcessLocation(location: Location): Boolean {
+        if (lastLocation == null) return true
+        
+        val distance = lastLocation!!.distanceTo(location)
+        val speed = location.speed * 3.6f // Convert to km/h
+        
+        return distance > 5 || speed > 1 || 
+               (System.currentTimeMillis() - lastLocationUpdateTime) >= gpsTimer * 1000L
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        igStatus = 1 // Ensure igStatus is 1 when service starts
         return START_STICKY
     }
 
@@ -94,8 +159,11 @@ class GpsTrackingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        locationCallback?.let { callback ->
-            fusedLocationClient?.removeLocationUpdates(callback)
+        try {
+            fusedLocationClient?.removeLocationUpdates(locationCallback!!)
+            Log.d("GpsTrackingService", "Location updates removed")
+        } catch (e: Exception) {
+            Log.e("GpsTrackingService", "Error removing location updates", e)
         }
     }
 } 

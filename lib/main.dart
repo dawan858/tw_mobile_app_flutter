@@ -13,9 +13,18 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'welcome.dart';
 import 'live_status_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'services/config_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Get IMEI and fetch configuration
+  final prefs = await SharedPreferences.getInstance();
+  final imei = prefs.getString('imei') ?? 'unknown';
+  
+  // Fetch configuration from server
+  final configService = ConfigService();
+  await configService.fetchConfigFromServer(imei);
   
   // Initialize background service
   await initializeService();
@@ -98,6 +107,12 @@ class _GPSTrackerState extends State<GPSTracker> {
     _checkAllPermissions();
     _getDeviceInfo();
     _saveImei();
+    _loadConfiguration();
+    
+    // Set igStatus to 1 when app starts
+    setState(() {
+      _igStatus = 1;
+    });
     
     // Listen for permission events from native side
     platform.setMethodCallHandler((call) async {
@@ -126,6 +141,8 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   @override
   void dispose() {
+    // Set igStatus to 0 when app is closed
+    _igStatus = 0;
     _positionStreamSubscription?.cancel();
     // Don't stop the service on dispose, let it run in background
     super.dispose();
@@ -265,7 +282,8 @@ class _GPSTrackerState extends State<GPSTracker> {
           _accuracy = position.accuracy;
           _altitude = position.altitude;
           _bearing = position.heading;
-          _speed = position.speed * 3.6;
+          double rawSpeed = position.speed * 3.6;
+          _speed = rawSpeed < 0 ? 0 : rawSpeed;
           _latitude = position.latitude;
           _longitude = position.longitude;
           
@@ -274,10 +292,36 @@ class _GPSTrackerState extends State<GPSTracker> {
           _gmtSettings = "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}";
           _time = DateTime.now().millisecondsSinceEpoch;
           _localPrimaryId = (_localPrimaryId + 1) % 100000;
+          
+          // Update reason based on movement
+          _updateReason(position);
         });
       }
     }, onError: (error) {
       debugPrint('Error getting location: $error');
+    });
+  }
+
+  void _updateReason(Position position) {
+    final prefs = SharedPreferences.getInstance();
+    prefs.then((prefs) {
+      final angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
+      final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
+      
+      if (position.speed * 3.6 > overSpeedingThreshold) {
+        _reason = "Over Speeding";
+      } else if (_currentPosition != null) {
+        final bearingChange = (_bearing - _currentPosition!.heading).abs();
+        final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
+        
+        if (position.speed * 3.6 >= 5 && normalizedBearingChange > angleThreshold) {
+          _reason = "Turn";
+        } else if (position.speed * 3.6 > 1) {
+          _reason = "Move";
+        } else {
+          _reason = "Idle";
+        }
+      }
     });
   }
 
@@ -407,6 +451,33 @@ class _GPSTrackerState extends State<GPSTracker> {
     final info = await PackageInfo.fromPlatform();
     setState(() {
       _appVersion = 'v${info.version}';
+    });
+  }
+
+  Future<void> _loadConfiguration() async {
+    final configService = ConfigService();
+    final config = await configService.getConfig();
+    
+    // Update tracking intervals based on configuration
+    if (mounted) {
+      setState(() {
+        // Update any UI elements that depend on configuration
+        _updateTrackingParameters(config);
+      });
+    }
+  }
+
+  void _updateTrackingParameters(Map<String, dynamic> config) {
+    // Update tracking parameters based on configuration
+    final prefs = SharedPreferences.getInstance();
+    prefs.then((prefs) {
+      prefs.setInt('flutter.gpsTimer', config['gpsTimer'] ?? 5);
+      prefs.setInt('flutter.uploadTimer', config['uploadTimer'] ?? 10);
+      prefs.setDouble('flutter.angleThreshold', config['angleThreshold'] ?? 45.0);
+      prefs.setDouble('flutter.overSpeedingThreshold', config['overSpeedingThreshold'] ?? 60.0);
+      prefs.setDouble('flutter.distanceThreshold', config['distanceThreshold'] ?? 1000.0);
+      prefs.setInt('flutter.movingTimer', config['movingTimer'] ?? 60);
+      prefs.setInt('flutter.stopTimer', config['stopTimer'] ?? 130);
     });
   }
 
