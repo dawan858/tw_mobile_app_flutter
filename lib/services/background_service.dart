@@ -103,8 +103,9 @@ void onStart(ServiceInstance service) async {
       return 'Initial Position';
     }
 
-    // Calculate speed in km/h
-    final speed = currentLocation.speed * 3.6;
+    // Calculate speed in km/h and clamp to zero if very small or negative
+    var speed = currentLocation.speed * 3.6;
+    if (speed < 0.5) speed = 0;
 
     // Calculate bearing change
     final bearingChange = (currentLocation.heading - lastPosition!.heading).abs();
@@ -119,7 +120,7 @@ void onStart(ServiceInstance service) async {
     );
 
     // Update movement status
-    if (speed > 1 || distance > 5) {
+    if (speed >= 1.0 || distance > 5) {
       if (!_isMoving) {
         _isMoving = true;
         _lastMovementTime = DateTime.now().millisecondsSinceEpoch;
@@ -131,8 +132,10 @@ void onStart(ServiceInstance service) async {
       }
     }
 
-    // Determine reason based on movement patterns and configuration
-    if (speed > overSpeedingThreshold) {
+    // If speed is less than 1.0, set reason to Idle
+    if (speed < 1.0) {
+      return 'Idle';
+    } else if (speed > overSpeedingThreshold) {
       return 'Over Speeding';
     } else if (!_isMoving) {
       return 'Idle';
@@ -204,9 +207,9 @@ Future<void> _queueLocationData(Position position, String reason) async {
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? 'unknown';
     
-    // Convert speed from m/s to km/h and ensure it's not negative
+    // Convert speed from m/s to km/h and ensure it's not negative or near zero
     var speed = position.speed * 3.6;
-    if (speed < 0) speed = 0;
+    if (speed < 0.5) speed = 0;
     
     final locationData = {
       'latitude': position.latitude,
