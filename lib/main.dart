@@ -330,11 +330,8 @@ class _GPSTrackerState extends State<GPSTracker> {
   void _updateReason(Position position) {
     final prefs = SharedPreferences.getInstance();
     prefs.then((prefs) {
-      final angleThresholdStr = prefs.getString('flutter.angleThreshold') ?? '45.0';
-      final overSpeedingThresholdStr = prefs.getString('flutter.overSpeedingThreshold') ?? '60.0';
-      
-      final angleThreshold = double.parse(angleThresholdStr);
-      final overSpeedingThreshold = double.parse(overSpeedingThresholdStr);
+      final angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
+      final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
       
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";

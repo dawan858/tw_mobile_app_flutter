@@ -74,12 +74,29 @@ class _PendingDataScreenState extends State<PendingDataScreen> {
                       final entry = data[index];
                       return ListTile(
                         title: Text(
-                          'Lat: ${entry['latitude']}, Lng: ${entry['longitude']}',
+                          'Location: ${entry['latitude']}, ${entry['longitude']}',
                           style: TextStyle(fontSize: itemFontSize, fontWeight: FontWeight.bold),
                         ),
-                        subtitle: Text(
-                          'Time: ${entry['timestamp'] ?? ''}\nIMEI: ${entry['imei'] ?? ''}',
-                          style: TextStyle(fontSize: itemFontSize * 0.9),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Time: ${entry['timestamp'] ?? ''}',
+                              style: TextStyle(fontSize: itemFontSize * 0.9),
+                            ),
+                            Text(
+                              'Speed: ${entry['speed']?.toStringAsFixed(1) ?? '0'} km/h',
+                              style: TextStyle(fontSize: itemFontSize * 0.9),
+                            ),
+                            Text(
+                              'Reason: ${entry['reason'] ?? ''}',
+                              style: TextStyle(fontSize: itemFontSize * 0.9),
+                            ),
+                            Text(
+                              'Device: ${entry['name'] ?? ''} (${entry['phoneNo'] ?? ''})',
+                              style: TextStyle(fontSize: itemFontSize * 0.9),
+                            ),
+                          ],
                         ),
                         trailing: Text(
                           'ID: ${entry['id']}',
