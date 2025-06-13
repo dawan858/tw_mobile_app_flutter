@@ -18,20 +18,46 @@ import 'services/config_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Get IMEI and fetch configuration
   final prefs = await SharedPreferences.getInstance();
-  final imei = prefs.getString('imei') ?? 'unknown';
-  
-  // Fetch configuration from server
   final configService = ConfigService();
-  await configService.fetchConfigFromServer(imei);
-  
+
   // Initialize background service
   await initializeService();
   
   // Start the service immediately
   final service = FlutterBackgroundService();
   await service.startService();
+
+  // Get IMEI and wait for it to be available
+  String? imei;
+  int retryCount = 0;
+  while (imei == null || imei == 'unknown') {
+    try {
+      imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
+      if (imei != null && imei.isNotEmpty) {
+        await prefs.setString('imei', imei);
+        break;
+      }
+    } catch (e) {
+      print('Error getting IMEI: $e');
+    }
+    retryCount++;
+    if (retryCount > 10) break; // Prevent infinite loop
+    await Future.delayed(const Duration(seconds: 1)); // Wait before retrying
+  }
+
+  if (imei != null && imei != 'unknown') {
+    // Fetch and store default config
+    final isConfigInitialized = prefs.getBool('flutter.isConfigInitialized') ?? false;
+    if (!isConfigInitialized) {
+      await configService.fetchDefaultConfigFromServer();
+      await configService.sendDefaultConfigToServer(imei);
+      await prefs.setBool('flutter.isConfigInitialized', true);
+    }
+    
+    // Fetch configuration from server
+    await configService.fetchConfigFromServer(imei);
+  }
   
   runApp(const MyApp());
 }
@@ -96,7 +122,6 @@ class _GPSTrackerState extends State<GPSTracker> {
   final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
   final ApiService _apiService = ApiService();
   
-  static const platform = MethodChannel('com.trackingWorld.tracking/device_info');
   static const serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
   static const MethodChannel satelliteChannel = MethodChannel('com.trackingWorld.tracking/satellite');
   
@@ -115,7 +140,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     });
     
     // Listen for permission events from native side
-    platform.setMethodCallHandler((call) async {
+    const MethodChannel('com.trackingWorld.tracking/device_info').setMethodCallHandler((call) async {
       switch (call.method) {
         case 'onPermissionGranted':
           // Permission was granted, try getting IMEI again
@@ -152,7 +177,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   Future<void> _getDeviceInfo() async {
     try {
       try {
-        final String? imei = await platform.invokeMethod('getImei');
+        final String? imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
         if (imei != null && imei.isNotEmpty) {
           setState(() {
             _imei = imei;
@@ -305,8 +330,11 @@ class _GPSTrackerState extends State<GPSTracker> {
   void _updateReason(Position position) {
     final prefs = SharedPreferences.getInstance();
     prefs.then((prefs) {
-      final angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
-      final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
+      final angleThresholdStr = prefs.getString('flutter.angleThreshold') ?? '45.0';
+      final overSpeedingThresholdStr = prefs.getString('flutter.overSpeedingThreshold') ?? '60.0';
+      
+      final angleThreshold = double.parse(angleThresholdStr);
+      final overSpeedingThreshold = double.parse(overSpeedingThresholdStr);
       
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";
@@ -423,7 +451,7 @@ class _GPSTrackerState extends State<GPSTracker> {
 
   Future<void> _saveImei() async {
     try {
-      final String? imei = await platform.invokeMethod('getImei');
+      final String? imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
       if (imei != null && imei.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('imei', imei);
@@ -471,13 +499,13 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Update tracking parameters based on configuration
     final prefs = SharedPreferences.getInstance();
     prefs.then((prefs) {
-      prefs.setInt('flutter.gpsTimer', config['gpsTimer'] ?? 5);
-      prefs.setInt('flutter.uploadTimer', config['uploadTimer'] ?? 10);
-      prefs.setDouble('flutter.angleThreshold', config['angleThreshold'] ?? 45.0);
-      prefs.setDouble('flutter.overSpeedingThreshold', config['overSpeedingThreshold'] ?? 60.0);
-      prefs.setDouble('flutter.distanceThreshold', config['distanceThreshold'] ?? 1000.0);
-      prefs.setInt('flutter.movingTimer', config['movingTimer'] ?? 60);
-      prefs.setInt('flutter.stopTimer', config['stopTimer'] ?? 130);
+      prefs.setInt('flutter.gpsTimer', int.parse(config['gpsTimer'] ?? '5'));
+      prefs.setInt('flutter.uploadTimer', int.parse(config['uploadTimer'] ?? '10'));
+      prefs.setDouble('flutter.angleThreshold', double.parse(config['angleThreshold'] ?? '45.0'));
+      prefs.setDouble('flutter.overSpeedingThreshold', double.parse(config['overSpeedingThreshold'] ?? '60.0'));
+      prefs.setDouble('flutter.distanceThreshold', double.parse(config['distanceThreshold'] ?? '1000.0'));
+      prefs.setInt('flutter.movingTimer', int.parse(config['movingTimer'] ?? '60'));
+      prefs.setInt('flutter.stopTimer', int.parse(config['stopTimer'] ?? '130'));
     });
   }
 

@@ -164,8 +164,8 @@ class BackgroundService : Service() {
             if (!isSyncing) {
                 syncData()
             }
-        }, uploadTimer.toLong(), uploadTimer.toLong(), TimeUnit.MINUTES)
-        Log.d("BackgroundService", "Sync interval updated to ${uploadTimer} minutes")
+        }, uploadTimer.toLong(), uploadTimer.toLong(), TimeUnit.SECONDS)
+        Log.d("BackgroundService", "Sync interval updated to ${uploadTimer} seconds")
     }
 
     override fun onCreate() {
@@ -184,7 +184,7 @@ class BackgroundService : Service() {
             if (!isSyncing) {
                 syncData()
             }
-        }, 5, 5, TimeUnit.MINUTES)
+        }, 5, 5, TimeUnit.SECONDS)
     }
 
     private fun syncData() {

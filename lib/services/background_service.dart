@@ -62,6 +62,7 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
+  await loadConfiguration(); // Load configuration before setting up location updates
 
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
@@ -90,32 +91,58 @@ void onStart(ServiceInstance service) async {
   const minBearingChange = 10.0; // Minimum bearing change to consider it a turn
   const minSpeedForMovement = 1.0; // Minimum speed in m/s to consider it movement
 
-  String calculateReason(Position current, Position? previous) {
-    if (previous == null) return 'Initial Position';
-    
-    // Calculate speed in m/s
-    final speed = current.speed;
-    
+  bool _isMoving = false;
+  int _lastMovementTime = 0;
+  int _lastStopTime = 0;
+  int stopTimer = 130; // Default 130 seconds
+  double overSpeedingThreshold = 60.0; // Default 60 km/h
+  double angleThreshold = 45.0; // Default 45 degrees
+
+  String calculateReason(Position currentLocation) {
+    if (lastPosition == null) {
+      return 'Initial Position';
+    }
+
+    // Calculate speed in km/h
+    final speed = currentLocation.speed * 3.6;
+
     // Calculate bearing change
-    final bearingChange = (current.heading - previous.heading).abs();
+    final bearingChange = (currentLocation.heading - lastPosition!.heading).abs();
     final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
-    
+
     // Calculate distance moved
     final distance = Geolocator.distanceBetween(
-      previous.latitude,
-      previous.longitude,
-      current.latitude,
-      current.longitude,
+      lastPosition!.latitude,
+      lastPosition!.longitude,
+      currentLocation.latitude,
+      currentLocation.longitude,
     );
 
-    // Determine reason based on movement patterns
-    if (speed < minSpeedForMovement && distance < minDistance) {
-      return 'Idle';
-    } else if (normalizedBearingChange > minBearingChange) {
-      return 'Turn';
+    // Update movement status
+    if (speed > 1 || distance > 5) {
+      if (!_isMoving) {
+        _isMoving = true;
+        _lastMovementTime = DateTime.now().millisecondsSinceEpoch;
+      }
+      _lastStopTime = DateTime.now().millisecondsSinceEpoch;
     } else {
+      if (_isMoving && (DateTime.now().millisecondsSinceEpoch - _lastStopTime) > stopTimer * 1000) {
+        _isMoving = false;
+      }
+    }
+
+    // Determine reason based on movement patterns and configuration
+    if (speed > overSpeedingThreshold) {
+      return 'Over Speeding';
+    } else if (!_isMoving) {
+      return 'Idle';
+    } else if (speed >= 5 && normalizedBearingChange > angleThreshold) {
+      return 'Turn';
+    } else if (_isMoving) {
       return 'Move';
     }
+    
+    return 'Idle'; // Default case
   }
 
   // Start periodic task for instant updates (every second)
@@ -127,12 +154,11 @@ void onStart(ServiceInstance service) async {
           desiredAccuracy: LocationAccuracy.bestForNavigation,
         );
         // Calculate reason for movement (for analytics/logging, not filtering)
-        final reason = calculateReason(position, lastPosition);
+        final reason = calculateReason(position);
         // Configuration checks
         final prefs = await SharedPreferences.getInstance();
         final gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
         final distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
-        final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
         final now = DateTime.now();
         final timeSinceLastUpdate = lastUpdateTime == null ? null : now.difference(lastUpdateTime!).inSeconds;
         final distance = lastPosition == null ? null : Geolocator.distanceBetween(
@@ -178,12 +204,16 @@ Future<void> _queueLocationData(Position position, String reason) async {
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? 'unknown';
     
+    // Convert speed from m/s to km/h and ensure it's not negative
+    var speed = position.speed * 3.6;
+    if (speed < 0) speed = 0;
+    
     final locationData = {
       'latitude': position.latitude,
       'longitude': position.longitude,
       'accuracy': position.accuracy,
       'altitude': position.altitude,
-      'speed': position.speed,
+      'speed': speed, // Now storing speed in km/h and ensuring non-negative
       'bearing': position.heading,
       'imei': imei,
       'timestamp': DateTime.now().toIso8601String(),
@@ -202,5 +232,34 @@ Future<void> _queueLocationData(Position position, String reason) async {
     await SyncService().queueLocationData(locationData);
   } catch (e) {
     print('Error queueing location data: $e');
+  }
+}
+
+// Configuration parameters with defaults
+int gpsTimer = 5; // Default 5 seconds
+int uploadTimer = 10; // Default 10 seconds
+double angleThreshold = 45.0; // Default 45 degrees
+double overSpeedingThreshold = 60.0; // Default 60 km/h
+double distanceThreshold = 1000.0; // Default 1000 meters
+int movingTimer = 60; // Default 60 seconds
+int stopTimer = 130; // Default 130 seconds
+
+// Load configuration from SharedPreferences
+Future<void> loadConfiguration() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Load configuration values with defaults
+    gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
+    uploadTimer = prefs.getInt('flutter.uploadTimer') ?? 10; // Now in seconds
+    angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
+    overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
+    distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
+    movingTimer = prefs.getInt('flutter.movingTimer') ?? 60;
+    stopTimer = prefs.getInt('flutter.stopTimer') ?? 130;
+
+    print('Configuration loaded successfully');
+  } catch (e) {
+    print('Error loading configuration: $e');
   }
 } 

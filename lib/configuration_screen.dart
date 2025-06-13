@@ -49,10 +49,14 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     setState(() => _isLoading = true);
     try {
       final config = await _configService.getConfig();
+      print('Loaded config: $config');
       
       // Initialize controllers with current values
       config.forEach((key, value) {
-        controllers[key] = TextEditingController(text: value.toString());
+        if (key != 'device' && key != 'createdAt' && key != 'updatedAt') {
+          print('Setting controller for $key with value: $value');
+          controllers[key] = TextEditingController(text: value.toString());
+        }
       });
       
       setState(() => _isLoading = false);
