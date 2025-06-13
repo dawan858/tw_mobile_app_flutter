@@ -1,73 +1,90 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-<uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="28"/>
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.WAKE_LOCK" />
-<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-<uses-permission android:name="android.permission.RESTART_PACKAGES" />
-<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-
+    <uses-permission
+        android:name="android.permission.READ_PHONE_STATE"
+        android:maxSdkVersion="28"/>
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission
+        android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission
+        android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission
+        android:name="android.permission.INTERNET"/>
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission
+        android:name="android.permission.RESTART_PACKAGES"/>
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <application
         android:label="tracking_world"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
-        
         <receiver
             android:name=".IgnitionReceiver"
             android:enabled="true"
             android:exported="true"
             android:directBootAware="true"
             android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.POWER_CONNECTED"/>
-                <action android:name="android.intent.action.POWER_DISCONNECTED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
-                <category android:name="android.intent.category.DEFAULT"/>
+            <intent-filter
+                android:priority="999">
+                <action
+                    android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action
+                    android:name="android.intent.action.POWER_CONNECTED"/>
+                <action
+                    android:name="android.intent.action.POWER_DISCONNECTED"/>
+                <action
+                    android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action
+                    android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                <category
+                    android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </receiver>
-
         <service
             android:name="com.dexterous.flutterlocalnotifications.ForegroundService"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="location" />
-            
+            android:foregroundServiceType="location"/>
         <service
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationService"
-            android:exported="false" />
-            
+            android:exported="false"/>
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
-            android:exported="false" />
-            
+            android:exported="false"/>
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                <action
+                    android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action
+                    android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action
+                    android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action
+                    android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
             </intent-filter>
         </receiver>
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@style/LaunchTheme"
-            android:screenOrientation="landscape"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
@@ -76,41 +93,42 @@
                  while the Flutter UI initializes. After that, this theme continues
                  to determine the Window background behind the Flutter UI. -->
             <meta-data
-              android:name="io.flutter.embedding.android.NormalTheme"
-              android:resource="@style/NormalTheme"
-              />
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-
         <service
             android:name=".BackgroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location"
-            android:stopWithTask="false" />
-
+            android:stopWithTask="false"/>
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="true"
             android:directBootAware="true"
             android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
-                <category android:name="android.intent.category.DEFAULT"/>
+            <intent-filter
+                android:priority="999">
+                <action
+                    android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action
+                    android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action
+                    android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                <category
+                    android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </receiver>
-
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
-            android:value="2" />
+            android:value="2"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -119,8 +137,10 @@
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
         <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT"/>
-            <data android:mimeType="text/plain"/>
+            <action
+                android:name="android.intent.action.PROCESS_TEXT"/>
+            <data
+                android:mimeType="text/plain"/>
         </intent>
     </queries>
 </manifest>
