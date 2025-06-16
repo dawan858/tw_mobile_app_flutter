@@ -111,7 +111,21 @@ class BackgroundService : Service() {
         }
     }
 
-    private fun loadConfiguration() {
+   
+
+    override fun onCreate() {
+        super.onCreate()
+        Log.d("BackgroundService", "Service created")
+        dbHelper = LocationDatabaseHelper(this)
+        acquireWakeLock()
+        createNotificationChannel()
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        loadConfiguration() // Load configuration before setting up location updates
+        setupLocationUpdates()
+        startPeriodicSync()
+    }
+
+     private fun loadConfiguration() {
         try {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             
@@ -125,7 +139,10 @@ class BackgroundService : Service() {
             stopTimer = prefs.getInt("flutter.stopTimer", 130)
 
             // Update intervals based on configuration
+           // updateLocationRequestInterval()
+           if (::fusedLocationClient.isInitialized) {
             updateLocationRequestInterval()
+        }
             updateSyncInterval()
             
             Log.d("BackgroundService", "Configuration loaded successfully")
@@ -136,6 +153,18 @@ class BackgroundService : Service() {
 
     private fun updateLocationRequestInterval() {
         try {
+
+            if (!::fusedLocationClient.isInitialized) {
+            Log.w("BackgroundService", "fusedLocationClient not initialized yet")
+            return
+        }
+        
+        // Check if locationCallback is initialized
+        if (!::locationCallback.isInitialized) {
+            Log.w("BackgroundService", "locationCallback not initialized yet")
+            return
+        }
+
             fusedLocationClient.removeLocationUpdates(locationCallback)
             val locationRequest = LocationRequest.create().apply {
                 priority = LocationRequest.PRIORITY_HIGH_ACCURACY
@@ -166,17 +195,6 @@ class BackgroundService : Service() {
             }
         }, uploadTimer.toLong(), uploadTimer.toLong(), TimeUnit.SECONDS)
         Log.d("BackgroundService", "Sync interval updated to ${uploadTimer} seconds")
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        Log.d("BackgroundService", "Service created")
-        dbHelper = LocationDatabaseHelper(this)
-        acquireWakeLock()
-        createNotificationChannel()
-        loadConfiguration() // Load configuration before setting up location updates
-        setupLocationUpdates()
-        startPeriodicSync()
     }
 
     private fun startPeriodicSync() {

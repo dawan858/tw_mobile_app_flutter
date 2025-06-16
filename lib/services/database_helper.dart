@@ -116,4 +116,20 @@ class DatabaseHelper {
       'created_at': DateTime.now().millisecondsSinceEpoch,
     });
   }
+
+  Future<bool> locationEntryExists(Map<String, dynamic> data) async {
+    final db = await database;
+    final result = await db.query(
+      'location_data',
+      where: 'latitude = ? AND longitude = ? AND timestamp = ? AND provider = ?',
+      whereArgs: [
+        data['latitude'],
+        data['longitude'],
+        data['timestamp'],
+        data['provider'],
+      ],
+      limit: 1,
+    );
+    return result.isNotEmpty;
+  }
 } 

@@ -77,7 +77,14 @@ class SyncService {
   }
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
-    await _dbHelper.insertLocationData(data);
-    _startSync(); // Try to sync immediately
+    // Check if entry already exists (from background service)
+    final exists = await _dbHelper.locationEntryExists(data);
+    if (!exists) {
+      await _dbHelper.insertLocationData(data);
+      _startSync(); // Try to sync immediately
+    } else {
+      // Optionally log or handle duplicate
+      print('Duplicate location entry detected, skipping insert.');
+    }
   }
 } 
