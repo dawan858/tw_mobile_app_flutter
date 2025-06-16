@@ -1,267 +1,3 @@
-// import 'dart:async';
-// import 'dart:ui';
-// import 'package:flutter_background_service/flutter_background_service.dart';
-// import 'package:flutter_background_service_android/flutter_background_service_android.dart';
-// import 'package:geolocator/geolocator.dart';
-// import 'package:shared_preferences/shared_preferences.dart';
-// import 'package:http/http.dart' as http;
-// import 'dart:convert';
-// import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-// import 'package:device_info_plus/device_info_plus.dart';
-// import 'package:intl/intl.dart';
-// import 'sync_service.dart';
-
-// @pragma('vm:entry-point')
-// Future<void> initializeService() async {
-//   final service = FlutterBackgroundService();
-//   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
-//   final syncService = SyncService();
-
-//   // Initialize notification channel
-//   const AndroidNotificationChannel channel = AndroidNotificationChannel(
-//     'tracking_service',
-//     'GPS Tracking Service',
-//     description: 'This channel is used for GPS tracking notifications',
-//     importance: Importance.high,
-//     enableVibration: false,
-//     playSound: false,
-//   );
-
-//   await flutterLocalNotificationsPlugin
-//       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-//       ?.createNotificationChannel(channel);
-
-//   await service.configure(
-//     androidConfiguration: AndroidConfiguration(
-//       onStart: onStart,
-//       autoStart: true,
-//       autoStartOnBoot: true,
-//       isForegroundMode: true,
-//       notificationChannelId: 'tracking_service',
-//       initialNotificationTitle: 'GPS Tracking',
-//       initialNotificationContent: 'Initializing...',
-//       foregroundServiceNotificationId: 888,
-//     ),
-//     iosConfiguration: IosConfiguration(
-//       autoStart: false,
-//       onForeground: onStart,
-//       onBackground: onIosBackground,
-//     ),
-//   );
-
-//   // Start the service immediately
-//   await service.startService();
-//   await syncService.startPeriodicSync();
-// }
-
-// @pragma('vm:entry-point')
-// Future<bool> onIosBackground(ServiceInstance service) async {
-//   return true;
-// }
-
-// @pragma('vm:entry-point')
-// void onStart(ServiceInstance service) async {
-//   DartPluginRegistrant.ensureInitialized();
-//   await loadConfiguration(); // Load configuration before setting up location updates
-
-//   if (service is AndroidServiceInstance) {
-//     service.on('setAsForeground').listen((event) {
-//       service.setAsForegroundService();
-//     });
-
-//     service.on('setAsBackground').listen((event) {
-//       service.setAsBackgroundService();
-//     });
-//   }
-
-//   service.on('stopService').listen((event) {
-//     service.stopSelf();
-//   });
-
-//   // Initialize location settings
-//   const LocationSettings locationSettings = LocationSettings(
-//     accuracy: LocationAccuracy.bestForNavigation,
-//   );
-
-//   // Get last known position
-//   Position? lastPosition;
-//   DateTime? lastUpdateTime;
-//   const minUpdateInterval = Duration(seconds: 3);
-//   const minDistance = 5.0;
-//   const minBearingChange = 10.0; // Minimum bearing change to consider it a turn
-//   const minSpeedForMovement = 1.0; // Minimum speed in m/s to consider it movement
-
-//   bool _isMoving = false;
-//   int _lastMovementTime = 0;
-//   int _lastStopTime = 0;
-//   int stopTimer = 130; // Default 130 seconds
-//   double overSpeedingThreshold = 60.0; // Default 60 km/h
-//   double angleThreshold = 45.0; // Default 45 degrees
-
-//   String calculateReason(Position currentLocation) {
-//     if (lastPosition == null) {
-//       return 'Initial Position';
-//     }
-
-//     var speed = currentLocation.speed * 3.6;
-//     if (speed < 1.0) speed = 0; // Clamp to 0 if less than 1.0 km/h
-
-//     final bearingChange = (currentLocation.heading - lastPosition!.heading).abs();
-//     final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
-//     final distance = Geolocator.distanceBetween(
-//       lastPosition!.latitude,
-//       lastPosition!.longitude,
-//       currentLocation.latitude,
-//       currentLocation.longitude,
-//     );
-
-//     // Update movement status
-//     if (speed >= 1.0 || distance > 5) {
-//       if (!_isMoving) {
-//         _isMoving = true;
-//         _lastMovementTime = DateTime.now().millisecondsSinceEpoch;
-//       }
-//       _lastStopTime = DateTime.now().millisecondsSinceEpoch;
-//     } else {
-//       if (_isMoving && (DateTime.now().millisecondsSinceEpoch - _lastStopTime) > stopTimer * 1000) {
-//         _isMoving = false;
-//       }
-//     }
-
-//     if (speed == 0) {
-//       return 'Idle';
-//     }
-//     if (speed > overSpeedingThreshold) {
-//       return 'Over Speeding';
-//     }
-//     if (speed >= 5 && normalizedBearingChange > angleThreshold) {
-//       return 'Turn';
-//     }
-//     if (_isMoving) {
-//       return 'Move';
-//     }
-//     return 'Idle';
-//   }
-
-//   // Start periodic task for instant updates (every second)
-//   Timer.periodic(const Duration(seconds: 1), (timer) async {
-//     if (service is AndroidServiceInstance) {
-//       try {
-//         // Get current position
-//         final position = await Geolocator.getCurrentPosition(
-//           desiredAccuracy: LocationAccuracy.bestForNavigation,
-//         );
-//         // Calculate reason for movement (for analytics/logging, not filtering)
-//         final reason = calculateReason(position);
-//         // Configuration checks
-//         final prefs = await SharedPreferences.getInstance();
-//         final gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
-//         final distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
-//         final now = DateTime.now();
-//         final timeSinceLastUpdate = lastUpdateTime == null ? null : now.difference(lastUpdateTime!).inSeconds;
-//         final distance = lastPosition == null ? null : Geolocator.distanceBetween(
-//           lastPosition!.latitude, lastPosition!.longitude,
-//           position.latitude, position.longitude,
-//         );
-//         final speed = position.speed * 3.6; // m/s to km/h
-//         final clampedSpeed = speed < 0 ? 0 : speed;
-//         if (
-//           (timeSinceLastUpdate != null && timeSinceLastUpdate >= gpsTimer) ||
-//           (distance != null && distance >= distanceThreshold) ||
-//           clampedSpeed >= overSpeedingThreshold ||
-//           lastPosition == null || lastUpdateTime == null
-//         ) {
-//           await _queueLocationData(position, reason);
-//           lastPosition = position;
-//           lastUpdateTime = now;
-//         }
-//         // Update notification
-//         service.setForegroundNotificationInfo(
-//           title: "GPS Tracking Active",
-//           content: "Last update: ${lastUpdateTime?.toString() ?? 'Never'}",
-//         );
-//       } catch (e) {
-//         print('Error in background service: $e');
-//         // Try to restart the service if it fails
-//         if (service is AndroidServiceInstance) {
-//           service.setForegroundNotificationInfo(
-//             title: "GPS Tracking Error",
-//             content: "Attempting to restart...",
-//           );
-//           // Wait a bit before restarting
-//           await Future.delayed(const Duration(seconds: 5));
-//           service.setAsForegroundService();
-//         }
-//       }
-//     }
-//   });
-// }
-
-// Future<void> _queueLocationData(Position position, String reason) async {
-//   try {
-//     final prefs = await SharedPreferences.getInstance();
-//     final imei = prefs.getString('imei') ?? 'unknown';
-    
-//     // Convert speed from m/s to km/h and ensure it's not negative or near zero
-//     var speed = position.speed * 3.6;
-//     if (speed < 1.0) speed = 0; // Clamp to 0 if less than 1.0 km/h
-    
-//     final locationData = {
-//       'latitude': position.latitude,
-//       'longitude': position.longitude,
-//       'accuracy': position.accuracy,
-//       'altitude': position.altitude,
-//       'speed': speed, // Use the clamped value
-//       'bearing': position.heading,
-//       'imei': imei,
-//       'timestamp': DateTime.now().toIso8601String(),
-//       'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
-//       'gmtSettings': "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}",
-//       'igStatus': 1,
-//       'localPrimaryId': DateTime.now().millisecondsSinceEpoch % 100000,
-//       'name': (await DeviceInfoPlugin().androidInfo).model,
-//       'phoneNo': (await DeviceInfoPlugin().androidInfo).serialNumber,
-//       'provider': 'fused',
-//       'reason': reason,
-//       'versionNo': 'v ${(await DeviceInfoPlugin().androidInfo).version.release}',
-//     };
-
-//     // Queue the data for sync
-//     await SyncService().queueLocationData(locationData);
-//   } catch (e) {
-//     print('Error queueing location data: $e');
-//   }
-// }
-
-// // Configuration parameters with defaults
-// int gpsTimer = 5; // Default 5 seconds
-// int uploadTimer = 10; // Default 10 seconds
-// double angleThreshold = 45.0; // Default 45 degrees
-// double overSpeedingThreshold = 60.0; // Default 60 km/h
-// double distanceThreshold = 1000.0; // Default 1000 meters
-// int movingTimer = 60; // Default 60 seconds
-// int stopTimer = 130; // Default 130 seconds
-
-// // Load configuration from SharedPreferences
-// Future<void> loadConfiguration() async {
-//   try {
-//     final prefs = await SharedPreferences.getInstance();
-    
-//     // Load configuration values with defaults
-//     gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
-//     uploadTimer = prefs.getInt('flutter.uploadTimer') ?? 10; // Now in seconds
-//     angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
-//     overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
-//     distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
-//     movingTimer = prefs.getInt('flutter.movingTimer') ?? 60;
-//     stopTimer = prefs.getInt('flutter.stopTimer') ?? 130;
-
-//     print('Configuration loaded successfully');
-//   } catch (e) {
-//     print('Error loading configuration: $e');
-//   }
-// } 
-
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -273,6 +9,7 @@ import 'dart:convert';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:intl/intl.dart';
+import 'package:tracking_world/services/database_helper.dart';
 import 'dart:math';
 import 'sync_service.dart';
 
@@ -335,8 +72,10 @@ int stopTimer = 130; // Default 130 seconds
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  print('=== FLUTTER BACKGROUND SERVICE STARTED ===');
+  
   DartPluginRegistrant.ensureInitialized();
-  await loadConfiguration(); // Load configuration before setting up location updates
+  await loadConfiguration();
 
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
@@ -357,16 +96,29 @@ void onStart(ServiceInstance service) async {
     accuracy: LocationAccuracy.bestForNavigation,
   );
 
-  // Get last known position
+  // Enhanced position tracking variables
   Position? lastPosition;
   DateTime? lastUpdateTime;
   bool _isMoving = false;
   int _lastMovementTime = 0;
   int _lastStopTime = 0;
+  
+  // Enhanced stationary detection
+  List<Position> recentPositions = [];
+  final int positionBufferSize = 5;
+  int consecutiveStationaryCount = 0;
 
-  // Calculate speed from distance and time (more accurate than GPS speed for slow movements)
+  // Add position to buffer for analysis
+  void addPositionToBuffer(Position position) {
+    recentPositions.add(position);
+    if (recentPositions.length > positionBufferSize) {
+      recentPositions.removeAt(0);
+    }
+  }
+
+  // Calculate speed from distance and time
   double calculateSpeedFromDistance(Position current, Position? previous) {
-    if (previous == null) return 0.0;
+    if (previous == null || current.timestamp == null || previous.timestamp == null) return 0.0;
     
     final distance = Geolocator.distanceBetween(
       previous.latitude, previous.longitude,
@@ -380,8 +132,49 @@ void onStart(ServiceInstance service) async {
     return (distance / timeDiff) * 3.6; // Convert m/s to km/h
   }
 
-  // Get accurate speed using both GPS and calculated methods
-  double getAccurateSpeed(Position position, Position? previousPosition) {
+  // Calculate position stability over time
+  double calculatePositionStability() {
+    if (recentPositions.length < 3) return 0.0;
+    
+    // Calculate average position
+    double avgLat = recentPositions.map((p) => p.latitude).reduce((a, b) => a + b) / recentPositions.length;
+    double avgLng = recentPositions.map((p) => p.longitude).reduce((a, b) => a + b) / recentPositions.length;
+    
+    // Calculate variance
+    double variance = 0.0;
+    for (var pos in recentPositions) {
+      double dist = Geolocator.distanceBetween(avgLat, avgLng, pos.latitude, pos.longitude);
+      variance += dist * dist;
+    }
+    variance /= recentPositions.length;
+    
+    double stability = 1.0 / (1.0 + variance / 100.0); // Normalize to 0-1
+    return stability;
+  }
+
+  // Check if device is stationary based on recent positions
+  bool isDeviceStationary() {
+    if (recentPositions.length < 3) return false;
+    
+    // Check if all recent positions are within 15 meters
+    double maxDistance = 0.0;
+    for (int i = 0; i < recentPositions.length - 1; i++) {
+      for (int j = i + 1; j < recentPositions.length; j++) {
+        double dist = Geolocator.distanceBetween(
+          recentPositions[i].latitude, recentPositions[i].longitude,
+          recentPositions[j].latitude, recentPositions[j].longitude,
+        );
+        if (dist > maxDistance) maxDistance = dist;
+      }
+    }
+    
+    return maxDistance < 15.0;
+  }
+
+  // Enhanced speed calculation with comprehensive stationary detection
+  double getEnhancedAccurateSpeed(Position position, Position? previousPosition) {
+    addPositionToBuffer(position);
+    
     // Method 1: GPS speed (may be unreliable at low speeds)
     double gpsSpeed = position.speed * 3.6; // Convert m/s to km/h
     if (gpsSpeed < 0) gpsSpeed = 0;
@@ -389,23 +182,65 @@ void onStart(ServiceInstance service) async {
     // Method 2: Calculate speed from distance/time
     double calculatedSpeed = calculateSpeedFromDistance(position, previousPosition);
     
-    // Filter out GPS noise - if both speeds are very low, consider it stationary
-    if (gpsSpeed < 3.0 && calculatedSpeed < 3.0) {
-      return 0.0; // Device is likely stationary, GPS noise
+    // Method 3: Analyze position stability over time
+    double stabilityScore = calculatePositionStability();
+    bool isStationary = isDeviceStationary();
+    
+    print('Enhanced Speed Analysis:');
+    print('  GPS: ${gpsSpeed.toStringAsFixed(1)} km/h');
+    print('  Calculated: ${calculatedSpeed.toStringAsFixed(1)} km/h');
+    print('  Accuracy: ${position.accuracy.toStringAsFixed(1)}m');
+    print('  Stability: ${(stabilityScore * 100).toStringAsFixed(1)}%');
+    print('  Stationary: $isStationary');
+    
+    // Enhanced stationary detection
+    if (isStationary) {
+      consecutiveStationaryCount++;
+      if (consecutiveStationaryCount >= 3) {
+        print('Device confirmed stationary ($consecutiveStationaryCount consecutive readings)');
+        return 0.0;
+      }
+    } else {
+      consecutiveStationaryCount = 0;
     }
     
-    // Use GPS speed if it's reasonable (> 3 km/h), otherwise use calculated speed
-    if (gpsSpeed >= 3.0 && gpsSpeed < 200.0) {
-      return gpsSpeed;
-    } else if (calculatedSpeed >= 3.0) {
-      return calculatedSpeed;
-    } else {
+    // Filter unrealistic speeds (GPS errors)
+    if (gpsSpeed > 100.0 || calculatedSpeed > 100.0) {
+      print('Filtering unrealistic speed -> 0 km/h (likely GPS error)');
       return 0.0;
     }
+    
+    // Accuracy-based filtering
+    if (position.accuracy > 25.0) {
+      // Poor accuracy - be very conservative
+      if (gpsSpeed < 8.0 && calculatedSpeed < 8.0 && stabilityScore < 0.3) {
+        return 0.0;
+      }
+    } else {
+      // Good accuracy - normal filtering
+      if (gpsSpeed < 5.0 && calculatedSpeed < 5.0 && stabilityScore < 0.5) {
+        return 0.0;
+      }
+    }
+    
+    // Return the most reliable speed
+    double finalSpeed = 0.0;
+    
+    // Use average if both speeds indicate movement
+    if (gpsSpeed >= 5.0 && calculatedSpeed >= 5.0) {
+      finalSpeed = (gpsSpeed + calculatedSpeed) / 2.0; // Average of both
+    } else if (gpsSpeed >= 8.0) {
+      finalSpeed = gpsSpeed;
+    } else if (calculatedSpeed >= 8.0) {
+      finalSpeed = calculatedSpeed;
+    }
+    
+    print('  Final: ${finalSpeed.toStringAsFixed(1)} km/h');
+    return finalSpeed;
   }
 
-  // Calculate reason for movement (matching Kotlin logic)
-  String calculateReason(Position currentLocation, Position? lastPosition, double accurateSpeed) {
+  // Enhanced reason calculation with better stationary detection
+  String calculateEnhancedReason(Position currentLocation, Position? lastPosition, double accurateSpeed) {
     if (lastPosition == null) {
       return 'Initial Position';
     }
@@ -425,34 +260,36 @@ void onStart(ServiceInstance service) async {
       currentLocation.longitude,
     );
 
-    // Enhanced movement detection - require significant movement to be considered "moving"
-    final isSignificantMovement = accurateSpeed >= 3.0 || // Speed threshold increased
-                                 (distance > 10 && accurateSpeed > 1.0); // Distance + minimal speed
+    // Enhanced movement detection with stricter criteria
+    final isSignificantMovement = accurateSpeed >= 8.0 || // Higher speed threshold
+                                 (distance > 20 && accurateSpeed > 3.0); // Larger distance + speed combo
 
     // Update movement status with stricter criteria
     if (isSignificantMovement) {
       if (!_isMoving) {
         _isMoving = true;
         _lastMovementTime = DateTime.now().millisecondsSinceEpoch;
+        print('Movement detected: Speed ${accurateSpeed.toStringAsFixed(1)} km/h, Distance ${distance.toStringAsFixed(1)}m');
       }
       _lastStopTime = DateTime.now().millisecondsSinceEpoch;
     } else {
-      // More aggressive stop detection - shorter timer for stationary detection
-      if (_isMoving && (DateTime.now().millisecondsSinceEpoch - _lastStopTime) > 30000) { // 30 seconds instead of stopTimer
+      // Faster transition to idle state (15 seconds instead of 30)
+      if (_isMoving && (DateTime.now().millisecondsSinceEpoch - _lastStopTime) > 15000) {
         _isMoving = false;
+        print('Movement stopped - transitioning to idle');
       }
     }
 
-    // Determine reason based on movement patterns
+    // Determine reason with conservative thresholds
     if (accurateSpeed > overSpeedingThreshold) {
       return 'Over Speeding';
-    } else if (accurateSpeed < 2.0) { // If speed is very low, always consider idle
+    } else if (accurateSpeed < 3.0) { // Very low speeds are always idle
       return 'Idle';
     } else if (!_isMoving) {
       return 'Idle';
-    } else if (accurateSpeed >= 5 && bearingChange > angleThreshold) {
+    } else if (accurateSpeed >= 10 && bearingChange > angleThreshold) {
       return 'Turn';
-    } else if (_isMoving && accurateSpeed >= 3.0) { // Only "Move" if actually moving at reasonable speed
+    } else if (_isMoving && accurateSpeed >= 8.0) { // Only "Move" if actually moving at reasonable speed
       return 'Move';
     } else {
       return 'Idle';
@@ -473,10 +310,30 @@ void onStart(ServiceInstance service) async {
     return timeSinceLastUpdate >= gpsTimer ||
            distance >= distanceThreshold ||
            accurateSpeed >= overSpeedingThreshold ||
-           (accurateSpeed >= 3.0 && distance > 10); // Only process if actually moving with reasonable speed/distance
+           (accurateSpeed >= 8.0 && distance > 15); // Significant movement only
   }
 
-  // Start periodic task based on GPS timer (not every second)
+  // Debug database state
+  Future<void> debugDatabaseState() async {
+    try {
+      final dbHelper = DatabaseHelper();
+      final stats = await dbHelper.getDatabaseStats();
+      
+      print('=== DATABASE DEBUG INFO ===');
+      print('Total records: ${stats['totalRecords']}');
+      print('Unsynced records: ${stats['unsyncedRecords']}');
+      print('Synced records: ${stats['syncedRecords']}');
+      print('Database size: ${stats['databaseSizeMB']} MB');
+      
+    } catch (e) {
+      print('Error debugging database: $e');
+    }
+  }
+
+  // Debug database at startup
+  await debugDatabaseState();
+
+  // Start periodic task based on GPS timer with enhanced processing
   Timer.periodic(Duration(seconds: gpsTimer), (timer) async {
     if (service is AndroidServiceInstance) {
       try {
@@ -485,51 +342,46 @@ void onStart(ServiceInstance service) async {
           desiredAccuracy: LocationAccuracy.bestForNavigation,
         );
 
-        // Skip if accuracy is too poor
-        if (position.accuracy > 50) {
-          print('Skipping inaccurate location: accuracy = ${position.accuracy}');
+        // Enhanced accuracy filtering
+        if (position.accuracy > 30) {
+          print('Skipping very inaccurate location: accuracy = ${position.accuracy}m');
           return;
         }
 
-        // Get accurate speed
-        final accurateSpeed = getAccurateSpeed(position, lastPosition);
+        // Get enhanced speed with comprehensive filtering
+        final accurateSpeed = getEnhancedAccurateSpeed(position, lastPosition);
         
-        // Calculate reason for movement
-        final reason = calculateReason(position, lastPosition, accurateSpeed);
-        
-        // Log speed information for debugging
-        final gpsSpeed = position.speed * 3.6;
-        final calculatedSpeed = calculateSpeedFromDistance(position, lastPosition);
-        print('Speed Info - GPS: ${gpsSpeed.toStringAsFixed(1)} km/h, '
-              'Calculated: ${calculatedSpeed.toStringAsFixed(1)} km/h, '
-              'Final: ${accurateSpeed.toStringAsFixed(1)} km/h, '
-              'Reason: $reason');
+        // Calculate reason with enhanced detection
+        final reason = calculateEnhancedReason(position, lastPosition, accurateSpeed);
 
         // Check if we should process this location update
         if (shouldProcessLocationUpdate(position, lastPosition, lastUpdateTime, accurateSpeed)) {
-          print('Processing location update: ${position.latitude.toStringAsFixed(6)}, '
-                '${position.longitude.toStringAsFixed(6)}, '
-                'Speed: ${accurateSpeed.toStringAsFixed(1)} km/h');
+          print('=== PROCESSING LOCATION UPDATE ===');
+          print('Location: ${position.latitude.toStringAsFixed(6)}, '
+                '${position.longitude.toStringAsFixed(6)}');
+          print('Speed: ${accurateSpeed.toStringAsFixed(1)} km/h, Reason: $reason');
 
-          // Create position with corrected speed for saving
+          // Queue location data with enhanced speed
           await _queueLocationData(position, reason, accurateSpeed);
           lastPosition = position;
           lastUpdateTime = DateTime.now();
 
-          // Update notification with speed info
+          // Update notification with enhanced info
           service.setForegroundNotificationInfo(
             title: "GPS Tracking Active",
             content: "Speed: ${accurateSpeed.toStringAsFixed(1)} km/h\n"
+                    "Accuracy: ${position.accuracy.toStringAsFixed(1)}m\n"
                     "Location: ${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}\n"
                     "Reason: $reason",
           );
         } else {
-          print('Skipping location update - no trigger met');
+          print('Skipping location update - no significant change detected');
           
           // Still update notification to show we're active
           service.setForegroundNotificationInfo(
             title: "GPS Tracking Active",
-            content: "Monitoring... Speed: ${accurateSpeed.toStringAsFixed(1)} km/h",
+            content: "Monitoring... Speed: ${accurateSpeed.toStringAsFixed(1)} km/h\n"
+                    "Accuracy: ${position.accuracy.toStringAsFixed(1)}m",
           );
         }
 
@@ -548,6 +400,8 @@ void onStart(ServiceInstance service) async {
 
 Future<void> _queueLocationData(Position position, String reason, double accurateSpeed) async {
   try {
+    print('=== QUEUING LOCATION DATA ===');
+    
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? 'unknown';
     
@@ -559,7 +413,7 @@ Future<void> _queueLocationData(Position position, String reason, double accurat
       'longitude': position.longitude,
       'accuracy': position.accuracy,
       'altitude': position.altitude,
-      'speed': speedToSave, // Use accurate speed
+      'speed': speedToSave, // Use enhanced accurate speed
       'bearing': position.heading ?? 0.0, // Handle null heading
       'imei': imei,
       'timestamp': DateTime.now().toIso8601String(),
@@ -574,11 +428,18 @@ Future<void> _queueLocationData(Position position, String reason, double accurat
       'versionNo': 'v ${(await DeviceInfoPlugin().androidInfo).version.release}',
     };
 
+    print('Enhanced location data:');
+    print('Lat: ${locationData['latitude']}, Lng: ${locationData['longitude']}');
+    print('Speed: ${locationData['speed']}, Reason: ${locationData['reason']}');
+    print('Accuracy: ${position.accuracy.toStringAsFixed(1)}m');
+
     // Queue the data for sync
     await SyncService().queueLocationData(locationData);
-    print('Location data queued successfully with speed: ${speedToSave.toStringAsFixed(1)} km/h');
+    print('Location data queued successfully with enhanced speed: ${speedToSave.toStringAsFixed(1)} km/h');
+    
   } catch (e) {
     print('Error queueing location data: $e');
+    print('Stack trace: ${StackTrace.current}');
   }
 }
 
@@ -596,7 +457,9 @@ Future<void> loadConfiguration() async {
     movingTimer = prefs.getInt('flutter.movingTimer') ?? 60;
     stopTimer = prefs.getInt('flutter.stopTimer') ?? 130;
 
-    print('Configuration loaded successfully - GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
+    print('Enhanced configuration loaded:');
+    print('GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
+    print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
   } catch (e) {
     print('Error loading configuration: $e');
   }
