@@ -138,12 +138,12 @@ class SyncService {
         return;
       }
 
-      // Start car power monitoring
-      await _carPowerService.startMonitoring();
+      // // Start car power monitoring
+      // await _carPowerService.startMonitoring();
 
-      // Get initial ACC state
-      final initialAccState = await _carPowerService.getCurrentAccState();
-      await _updateIgStatus(initialAccState ? 1 : 0);
+      // // Get initial ACC state
+      // final initialAccState = await _carPowerService.getCurrentAccState();
+      // await _updateIgStatus(initialAccState ? 1 : 0);
 
       final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
       if (unsyncedData.isEmpty) {

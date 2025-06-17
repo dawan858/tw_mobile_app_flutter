@@ -33,6 +33,7 @@ class MainActivity: FlutterActivity() {
     private var autoStartTracking = false
     private var startedBy = ""
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
+    private val CAR_POWER_CHANNEL = "com.trackingWorld.tracking/car_power"
     private var carPowerPlugin: CarPowerPlugin? = null
 
     private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -54,8 +55,13 @@ class MainActivity: FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         this.flutterEngine = flutterEngine
         
-        // Initialize Car Power Plugin
-        carPowerPlugin = CarPowerPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
+         // IMPORTANT: Initialize Car Power Plugin FIRST
+        try {
+            carPowerPlugin = CarPowerPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
+            Log.d("MainActivity", "Car Power Plugin initialized successfully")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to initialize Car Power Plugin", e)
+        }
         
         // IMEI Channel - IMEI ONLY, NO FALLBACKS
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL).setMethodCallHandler { call, result ->
@@ -99,30 +105,15 @@ class MainActivity: FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startService" -> {
-                    try {
-                        val serviceIntent = Intent(this, BackgroundService::class.java)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            startForegroundService(serviceIntent)
-                        } else {
-                            startService(serviceIntent)
-                        }
-                        result.success(true)
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Error starting service", e)
-                        result.error("SERVICE_ERROR", "Failed to start service", e.message)
-                    }
+                    startTrackingService()
+                    result.success(true)
                 }
                 "stopService" -> {
-                    try {
-                        stopService(Intent(this, BackgroundService::class.java))
-                        result.success(true)
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Error stopping service", e)
-                        result.error("SERVICE_ERROR", "Failed to stop service", e.message)
-                    }
+                    stopTrackingService()
+                    result.success(true)
                 }
                 "isServiceRunning" -> {
-                    result.success(isServiceRunning(BackgroundService::class.java))
+                    result.success(isServiceRunning())
                 }
                 else -> result.notImplemented()
             }
@@ -131,13 +122,8 @@ class MainActivity: FlutterActivity() {
         // Satellite Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SATELLITE_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
-                "getSatelliteData" -> {
-                    val totalSatellites = BackgroundService.totalSatellites
-                    val connectedSatellites = BackgroundService.connectedSatellites
-                    result.success(mapOf(
-                        "totalSatellites" to totalSatellites,
-                        "connectedSatellites" to connectedSatellites
-                    ))
+                "getSatelliteCount" -> {
+                    getSatelliteCount(result)
                 }
                 else -> result.notImplemented()
             }
@@ -385,10 +371,10 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+    private fun isServiceRunning(): Boolean {
         val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
-            if (serviceClass.name == service.service.className) {
+            if (BackgroundService::class.java.name == service.service.className) {
                 return true
             }
         }
@@ -412,12 +398,7 @@ class MainActivity: FlutterActivity() {
         
         // Start the background service immediately
         try {
-            val serviceIntent = Intent(this, BackgroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+            startTrackingService()
             Log.d("MainActivity", "Background service started")
         } catch (e: Exception) {
             Log.e("MainActivity", "Error starting background service", e)
@@ -484,5 +465,27 @@ class MainActivity: FlutterActivity() {
         if (autoStartTracking) {
             Log.d("MainActivity", "App started by ignition: $startedBy")
         }
+    }
+
+    private fun startTrackingService() {
+        val serviceIntent = Intent(this, BackgroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    private fun stopTrackingService() {
+        stopService(Intent(this, BackgroundService::class.java))
+    }
+
+    private fun getSatelliteCount(result: MethodChannel.Result) {
+        val totalSatellites = BackgroundService.totalSatellites
+        val connectedSatellites = BackgroundService.connectedSatellites
+        result.success(mapOf(
+            "totalSatellites" to totalSatellites,
+            "connectedSatellites" to connectedSatellites
+        ))
     }
 }

@@ -1,51 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     package="com.trackingWorld.tracking.tracking_world">
 
+    <!-- CRITICAL PERMISSIONS FOR AUTO-START -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.QUICKBOOT_POWERON" />
+    
     <!-- Location Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-
-    <!-- Phone State Permission for IMEI -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <uses-permission android:name="android.permission.READ_PRIVILEGED_PHONE_STATE" />
     
     <!-- Foreground Service Permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     
-    <!-- Network Permissions -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <!-- AUTO-START CRITICAL PERMISSIONS -->
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.QUICKBOOT_POWERON" />
-    <uses-permission android:name="android.permission.REBOOT" />
-    
-    <!-- Wake Lock and Power Management -->
+    <!-- Power Management -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.PARTIAL_WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     
-    <!-- Auto-start Permissions -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <!-- Phone State for IMEI -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    
+    <!-- Network -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="tracking_world"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
-        android:requestLegacyExternalStorage="true"
         android:allowBackup="false"
-        android:killAfterRestore="false"
-        android:restoreAnyVersion="true"
-        tools:targetApi="31">
+        android:killAfterRestore="false">
 
-        <!-- Main Activity with AUTO-START INTENT FILTERS -->
+        <!-- Main Activity -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -53,162 +42,86 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize"
-            android:enabled="true"
-            android:directBootAware="true">
+            android:windowSoftInputMode="adjustResize">
             
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
                 
-            <!-- MAIN LAUNCHER INTENT -->
-            <intent-filter android:priority="1000">
+            <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            
-            <!-- AUTO-START INTENT FILTERS - CRITICAL FOR DEAD APP STARTUP -->
-            <intent-filter android:priority="1000">
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.POWER_CONNECTED" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="package" />
-            </intent-filter>
         </activity>
 
-        <!-- CRITICAL: Background Location Service -->
+        <!-- CRITICAL: Background Service -->
         <service
             android:name=".BackgroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location"
-            android:stopWithTask="false"
-            android:directBootAware="true">
-            
-            <!-- Service can be started by system -->
-            <intent-filter android:priority="1000">
-                <action android:name="com.trackingWorld.tracking.START_BACKGROUND_SERVICE" />
-            </intent-filter>
-        </service>
+            android:stopWithTask="false" />
 
-        <!-- GPS Tracking Service -->
-        <service
-            android:name=".GpsTrackingService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="location"
-            android:stopWithTask="false"
-            android:directBootAware="true">
-        </service>
-
-        <!-- CRITICAL: Boot Receiver with HIGH PRIORITY -->
+        <!-- CRITICAL: Boot Receiver with MAXIMUM PRIORITY -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="true"
-            android:directBootAware="true">
+            android:directBootAware="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
             
-            <!-- MAXIMUM PRIORITY BOOT INTENTS -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             
-            <!-- QUICKBOOT INTENTS -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             
-            <!-- PACKAGE REPLACEMENT INTENTS -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.PACKAGE_RESTARTED" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="package" />
             </intent-filter>
             
-            <!-- POWER INTENTS -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.POWER_CONNECTED" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 
-        <!-- Service Verification Receiver -->
-        <receiver
-            android:name=".ServiceVerificationReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.trackingWorld.tracking.VERIFY_SERVICE" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Ignition Receiver -->
+        <!-- Ignition Receiver (Keep this from your working version) -->
         <receiver
             android:name=".IgnitionReceiver"
             android:enabled="true"
-            android:exported="true">
-            <intent-filter android:priority="1000">
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.POWER_CONNECTED" />
                 <action android:name="android.intent.action.POWER_DISCONNECTED" />
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 
-        <!-- Service Restart Receiver -->
-        <receiver
-            android:name=".ServiceRestartReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.trackingWorld.tracking.RESTART_SERVICE" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Flutter Background Service with conflict resolution -->
-        <service
-            android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:exported="false"
-            android:foregroundServiceType="location"
-            android:stopWithTask="false"
-            tools:replace="android:exported" />
-
-        <!-- Don't delete the meta-data below -->
+        <!-- Flutter embedding metadata -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-            
-        <!-- Background execution whitelist -->
-        <meta-data
-            android:name="firebase_performance_logcat_enabled"
-            android:value="true" />
     </application>
 
-    <!-- Query for installed launchers and other system apps -->
+    <!-- Queries for system interactions -->
     <queries>
         <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="sms" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="tel" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
         </intent>
     </queries>
 </manifest>

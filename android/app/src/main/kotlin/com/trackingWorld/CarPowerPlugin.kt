@@ -6,43 +6,85 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.BinaryMessenger
+import android.util.Log
 
 class CarPowerPlugin(
     private val context: Context,
-    messenger: BinaryMessenger
+    private val messenger: BinaryMessenger
 ) : MethodCallHandler {
-    private val channel = MethodChannel(messenger, CHANNEL_NAME)
     private val carPowerManager = CarPowerManager(context)
+    private val channel = MethodChannel(messenger, CHANNEL_NAME)
 
     init {
+        Log.d(TAG, "CarPowerPlugin initialized")
         channel.setMethodCallHandler(this)
+        
+        // Initialize car power manager
         carPowerManager.initialize()
+        
+        // Set up callback to send updates to Flutter
+        carPowerManager.setAccStateCallback { isAccOn ->
+            Log.d(TAG, "Sending ACC state to Flutter: $isAccOn")
+            try {
+                channel.invokeMethod("onAccStateChanged", isAccOn)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending ACC state to Flutter", e)
+            }
+        }
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
+        Log.d(TAG, "Method called: ${call.method}")
+        
         when (call.method) {
             "getCurrentAccState" -> {
-                result.success(carPowerManager.getCurrentAccState())
+                try {
+                    val accState = carPowerManager.getCurrentAccState()
+                    Log.d(TAG, "Returning current ACC state: $accState")
+                    result.success(accState)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error getting current ACC state", e)
+                    result.error("GET_STATE_ERROR", "Failed to get ACC state", e.message)
+                }
             }
             "startMonitoring" -> {
-                carPowerManager.connect()
-                result.success(null)
+                try {
+                    carPowerManager.connect()
+                    Log.d(TAG, "Started ACC monitoring")
+                    result.success(true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error starting monitoring", e)
+                    result.error("START_ERROR", "Failed to start monitoring", e.message)
+                }
             }
             "stopMonitoring" -> {
-                carPowerManager.disconnect()
-                result.success(null)
+                try {
+                    carPowerManager.disconnect()
+                    Log.d(TAG, "Stopped ACC monitoring")
+                    result.success(true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error stopping monitoring", e)
+                    result.error("STOP_ERROR", "Failed to stop monitoring", e.message)
+                }
             }
             else -> {
+                Log.w(TAG, "Method not implemented: ${call.method}")
                 result.notImplemented()
             }
         }
     }
 
-    fun sendAccStateUpdate(isAccOn: Boolean) {
-        channel.invokeMethod("onAccStateChanged", isAccOn)
+    fun cleanup() {
+        try {
+            carPowerManager.cleanup()
+            Log.d(TAG, "CarPowerPlugin cleaned up")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during cleanup", e)
+        }
     }
 
     companion object {
-        private const val CHANNEL_NAME = "com.trackingWorld/car_power"
+        private const val TAG = "CarPowerPlugin"
+        private const val CHANNEL_NAME = "com.trackingWorld.tracking/car_power"
     }
-} 
+}

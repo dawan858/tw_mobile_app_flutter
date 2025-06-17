@@ -207,13 +207,75 @@ class BackgroundService : Service() {
         
         Log.d(TAG, "✅ Service initialization completed")
 
+            initializeCarPowerDirectly()
+
+    }
+
+    private fun initializeCarPowerDirectly() {
+    try {
+        Log.d(TAG, "=== INITIALIZING CAR POWER DIRECTLY ===")
+        
         carPowerManager = CarPowerManager(this)
         carPowerManager.setAccStateCallback { isAccOn ->
-            igStatus = if (isAccOn) 1 else 0
-            Log.d(TAG, "ACC state changed, igStatus updated to: $igStatus")
+            val newIgStatus = if (isAccOn) 1 else 0
+            
+            // Only update if state actually changed
+            if (newIgStatus != igStatus) {
+                val oldStatus = igStatus
+                igStatus = newIgStatus
+                Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus (isAccOn: $isAccOn)")
+                
+                // Update existing unsynced records with new igStatus
+                updateIgStatus(newIgStatus)
+                
+                // Update notification with ACC state
+                updateNotificationWithAccState(isAccOn)
+            } else {
+                Log.d(TAG, "🚗 ACC state unchanged: $igStatus")
+            }
         }
+        
         carPowerManager.initialize()
+        Log.d(TAG, "✅ CarPowerManager initialized successfully in service")
+        
+        // Get initial ACC state
+        val initialState = carPowerManager.getCurrentAccState()
+        igStatus = if (initialState) 1 else 0
+        Log.d(TAG, "🚗 Initial ACC state: $igStatus")
+        
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ Failed to initialize CarPowerManager in service: ${e.message}")
+        // Continue without car power management - set default ACC state
+        igStatus = 1 // Default to ACC ON if car power management fails
+        Log.w(TAG, "⚠️ Using default ACC state: $igStatus")
     }
+}
+
+private fun updateNotificationWithAccState(isAccOn: Boolean) {
+    try {
+        val accText = if (isAccOn) "ACC: ON" else "ACC: OFF"
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("GPS Tracking Active")
+            .setContentText("$accText | Satellites: $connectedSatellites/$totalSatellites")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                "$accText\n" +
+                "Satellites: $connectedSatellites/$totalSatellites\n" +
+                "Status: ${if (connectedSatellites > 0) "GPS Lock" else "Searching..."}\n" +
+                "Service: Active"
+            ))
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    } catch (e: Exception) {
+        Log.e(TAG, "Error updating notification with ACC state: ${e.message}")
+    }
+}
 
     private fun validateImeiPeriodically() {
         try {
@@ -1120,6 +1182,19 @@ class BackgroundService : Service() {
         scheduleMultipleRestarts()
         
         super.onDestroy()
+
+         // Try to restart the service (like your original)
+        try {
+            val intent = Intent(applicationContext, BackgroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.d(TAG, "✅ Service restart attempted")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Service restart failed: ${e.message}")
+        }
     }
 
     private fun scheduleMultipleRestarts() {
@@ -1204,5 +1279,27 @@ class BackgroundService : Service() {
         } else {
             startService(serviceIntent)
         }
+    }
+
+    private fun updateIgStatus(newStatus: Int) {
+        try {
+        val db = dbHelper.writableDatabase
+        val values = ContentValues().apply {
+            put("igStatus", newStatus)
+        }
+        
+        val updatedRows = db.update(
+            "location_data", 
+            values, 
+            "sync_status = ? AND igStatus != ?", 
+            arrayOf("0", newStatus.toString())
+        )
+        
+        if (updatedRows > 0) {
+            Log.d(TAG, "Updated igStatus to $newStatus for $updatedRows unsynced records")
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Error updating igStatus in database: ${e.message}")
+    }
     }
 }
