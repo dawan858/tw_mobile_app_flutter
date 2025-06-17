@@ -16,6 +16,29 @@ class CarPowerManager(private val context: Context) {
     private var lastValidState = false
     private var stateChangeCount = 0
     private var lastStateChangeTime = 0L
+    private var sleepStateCallback: ((Boolean) -> Unit)? = null
+    private var isSleeping = false
+    private var igStatus = 0 // Initialize to 0 (ACC off)
+
+    companion object {
+        private const val TAG = "CarPowerManager"
+        private const val STATE_SUSPEND_ENTER = 1
+        private const val STATE_SUSPEND_EXIT = 2
+        private const val STATE_SHUTDOWN_ENTER = 3
+        private const val STATE_SHUTDOWN_EXIT = 4
+    }
+
+    fun setSleepStateCallback(callback: (Boolean) -> Unit) {
+        sleepStateCallback = callback
+    }
+
+    fun getCurrentSleepState(): Boolean {
+        return isSleeping
+    }
+
+    fun getCurrentIgStatus(): Int {
+        return igStatus
+    }
 
     fun initialize() {
         try {
@@ -47,32 +70,49 @@ class CarPowerManager(private val context: Context) {
     private fun setupPowerStateListener() {
         powerStateListener = object : CarPowerManager.CarPowerStateListener {
             override fun onPowerStateChanged(state: Int) {
-                Log.d(TAG, "Raw power state received: $state")
+                Log.d(TAG, "Power state changed: $state")
                 
-                // Filter out rapid fluctuations
-                val currentTime = System.currentTimeMillis()
-                if (currentTime - lastStateChangeTime < 2000) { // Ignore changes within 2 seconds
-                    stateChangeCount++
-                    if (stateChangeCount > 3) {
-                        Log.d(TAG, "Ignoring rapid state changes, count: $stateChangeCount")
-                        return
+                when (state) {
+                    STATE_SUSPEND_ENTER -> {
+                        Log.d(TAG, "Entering sleep state")
+                        isSleeping = true
+                        sleepStateCallback?.invoke(true)
                     }
-                } else {
-                    stateChangeCount = 0
+                    STATE_SUSPEND_EXIT -> {
+                        Log.d(TAG, "Exiting sleep state")
+                        isSleeping = false
+                        sleepStateCallback?.invoke(false)
+                    }
+                    STATE_SHUTDOWN_ENTER -> {
+                        Log.d(TAG, "Entering deep sleep state")
+                        isSleeping = true
+                        sleepStateCallback?.invoke(true)
+                    }
+                    STATE_SHUTDOWN_EXIT -> {
+                        Log.d(TAG, "Exiting deep sleep state")
+                        isSleeping = false
+                        sleepStateCallback?.invoke(false)
+                    }
                 }
-                lastStateChangeTime = currentTime
-                
+
+                // Handle ACC state and update igStatus
                 val isAccOn = interpretPowerState(state)
-                
-                // Only notify if state actually changed
                 if (isAccOn != currentAccState) {
+                    val oldStatus = igStatus
+                    igStatus = if (isAccOn) 1 else 0
                     currentAccState = isAccOn
                     lastValidState = isAccOn
                     
-                    Log.d(TAG, "ACC state changed: $isAccOn (from state: $state)")
+                    Log.d(TAG, "ACC state changed from $oldStatus to $igStatus")
                     accStateCallback?.invoke(isAccOn)
                 }
             }
+        }
+        try {
+            carPowerManager?.registerPowerStateListener(powerStateListener)
+            Log.d(TAG, "Power state listener registered")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register power state listener", e)
         }
     }
 
@@ -90,52 +130,36 @@ class CarPowerManager(private val context: Context) {
         }
     }
 
+    fun getCurrentAccState(): Boolean {
+        return currentAccState
+    }
+
     fun setAccStateCallback(callback: (Boolean) -> Unit) {
         accStateCallback = callback
     }
 
     fun connect() {
-        try {
-            carPowerManager?.let { manager ->
-                if (!isConnected) {
-                    powerStateListener?.let { listener ->
-                        manager.registerPowerStateListener(listener)
-                        isConnected = true
-                        Log.d(TAG, "Connected to car power state monitoring")
-                    }
-                }
+        if (!isConnected) {
+            try {
+                car?.connect()
+                isConnected = true
+                Log.d(TAG, "Connected to car power manager")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to connect to car power manager", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to connect to car power state monitoring", e)
         }
     }
 
     fun disconnect() {
-        try {
-            carPowerManager?.let { manager ->
-                if (isConnected) {
-                    powerStateListener?.let { listener ->
-                        manager.unregisterPowerStateListener(listener)
-                        isConnected = false
-                        Log.d(TAG, "Disconnected from car power state monitoring")
-                    }
-                }
+        if (isConnected) {
+            try {
+                carPowerManager?.unregisterPowerStateListener(powerStateListener)
+                car?.disconnect()
+                isConnected = false
+                Log.d(TAG, "Disconnected from car power manager")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to disconnect from car power manager", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to disconnect from car power state monitoring", e)
-        }
-    }
-
-    fun getCurrentAccState(): Boolean {
-        return try {
-            val rawState = carPowerManager?.powerState ?: 0
-            val accState = interpretPowerState(rawState)
-            currentAccState = accState
-            Log.d(TAG, "Current ACC state: $accState (raw: $rawState)")
-            accState
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get current ACC state", e)
-            currentAccState
         }
     }
 
@@ -146,9 +170,5 @@ class CarPowerManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error during cleanup", e)
         }
-    }
-
-    companion object {
-        private const val TAG = "CarPowerManager"
     }
 }

@@ -15,6 +15,11 @@ class CarPowerPlugin(
     private val carPowerManager = CarPowerManager(context)
     private val channel = MethodChannel(messenger, CHANNEL_NAME)
 
+    companion object {
+        private const val TAG = "CarPowerPlugin"
+        private const val CHANNEL_NAME = "com.trackingWorld.tracking/car_power"
+    }
+
     init {
         Log.d(TAG, "CarPowerPlugin initialized")
         channel.setMethodCallHandler(this)
@@ -29,6 +34,16 @@ class CarPowerPlugin(
                 channel.invokeMethod("onAccStateChanged", isAccOn)
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending ACC state to Flutter", e)
+            }
+        }
+
+        // Set up sleep state callback
+        carPowerManager.setSleepStateCallback { isSleeping ->
+            Log.d(TAG, "Sending sleep state to Flutter: $isSleeping")
+            try {
+                channel.invokeMethod("onSleepStateChanged", isSleeping)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending sleep state to Flutter", e)
             }
         }
     }
@@ -67,6 +82,12 @@ class CarPowerPlugin(
                     result.error("STOP_ERROR", "Failed to stop monitoring", e.message)
                 }
             }
+            "getAccState" -> {
+                result.success(carPowerManager.getCurrentAccState())
+            }
+            "getSleepState" -> {
+                result.success(carPowerManager.getCurrentSleepState())
+            }
             else -> {
                 Log.w(TAG, "Method not implemented: ${call.method}")
                 result.notImplemented()
@@ -81,10 +102,5 @@ class CarPowerPlugin(
         } catch (e: Exception) {
             Log.e(TAG, "Error during cleanup", e)
         }
-    }
-
-    companion object {
-        private const val TAG = "CarPowerPlugin"
-        private const val CHANNEL_NAME = "com.trackingWorld.tracking/car_power"
     }
 }

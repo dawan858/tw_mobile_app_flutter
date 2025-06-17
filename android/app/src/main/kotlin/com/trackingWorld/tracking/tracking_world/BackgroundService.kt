@@ -203,6 +203,21 @@ class BackgroundService : Service() {
                     updateNotificationWithAccState(isAccOn)
                 }
             }
+
+            // Add sleep state handling
+            carPowerManager.setSleepStateCallback { isSleeping ->
+                Log.d(TAG, "Sleep state changed: $isSleeping")
+                if (isSleeping) {
+                    // Entering sleep/deep sleep
+                    stopLocationUpdates()
+                    releaseWakeLock()
+                } else {
+                    // Exiting sleep/deep sleep
+                    acquireWakeLock()
+                    startLocationUpdates()
+                }
+            }
+            
             carPowerManager.initialize()
             
             // CRITICAL: Ensure IMEI is available
@@ -685,12 +700,27 @@ class BackgroundService : Service() {
     }
 
     private fun acquireWakeLock() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "TrackingWorld::LocationServiceWakeLock"
-        ).apply {
-            acquire(10*60*1000L /*10 minutes*/)
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TrackingWorld::LocationServiceWakeLock"
+            )
+            wakeLock?.acquire(10*60*1000L /*10 minutes*/)
+            Log.d(TAG, "Wake lock acquired")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error acquiring wake lock", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "Wake lock released")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing wake lock", e)
         }
     }
 
@@ -1125,7 +1155,7 @@ class BackgroundService : Service() {
             fusedLocationClient.removeLocationUpdates(locationCallback)
             
             // Release wake lock safely
-            wakeLock?.release()
+            releaseWakeLock()
             
             // Unregister receiver
             unregisterReceiver(restartReceiver)
@@ -1241,5 +1271,16 @@ class BackgroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .build()
+    }
+
+    private fun stopLocationUpdates() {
+        try {
+            if (locationCallback != null) {
+                fusedLocationClient?.removeLocationUpdates(locationCallback!!)
+                Log.d(TAG, "Location updates stopped")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping location updates", e)
+        }
     }
 }
