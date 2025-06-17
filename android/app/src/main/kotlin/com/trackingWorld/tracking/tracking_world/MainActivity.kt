@@ -43,6 +43,7 @@ class MainActivity: FlutterActivity() {
     private val REQUEST_CODE_ENABLE_ADMIN = 1
     private lateinit var devicePolicyManager: DevicePolicyManager
     private lateinit var adminComponent: ComponentName
+    private lateinit var networkStateReceiver: NetworkStateReceiver
 
     private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         arrayOf(
@@ -447,6 +448,10 @@ class MainActivity: FlutterActivity() {
         super.onCreate(savedInstanceState)
         Log.d("MainActivity", "MainActivity created")
 
+        // Initialize NetworkStateReceiver
+        networkStateReceiver = NetworkStateReceiver()
+        networkStateReceiver.registerNetworkCallback(this)
+
         checkAndRequestPermissions()
         handleIntent(intent)
         
@@ -465,6 +470,11 @@ class MainActivity: FlutterActivity() {
         if (!isBatteryOptimizationDisabled()) {
             Log.w("MainActivity", "Battery optimization is enabled - app may be killed")
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        networkStateReceiver.unregisterNetworkCallback()
     }
 
     // IMEI ONLY - NO FALLBACKS OR EMERGENCY IDs
