@@ -19,6 +19,7 @@ import android.provider.Settings
 import android.os.PowerManager
 import android.annotation.SuppressLint
 import java.util.*
+import com.trackingWorld.CarPowerPlugin
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.trackingWorld.tracking/launch"
@@ -32,6 +33,7 @@ class MainActivity: FlutterActivity() {
     private var autoStartTracking = false
     private var startedBy = ""
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
+    private var carPowerPlugin: CarPowerPlugin? = null
 
     private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         arrayOf(
@@ -51,6 +53,9 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         this.flutterEngine = flutterEngine
+        
+        // Initialize Car Power Plugin
+        carPowerPlugin = CarPowerPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
         
         // IMEI Channel - IMEI ONLY, NO FALLBACKS
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL).setMethodCallHandler { call, result ->

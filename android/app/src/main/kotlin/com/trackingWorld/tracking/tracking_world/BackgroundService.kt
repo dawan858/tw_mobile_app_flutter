@@ -35,6 +35,7 @@ import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import kotlin.math.abs
 import kotlin.math.sqrt
+import com.trackingWorld.CarPowerManager
 
 class BackgroundService : Service() {
     companion object {
@@ -44,6 +45,7 @@ class BackgroundService : Service() {
         var connectedSatellites: Int = 0
         
         private const val ACTION_RESTART_SERVICE = "com.trackingWorld.tracking.RESTART_SERVICE"
+        private const val TAG = "BackgroundService"
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -86,11 +88,14 @@ class BackgroundService : Service() {
     private val restartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_RESTART_SERVICE) {
-                Log.d("BackgroundService", "Received restart broadcast")
+                Log.d(TAG, "Received restart broadcast")
                 startLocationUpdates()
             }
         }
     }
+
+    private var igStatus = 0 // Initialize to 0 (ACC off)
+    private lateinit var carPowerManager: CarPowerManager
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 3) {
         override fun onCreate(db: SQLiteDatabase) {
@@ -130,7 +135,7 @@ class BackgroundService : Service() {
                     db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_status ON location_data(sync_status)")
                     db.execSQL("CREATE INDEX IF NOT EXISTS idx_created_at ON location_data(created_at)")
                 } catch (e: Exception) {
-                    Log.e("BackgroundService", "Error creating indexes: ${e.message}")
+                    Log.e(TAG, "Error creating indexes: ${e.message}")
                 }
             }
         }
@@ -155,76 +160,81 @@ class BackgroundService : Service() {
                         )
                     """, arrayOf(recordsToDelete))
                     
-                    Log.d("BackgroundService", "Deleted $recordsToDelete old synced records to maintain 1000 record limit")
+                    Log.d(TAG, "Deleted $recordsToDelete old synced records to maintain 1000 record limit")
                 }
             } catch (e: Exception) {
-                Log.e("BackgroundService", "Error maintaining record limit: ${e.message}")
+                Log.e(TAG, "Error maintaining record limit: ${e.message}")
             }
         }
     }
 
     override fun onCreate() {
-    super.onCreate()
-    Log.d("BackgroundService", "=== BACKGROUND SERVICE CREATED ===")
-    Log.d("BackgroundService", "Process ID: ${android.os.Process.myPid()}")
-    Log.d("BackgroundService", "Thread: ${Thread.currentThread().name}")
-    
-    // Initialize components
-    dbHelper = LocationDatabaseHelper(this)
-    acquireWakeLock()
-    createNotificationChannel()
-    fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-    
-    // CRITICAL: Ensure IMEI is available
-    ensureImeiAvailable()
-    
-    // Register restart receiver
-    val filter = IntentFilter(ACTION_RESTART_SERVICE)
-    registerReceiver(restartReceiver, filter)
-    
-    loadConfiguration()
-    setupLocationUpdates()
-    startPeriodicSync()
-    
-    // Perform initial health check
-    verifyServiceHealth()
-    
-    // Schedule periodic health checks
-    val handler = android.os.Handler(Looper.getMainLooper())
-    handler.post(object : Runnable {
-        override fun run() {
-            logServiceStatus()
-            validateImeiPeriodically()
-            verifyServiceHealth()
-            handler.postDelayed(this, 30000) // Every 30 seconds
-        }
-    })
-    
-    Log.d("BackgroundService", "✅ Service initialization completed")
-}
+        super.onCreate()
+        Log.d(TAG, "=== BACKGROUND SERVICE CREATED ===")
+        Log.d(TAG, "Process ID: ${android.os.Process.myPid()}")
+        Log.d(TAG, "Thread: ${Thread.currentThread().name}")
+        
+        // Initialize components
+        dbHelper = LocationDatabaseHelper(this)
+        acquireWakeLock()
+        createNotificationChannel()
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        
+        // CRITICAL: Ensure IMEI is available
+        ensureImeiAvailable()
+        
+        // Register restart receiver
+        val filter = IntentFilter(ACTION_RESTART_SERVICE)
+        registerReceiver(restartReceiver, filter)
+        
+        loadConfiguration()
+        setupLocationUpdates()
+        startPeriodicSync()
+        
+        // Perform initial health check
+        verifyServiceHealth()
+        
+        // Schedule periodic health checks
+        val handler = android.os.Handler(Looper.getMainLooper())
+        handler.post(object : Runnable {
+            override fun run() {
+                logServiceStatus()
+                validateImeiPeriodically()
+                verifyServiceHealth()
+                handler.postDelayed(this, 30000) // Every 30 seconds
+            }
+        })
+        
+        Log.d(TAG, "✅ Service initialization completed")
 
-   
-
-private fun validateImeiPeriodically() {
-    try {
-        val currentImei = getImei()
-        
-        // Log IMEI status
-        Log.d("BackgroundService", "Periodic IMEI check: $currentImei")
-        
-        // If IMEI is invalid, try to refresh
-        if (currentImei == "unknown" || currentImei.isEmpty()) {
-            Log.w("BackgroundService", "Invalid IMEI detected during periodic check, attempting refresh...")
-            
-            val imeiManager = ImeiManager.getInstance(this)
-            val refreshedImei = imeiManager.validateAndRefreshImei()
-            Log.d("BackgroundService", "Periodic refresh result: $refreshedImei")
+        carPowerManager = CarPowerManager(this)
+        carPowerManager.setAccStateCallback { isAccOn ->
+            igStatus = if (isAccOn) 1 else 0
+            Log.d(TAG, "ACC state changed, igStatus updated to: $igStatus")
         }
-        
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "Error in periodic IMEI validation: ${e.message}")
+        carPowerManager.initialize()
     }
-}
+
+    private fun validateImeiPeriodically() {
+        try {
+            val currentImei = getImei()
+            
+            // Log IMEI status
+            Log.d(TAG, "Periodic IMEI check: $currentImei")
+            
+            // If IMEI is invalid, try to refresh
+            if (currentImei == "unknown" || currentImei.isEmpty()) {
+                Log.w(TAG, "Invalid IMEI detected during periodic check, attempting refresh...")
+                
+                val imeiManager = ImeiManager.getInstance(this)
+                val refreshedImei = imeiManager.validateAndRefreshImei()
+                Log.d(TAG, "Periodic refresh result: $refreshedImei")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in periodic IMEI validation: ${e.message}")
+        }
+    }
 
     private fun loadConfiguration() {
         try {
@@ -243,16 +253,16 @@ private fun validateImeiPeriodically() {
             }
             updateSyncInterval()
             
-            Log.d("BackgroundService", "Configuration loaded successfully")
+            Log.d(TAG, "Configuration loaded successfully")
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error loading configuration: ${e.message}")
+            Log.e(TAG, "Error loading configuration: ${e.message}")
         }
     }
 
     private fun updateLocationRequestInterval() {
         try {
             if (!::fusedLocationClient.isInitialized || !::locationCallback.isInitialized) {
-                Log.w("BackgroundService", "Location components not initialized yet")
+                Log.w(TAG, "Location components not initialized yet")
                 return
             }
 
@@ -271,10 +281,10 @@ private fun validateImeiPeriodically() {
                     locationCallback,
                     Looper.getMainLooper()
                 )
-                Log.d("BackgroundService", "Location updates interval updated to ${gpsTimer} seconds")
+                Log.d(TAG, "Location updates interval updated to ${gpsTimer} seconds")
             }
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error updating location request interval: ${e.message}")
+            Log.e(TAG, "Error updating location request interval: ${e.message}")
         }
     }
 
@@ -286,7 +296,7 @@ private fun validateImeiPeriodically() {
                 syncData()
             }
         }, uploadTimer.toLong(), uploadTimer.toLong(), TimeUnit.SECONDS)
-        Log.d("BackgroundService", "Sync interval updated to ${uploadTimer} seconds")
+        Log.d(TAG, "Sync interval updated to ${uploadTimer} seconds")
     }
 
     private fun addLocationToBuffer(location: Location) {
@@ -367,18 +377,18 @@ private fun validateImeiPeriodically() {
         val stability = calculatePositionStability()
         val isStationary = isDeviceStationary()
         
-        Log.d("BackgroundService", "Speed Analysis:")
-        Log.d("BackgroundService", "  GPS: ${String.format("%.1f", gpsSpeed)} km/h")
-        Log.d("BackgroundService", "  Calculated: ${String.format("%.1f", calculatedSpeed)} km/h")
-        Log.d("BackgroundService", "  Accuracy: ${String.format("%.1f", location.accuracy)}m")
-        Log.d("BackgroundService", "  Stability: ${String.format("%.1f", stability * 100)}%")
-        Log.d("BackgroundService", "  Stationary: $isStationary")
+        Log.d(TAG, "Speed Analysis:")
+        Log.d(TAG, "  GPS: ${String.format("%.1f", gpsSpeed)} km/h")
+        Log.d(TAG, "  Calculated: ${String.format("%.1f", calculatedSpeed)} km/h")
+        Log.d(TAG, "  Accuracy: ${String.format("%.1f", location.accuracy)}m")
+        Log.d(TAG, "  Stability: ${String.format("%.1f", stability * 100)}%")
+        Log.d(TAG, "  Stationary: $isStationary")
         
         // Enhanced stationary detection
         if (isStationary) {
             consecutiveStationaryCount++
             if (consecutiveStationaryCount >= 3) {
-                Log.d("BackgroundService", "Device confirmed stationary (${consecutiveStationaryCount} consecutive)")
+                Log.d(TAG, "Device confirmed stationary (${consecutiveStationaryCount} consecutive)")
                 return 0f
             }
         } else {
@@ -387,7 +397,7 @@ private fun validateImeiPeriodically() {
         
         // Filter unrealistic speeds
         if (gpsSpeed > 100f || calculatedSpeed > 100f) {
-            Log.d("BackgroundService", "Filtering unrealistic speed -> 0 km/h")
+            Log.d(TAG, "Filtering unrealistic speed -> 0 km/h")
             return 0f
         }
         
@@ -414,7 +424,7 @@ private fun validateImeiPeriodically() {
             finalSpeed = calculatedSpeed
         }
         
-        Log.d("BackgroundService", "  Final: ${String.format("%.1f", finalSpeed)} km/h")
+        Log.d(TAG, "  Final: ${String.format("%.1f", finalSpeed)} km/h")
         return finalSpeed
     }
 
@@ -435,14 +445,14 @@ private fun validateImeiPeriodically() {
             if (!isMoving) {
                 isMoving = true
                 lastMovementTime = System.currentTimeMillis()
-                Log.d("BackgroundService", "Movement detected: Speed ${String.format("%.1f", speed)} km/h")
+                Log.d(TAG, "Movement detected: Speed ${String.format("%.1f", speed)} km/h")
             }
             lastStopTime = System.currentTimeMillis()
         } else {
             // Faster transition to idle (15 seconds)
             if (isMoving && (System.currentTimeMillis() - lastStopTime) > 15000L) {
                 isMoving = false
-                Log.d("BackgroundService", "Movement stopped - transitioning to idle")
+                Log.d(TAG, "Movement stopped - transitioning to idle")
             }
         }
 
@@ -469,11 +479,11 @@ private fun validateImeiPeriodically() {
     }
 
     private fun logServiceStatus() {
-        Log.d("BackgroundService", "=== SERVICE STATUS ===")
-        Log.d("BackgroundService", "Service running: ${this.javaClass.simpleName}")
-        Log.d("BackgroundService", "GPS Timer: ${gpsTimer}s")
-        Log.d("BackgroundService", "Location client initialized: ${::fusedLocationClient.isInitialized}")
-        Log.d("BackgroundService", "Location callback initialized: ${::locationCallback.isInitialized}")
+        Log.d(TAG, "=== SERVICE STATUS ===")
+        Log.d(TAG, "Service running: ${this.javaClass.simpleName}")
+        Log.d(TAG, "GPS Timer: ${gpsTimer}s")
+        Log.d(TAG, "Location client initialized: ${::fusedLocationClient.isInitialized}")
+        Log.d(TAG, "Location callback initialized: ${::locationCallback.isInitialized}")
         
         try {
             val db = dbHelper.readableDatabase
@@ -487,9 +497,9 @@ private fun validateImeiPeriodically() {
             val unsyncedRecords = unsyncedCursor.getInt(0)
             unsyncedCursor.close()
             
-            Log.d("BackgroundService", "Database records - Total: $totalRecords, Unsynced: $unsyncedRecords")
+            Log.d(TAG, "Database records - Total: $totalRecords, Unsynced: $unsyncedRecords")
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error checking database: ${e.message}")
+            Log.e(TAG, "Error checking database: ${e.message}")
         }
     }
 
@@ -553,13 +563,13 @@ private fun validateImeiPeriodically() {
                         client.newCall(request).execute().use { response ->
                             if (response.isSuccessful) {
                                 syncedIds.add(id)
-                                Log.d("BackgroundService", "Successfully synced data with ID: $id")
+                                Log.d(TAG, "Successfully synced data with ID: $id")
                             } else {
-                                Log.e("BackgroundService", "Failed to sync data. Status: ${response.code}")
+                                Log.e(TAG, "Failed to sync data. Status: ${response.code}")
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e("BackgroundService", "Error syncing data: ${e.message}")
+                        Log.e(TAG, "Error syncing data: ${e.message}")
                         continue
                     }
                 }
@@ -576,7 +586,7 @@ private fun validateImeiPeriodically() {
                             db.update("location_data", values, "id = ?", arrayOf(id.toString()))
                         }
                         db.setTransactionSuccessful()
-                        Log.d("BackgroundService", "Successfully marked ${syncedIds.size} records as synced")
+                        Log.d(TAG, "Successfully marked ${syncedIds.size} records as synced")
                     } finally {
                         db.endTransaction()
                     }
@@ -584,7 +594,7 @@ private fun validateImeiPeriodically() {
                     dbHelper.maintainRecordLimit()
                 }
             } catch (e: Exception) {
-                Log.e("BackgroundService", "Error in sync process: ${e.message}")
+                Log.e(TAG, "Error in sync process: ${e.message}")
             } finally {
                 isSyncing = false
             }
@@ -638,172 +648,166 @@ private fun validateImeiPeriodically() {
         }
     }
 
-// Method to verify service is working correctly
-private fun verifyServiceHealth() {
-    Log.d("BackgroundService", "=== SERVICE HEALTH CHECK ===")
-    
-    try {
-        // Check IMEI
-        val imei = "unknown"
-        Log.d("BackgroundService", "IMEI Status: ${if (imei.isNotEmpty() && imei != "unknown") "✅ Valid" else "❌ Invalid"}")
+    private fun verifyServiceHealth() {
+        Log.d(TAG, "=== SERVICE HEALTH CHECK ===")
         
-        // Check location client
-        Log.d("BackgroundService", "Location Client: ${if (::fusedLocationClient.isInitialized) "✅ Ready" else "❌ Not Ready"}")
-        
-        // Check database
         try {
-            val db = dbHelper.readableDatabase
-            val cursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
-            cursor.moveToFirst()
-            val recordCount = cursor.getInt(0)
-            cursor.close()
-            Log.d("BackgroundService", "Database: ✅ $recordCount records")
+            // Check IMEI
+            val imei = "unknown"
+            Log.d(TAG, "IMEI Status: ${if (imei.isNotEmpty() && imei != "unknown") "✅ Valid" else "❌ Invalid"}")
+            
+            // Check location client
+            Log.d(TAG, "Location Client: ${if (::fusedLocationClient.isInitialized) "✅ Ready" else "❌ Not Ready"}")
+            
+            // Check database
+            try {
+                val db = dbHelper.readableDatabase
+                val cursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
+                cursor.moveToFirst()
+                val recordCount = cursor.getInt(0)
+                cursor.close()
+                Log.d(TAG, "Database: ✅ $recordCount records")
+            } catch (e: Exception) {
+                Log.e(TAG, "Database: ❌ Error - ${e.message}")
+            }
+            
+            // Check network connectivity
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val networkInfo = connectivityManager.activeNetworkInfo
+            Log.d(TAG, "Network: ${if (networkInfo?.isConnected == true) "✅ Connected" else "❌ Disconnected"}")
+            
+            Log.d(TAG, "✅ Service health check completed")
+            
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Database: ❌ Error - ${e.message}")
+            Log.e(TAG, "❌ Error in health check: ${e.message}")
         }
-        
-        // Check network connectivity
-        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val networkInfo = connectivityManager.activeNetworkInfo
-        Log.d("BackgroundService", "Network: ${if (networkInfo?.isConnected == true) "✅ Connected" else "❌ Disconnected"}")
-        
-        Log.d("BackgroundService", "✅ Service health check completed")
-        
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "❌ Error in health check: ${e.message}")
     }
-}
 
     private fun debugGnssStatus() {
-    Log.d("BackgroundService", "=== GNSS DEBUG INFO ===")
-    Log.d("BackgroundService", "Total Satellites: $totalSatellites")
-    Log.d("BackgroundService", "Connected Satellites: $connectedSatellites")
-    Log.d("BackgroundService", "GNSS Callback initialized: ${::gnssStatusCallback.isInitialized}")
-    
-    // Check if location manager is available
-    val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    Log.d("BackgroundService", "GPS Provider enabled: ${locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)}")
-    Log.d("BackgroundService", "Network Provider enabled: ${locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)}")
-    
-    // Check GNSS status registration
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        Log.d("BackgroundService", "Android version supports GNSS status callbacks")
-    } else {
-        Log.d("BackgroundService", "Android version does not support GNSS status callbacks")
-    }
-}
-private fun setupEnhancedGnssCallback() {
-    gnssStatusCallback = object : GnssStatus.Callback() {
-        override fun onStarted() {
-            Log.d("BackgroundService", "GNSS started")
-        }
-
-        override fun onStopped() {
-            Log.d("BackgroundService", "GNSS stopped")
-        }
-
-        override fun onFirstFix(ttffMillis: Int) {
-            Log.d("BackgroundService", "First GNSS fix after $ttffMillis ms")
-        }
-
-        override fun onSatelliteStatusChanged(status: GnssStatus) {
-            totalSatellites = status.satelliteCount
-            connectedSatellites = 0
-            
-            Log.d("BackgroundService", "=== SATELLITE STATUS UPDATE ===")
-            Log.d("BackgroundService", "Total satellites visible: $totalSatellites")
-            
-            for (i in 0 until status.satelliteCount) {
-                val usedInFix = status.usedInFix(i)
-                val hasEphemeris = status.hasEphemerisData(i)
-                val hasAlmanac = status.hasAlmanacData(i)
-                val cn0DbHz = status.getCn0DbHz(i)
-                
-                if (usedInFix) {
-                    connectedSatellites++
-                }
-                
-                Log.d("BackgroundService", "Satellite $i: Used=$usedInFix, Ephemeris=$hasEphemeris, Almanac=$hasAlmanac, CN0=$cn0DbHz")
-            }
-            
-            Log.d("BackgroundService", "Connected satellites: $connectedSatellites")
-            Log.d("BackgroundService", "Satellite ratio: $connectedSatellites/$totalSatellites")
-            
-            // Update notification with satellite info
-            updateNotificationWithSatellites()
-        }
-    }
-}
-
-// Force register GNSS callback
-private fun forceRegisterGnssCallback() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        Log.d(TAG, "=== GNSS DEBUG INFO ===")
+        Log.d(TAG, "Total Satellites: $totalSatellites")
+        Log.d(TAG, "Connected Satellites: $connectedSatellites")
+        Log.d(TAG, "GNSS Callback initialized: ${::gnssStatusCallback.isInitialized}")
         
-        try {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                // Unregister first if already registered
-                try {
-                    locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
-                    Log.d("BackgroundService", "Unregistered existing GNSS callback")
-                } catch (e: Exception) {
-                    Log.d("BackgroundService", "No existing GNSS callback to unregister")
-                }
-                
-                // Register new callback
-                val success = locationManager.registerGnssStatusCallback(gnssStatusCallback)
-                Log.d("BackgroundService", "GNSS callback registration success: $success")
-                
-                if (success) {
-                    Log.d("BackgroundService", "GNSS status callback registered successfully")
-                } else {
-                    Log.e("BackgroundService", "Failed to register GNSS status callback")
-                }
-            } else {
-                Log.e("BackgroundService", "Missing location permission for GNSS callback")
-            }
-        } catch (e: Exception) {
-            Log.e("BackgroundService", "Error registering GNSS callback: ${e.message}")
+        // Check if location manager is available
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        Log.d(TAG, "GPS Provider enabled: ${locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)}")
+        Log.d(TAG, "Network Provider enabled: ${locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)}")
+        
+        // Check GNSS status registration
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            Log.d(TAG, "Android version supports GNSS status callbacks")
+        } else {
+            Log.d(TAG, "Android version does not support GNSS status callbacks")
         }
-    } else {
-        Log.w("BackgroundService", "GNSS status callbacks not supported on this Android version")
     }
-}
 
-private fun updateNotificationWithSatellites() {
-    val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("GPS Tracking Active")
-        .setContentText("Satellites: $connectedSatellites/$totalSatellites")
-        .setStyle(NotificationCompat.BigTextStyle().bigText(
-            "Satellites: $connectedSatellites/$totalSatellites\n" +
-            "Status: ${if (connectedSatellites > 0) "GPS Lock" else "Searching..."}\n" +
-            "Service: Active"
-        ))
-        .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .setOngoing(true)
-        .setCategory(NotificationCompat.CATEGORY_SERVICE)
-        .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-        .build()
+    private fun setupEnhancedGnssCallback() {
+        gnssStatusCallback = object : GnssStatus.Callback() {
+            override fun onStarted() {
+                Log.d(TAG, "GNSS started")
+            }
 
-    val notificationManager = getSystemService(NotificationManager::class.java)
-    notificationManager.notify(NOTIFICATION_ID, notification)
-}
+            override fun onStopped() {
+                Log.d(TAG, "GNSS stopped")
+            }
 
+            override fun onFirstFix(ttffMillis: Int) {
+                Log.d(TAG, "First GNSS fix after $ttffMillis ms")
+            }
 
+            override fun onSatelliteStatusChanged(status: GnssStatus) {
+                totalSatellites = status.satelliteCount
+                connectedSatellites = 0
+                
+                Log.d(TAG, "=== SATELLITE STATUS UPDATE ===")
+                Log.d(TAG, "Total satellites visible: $totalSatellites")
+                
+                for (i in 0 until status.satelliteCount) {
+                    val usedInFix = status.usedInFix(i)
+                    val hasEphemeris = status.hasEphemerisData(i)
+                    val hasAlmanac = status.hasAlmanacData(i)
+                    val cn0DbHz = status.getCn0DbHz(i)
+                    
+                    if (usedInFix) {
+                        connectedSatellites++
+                    }
+                    
+                    Log.d(TAG, "Satellite $i: Used=$usedInFix, Ephemeris=$hasEphemeris, Almanac=$hasAlmanac, CN0=$cn0DbHz")
+                }
+                
+                Log.d(TAG, "Connected satellites: $connectedSatellites")
+                Log.d(TAG, "Satellite ratio: $connectedSatellites/$totalSatellites")
+                
+                // Update notification with satellite info
+                updateNotificationWithSatellites()
+            }
+        }
+    }
+
+    private fun forceRegisterGnssCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            
+            try {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    // Unregister first if already registered
+                    try {
+                        locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
+                        Log.d(TAG, "Unregistered existing GNSS callback")
+                    } catch (e: Exception) {
+                        Log.d(TAG, "No existing GNSS callback to unregister")
+                    }
+                    
+                    // Register new callback
+                    val success = locationManager.registerGnssStatusCallback(gnssStatusCallback)
+                    Log.d(TAG, "GNSS callback registration success: $success")
+                    
+                    if (success) {
+                        Log.d(TAG, "GNSS status callback registered successfully")
+                    } else {
+                        Log.e(TAG, "Failed to register GNSS status callback")
+                    }
+                } else {
+                    Log.e(TAG, "Missing location permission for GNSS callback")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error registering GNSS callback: ${e.message}")
+            }
+        } else {
+            Log.w(TAG, "GNSS status callbacks not supported on this Android version")
+        }
+    }
+
+    private fun updateNotificationWithSatellites() {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("GPS Tracking Active")
+            .setContentText("Satellites: $connectedSatellites/$totalSatellites")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                "Satellites: $connectedSatellites/$totalSatellites\n" +
+                "Status: ${if (connectedSatellites > 0) "GPS Lock" else "Searching..."}\n" +
+                "Service: Active"
+            ))
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    }
 
     private fun setupLocationUpdates() {
-
-
         // Setup enhanced GNSS callback
-    setupEnhancedGnssCallback()
-    
-    // Force register GNSS callback
-    forceRegisterGnssCallback()
-    
-    // Debug GNSS status
-    debugGnssStatus()
-
+        setupEnhancedGnssCallback()
+        
+        // Force register GNSS callback
+        forceRegisterGnssCallback()
+        
+        // Debug GNSS status
+        debugGnssStatus()
 
         gnssStatusCallback = object : GnssStatus.Callback() {
             override fun onSatelliteStatusChanged(status: GnssStatus) {
@@ -835,11 +839,11 @@ private fun updateNotificationWithSatellites() {
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
-                Log.d("BackgroundService", "=== LOCATION CALLBACK TRIGGERED ===")
+                Log.d(TAG, "=== LOCATION CALLBACK TRIGGERED ===")
                 
                 locationResult.lastLocation?.let { location ->
                     if (location.accuracy > 30) {
-                        Log.d("BackgroundService", "Skipping inaccurate location: accuracy = ${location.accuracy}m")
+                        Log.d(TAG, "Skipping inaccurate location: accuracy = ${location.accuracy}m")
                         return
                     }
                     
@@ -851,10 +855,10 @@ private fun updateNotificationWithSatellites() {
                     if (shouldProcessLocationUpdate(location, speed, distance, timeSinceLastUpdate)) {
                         val reason = calculateEnhancedReason(location)
                         
-                        Log.d("BackgroundService", "=== PROCESSING LOCATION UPDATE ===")
-                        Log.d("BackgroundService", "Location: ${location.latitude}, ${location.longitude}")
-                        Log.d("BackgroundService", "Speed: ${String.format("%.1f", speed)} km/h")
-                        Log.d("BackgroundService", "Reason: $reason")
+                        Log.d(TAG, "=== PROCESSING LOCATION UPDATE ===")
+                        Log.d(TAG, "Location: ${location.latitude}, ${location.longitude}")
+                        Log.d(TAG, "Speed: ${String.format("%.1f", speed)} km/h")
+                        Log.d(TAG, "Reason: $reason")
                         
                         updateNotification(
                             "GPS Tracking Active", 
@@ -872,7 +876,7 @@ private fun updateNotificationWithSatellites() {
                         lastLocationUpdateTime = currentTime
                         lastLocation = location
                     } else {
-                        Log.d("BackgroundService", "Skipping location update - Speed: ${String.format("%.1f", speed)} km/h")
+                        Log.d(TAG, "Skipping location update - Speed: ${String.format("%.1f", speed)} km/h")
                     }
                 }
             }
@@ -882,87 +886,85 @@ private fun updateNotificationWithSatellites() {
     }
 
     private fun getImei(): String {
-    Log.d("BackgroundService", "=== GETTING IMEI FOR LOCATION DATA (IMEI ONLY) ===")
-    
-    try {
-        // Use the ImeiManager for IMEI only
-        val imeiManager = ImeiManager.getInstance(this)
-        val deviceId = imeiManager.getDeviceIdentifier()
-        
-        Log.d("BackgroundService", "Got device ID for location: $deviceId")
-        
-        if (deviceId != "unknown" && deviceId.isNotEmpty()) {
-            return deviceId
-        }
-        
-        // Check SharedPreferences as backup
-        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-        val storedImei = prefs.getString("flutter.imei", null)
-        
-        if (!storedImei.isNullOrEmpty() && storedImei != "unknown") {
-            Log.d("BackgroundService", "Using stored IMEI: $storedImei")
-            return storedImei
-        }
-        
-        // No fallbacks - return "unknown" if IMEI is not available
-        Log.e("BackgroundService", "❌ IMEI not available")
-        return "unknown"
-        
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "❌ Critical error getting IMEI: ${e.message}")
-        return "unknown"
-    }
-}
-
-// Add this method to validate IMEI before saving location data
-// Updated ensureImeiAvailable method - IMEI ONLY
-private fun ensureImeiAvailable() {
-    Log.d("BackgroundService", "=== ENSURING IMEI IS AVAILABLE (IMEI ONLY) ===")
-    
-    try {
-        val imeiManager = ImeiManager.getInstance(this)
-        val deviceId = imeiManager.getDeviceIdentifier()
-        
-        if (deviceId != "unknown" && deviceId.isNotEmpty()) {
-            Log.d("BackgroundService", "✅ IMEI secured for service: $deviceId")
-        } else {
-            Log.e("BackgroundService", "❌ CRITICAL: Service cannot start without IMEI!")
-            Log.e("BackgroundService", "❌ Check READ_PHONE_STATE permission and device support")
-        }
-        
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "❌ CRITICAL ERROR ensuring IMEI: ${e.message}")
-    }
-}
-
-private fun validateImeiBeforeSave(): String {
-    val imei = getImei()
-    
-    Log.d("BackgroundService", "Validating IMEI before save: $imei")
-    
-    // Check if IMEI is valid
-    if (imei == "unknown" || imei.isEmpty()) {
-        Log.w("BackgroundService", "Invalid IMEI detected, attempting refresh...")
+        Log.d(TAG, "=== GETTING IMEI FOR LOCATION DATA (IMEI ONLY) ===")
         
         try {
+            // Use the ImeiManager for IMEI only
             val imeiManager = ImeiManager.getInstance(this)
-            val freshImei = imeiManager.forceRefreshImei()
-            Log.d("BackgroundService", "Refreshed IMEI: $freshImei")
+            val deviceId = imeiManager.getDeviceIdentifier()
             
-            if (freshImei != "unknown" && freshImei.isNotEmpty()) {
-                return freshImei
-            } else {
-                Log.e("BackgroundService", "❌ Still no valid IMEI after refresh")
-                return "unknown"
+            Log.d(TAG, "Got device ID for location: $deviceId")
+            
+            if (deviceId != "unknown" && deviceId.isNotEmpty()) {
+                return deviceId
             }
+            
+            // Check SharedPreferences as backup
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val storedImei = prefs.getString("flutter.imei", null)
+            
+            if (!storedImei.isNullOrEmpty() && storedImei != "unknown") {
+                Log.d(TAG, "Using stored IMEI: $storedImei")
+                return storedImei
+            }
+            
+            // No fallbacks - return "unknown" if IMEI is not available
+            Log.e(TAG, "❌ IMEI not available")
+            return "unknown"
+            
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error refreshing IMEI: ${e.message}")
+            Log.e(TAG, "❌ Critical error getting IMEI: ${e.message}")
             return "unknown"
         }
     }
-    
-    return imei
-}
+
+    private fun ensureImeiAvailable() {
+        Log.d(TAG, "=== ENSURING IMEI IS AVAILABLE (IMEI ONLY) ===")
+        
+        try {
+            val imeiManager = ImeiManager.getInstance(this)
+            val deviceId = imeiManager.getDeviceIdentifier()
+            
+            if (deviceId != "unknown" && deviceId.isNotEmpty()) {
+                Log.d(TAG, "✅ IMEI secured for service: $deviceId")
+            } else {
+                Log.e(TAG, "❌ CRITICAL: Service cannot start without IMEI!")
+                Log.e(TAG, "❌ Check READ_PHONE_STATE permission and device support")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ CRITICAL ERROR ensuring IMEI: ${e.message}")
+        }
+    }
+
+    private fun validateImeiBeforeSave(): String {
+        val imei = getImei()
+        
+        Log.d(TAG, "Validating IMEI before save: $imei")
+        
+        // Check if IMEI is valid
+        if (imei == "unknown" || imei.isEmpty()) {
+            Log.w(TAG, "Invalid IMEI detected, attempting refresh...")
+            
+            try {
+                val imeiManager = ImeiManager.getInstance(this)
+                val freshImei = imeiManager.forceRefreshImei()
+                Log.d(TAG, "Refreshed IMEI: $freshImei")
+                
+                if (freshImei != "unknown" && freshImei.isNotEmpty()) {
+                    return freshImei
+                } else {
+                    Log.e(TAG, "❌ Still no valid IMEI after refresh")
+                    return "unknown"
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error refreshing IMEI: ${e.message}")
+                return "unknown"
+            }
+        }
+        
+        return imei
+    }
 
     private fun saveLocationData(location: Location) {
         try {
@@ -973,16 +975,15 @@ private fun validateImeiBeforeSave(): String {
             var fixedSpeed = location.speed * 3.6f
             if (fixedSpeed < 0) fixedSpeed = 0f
             
-            Log.d("BackgroundService", "=== SAVING LOCATION DATA ===")
-            Log.d("BackgroundService", "Speed: ${String.format("%.1f", fixedSpeed)} km/h")
-            Log.d("BackgroundService", "Reason: $reason")
-
+            Log.d(TAG, "=== SAVING LOCATION DATA ===")
+            Log.d(TAG, "Speed: ${String.format("%.1f", fixedSpeed)} km/h")
+            Log.d(TAG, "Reason: $reason")
 
             // Validate IMEI before saving
-        if (imei.isEmpty() || imei == "unknown") {
-            Log.e("BackgroundService", "❌ CRITICAL: Cannot save location without valid IMEI!")
-            return
-        }
+            if (imei.isEmpty() || imei == "unknown") {
+                Log.e(TAG, "❌ CRITICAL: Cannot save location without valid IMEI!")
+                return
+            }
             
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
@@ -995,7 +996,7 @@ private fun validateImeiBeforeSave(): String {
                 put("timestamp", java.time.Instant.now().toString())
                 put("deviceRDT", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
                 put("gmtSettings", "GMT+${java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 3600}:00 ${java.time.Year.now().value}")
-                put("igStatus", 1L)
+                put("igStatus", igStatus)
                 put("localPrimaryId", currentTime % 100000)
                 put("name", Build.MODEL)
                 val serial = try {
@@ -1011,43 +1012,41 @@ private fun validateImeiBeforeSave(): String {
 
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
-            Log.d("BackgroundService", "Saved location data with ID: $id")
+            Log.d(TAG, "Saved location data with ID: $id")
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error saving location data: ${e.message}")
+            Log.e(TAG, "Error saving location data: ${e.message}")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    Log.d("BackgroundService", "=== SERVICE START COMMAND ===")
-    Log.d("BackgroundService", "Intent: ${intent?.action}")
-    Log.d("BackgroundService", "Flags: $flags")
-    Log.d("BackgroundService", "StartId: $startId")
-    
-    // Check if started automatically
-    val autoStarted = intent?.getBooleanExtra("auto_started", false) ?: false
-    val startedBy = intent?.getStringExtra("started_by") ?: "unknown"
-    
-    if (autoStarted) {
-        Log.d("BackgroundService", "✅ Service auto-started by: $startedBy")
+        Log.d(TAG, "=== SERVICE START COMMAND ===")
+        Log.d(TAG, "Intent: ${intent?.action}")
+        Log.d(TAG, "Flags: $flags")
+        Log.d(TAG, "StartId: $startId")
+        
+        // Check if started automatically
+        val autoStarted = intent?.getBooleanExtra("auto_started", false) ?: false
+        val startedBy = intent?.getStringExtra("started_by") ?: "unknown"
+        
+        if (autoStarted) {
+            Log.d(TAG, "✅ Service auto-started by: $startedBy")
+        }
+        
+        // Ensure IMEI is available
+        ensureImeiAvailable()
+        
+        // Create and show notification immediately
+        val notification = createNotification()
+        startForeground(NOTIFICATION_ID, notification)
+        
+        // Start location tracking
+        startLocationUpdates()
+        
+        Log.d(TAG, "✅ Service fully started and tracking")
+        
+        // Return START_STICKY to ensure restart if killed
+        return START_STICKY
     }
-    
-    // Ensure IMEI is available
-    ensureImeiAvailable()
-    
-    // Create and show notification immediately
-    val notification = createNotification()
-    startForeground(NOTIFICATION_ID, notification)
-    
-    // Start location tracking
-    startLocationUpdates()
-    
-    Log.d("BackgroundService", "✅ Service fully started and tracking")
-    
-    // Return START_STICKY to ensure restart if killed
-    return START_STICKY
-}
-
-   
 
     private fun createStopIntent(): PendingIntent {
         val intent = Intent(this, BackgroundService::class.java)
@@ -1087,114 +1086,114 @@ private fun validateImeiBeforeSave(): String {
                     locationCallback,
                     Looper.getMainLooper()
                 )
-                Log.d("BackgroundService", "Location updates started with interval: ${gpsTimer} seconds")
+                Log.d(TAG, "Location updates started with interval: ${gpsTimer} seconds")
             } else {
-                Log.e("BackgroundService", "Location permission not granted")
+                Log.e(TAG, "Location permission not granted")
             }
         } catch (e: Exception) {
-            Log.e("BackgroundService", "Error starting location updates", e)
+            Log.e(TAG, "Error starting location updates", e)
         }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-    Log.d("BackgroundService", "=== SERVICE BEING DESTROYED ===")
-    
-    try {
-        // Clean up resources
-        fusedLocationClient.removeLocationUpdates(locationCallback)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
-        }
-        unregisterReceiver(restartReceiver)
-        syncExecutor.shutdown()
-        networkExecutor.shutdown()
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "Error in cleanup: ${e.message}")
-    }
-    
-    wakeLock?.release()
-    
-    // CRITICAL: Schedule multiple restart attempts
-    scheduleMultipleRestarts()
-    
-    super.onDestroy()
-}
-
-private fun scheduleMultipleRestarts() {
-    Log.d("BackgroundService", "=== SCHEDULING SERVICE RESTARTS ===")
-    
-    try {
-        // Method 1: Immediate restart broadcast
-        val restartIntent = Intent(ACTION_RESTART_SERVICE)
-        sendBroadcast(restartIntent)
-        Log.d("BackgroundService", "✅ Restart broadcast sent")
-        
-        // Method 2: Direct service restart
-        val serviceIntent = Intent(applicationContext, BackgroundService::class.java)
-        serviceIntent.putExtra("auto_started", true)
-        serviceIntent.putExtra("started_by", "SERVICE_RESTART")
+        Log.d(TAG, "=== SERVICE BEING DESTROYED ===")
         
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
+            // Clean up resources
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
             }
-            Log.d("BackgroundService", "✅ Direct service restart attempted")
+            unregisterReceiver(restartReceiver)
+            syncExecutor.shutdown()
+            networkExecutor.shutdown()
         } catch (e: Exception) {
-            Log.e("BackgroundService", "❌ Direct restart failed: ${e.message}")
+            Log.e(TAG, "Error in cleanup: ${e.message}")
         }
         
-        // Method 3: Delayed restart using AlarmManager
-        scheduleDelayedRestart()
+        wakeLock?.release()
         
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "❌ Error scheduling restarts: ${e.message}")
+        // CRITICAL: Schedule multiple restart attempts
+        scheduleMultipleRestarts()
+        
+        super.onDestroy()
     }
-}
 
-private fun scheduleDelayedRestart() {
-    try {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-        val restartIntent = Intent(this, BootReceiver::class.java).apply {
-            action = "com.trackingWorld.tracking.DELAYED_RESTART"
+    private fun scheduleMultipleRestarts() {
+        Log.d(TAG, "=== SCHEDULING SERVICE RESTARTS ===")
+        
+        try {
+            // Method 1: Immediate restart broadcast
+            val restartIntent = Intent(ACTION_RESTART_SERVICE)
+            sendBroadcast(restartIntent)
+            Log.d(TAG, "✅ Restart broadcast sent")
+            
+            // Method 2: Direct service restart
+            val serviceIntent = Intent(applicationContext, BackgroundService::class.java)
+            serviceIntent.putExtra("auto_started", true)
+            serviceIntent.putExtra("started_by", "SERVICE_RESTART")
+            
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+                Log.d(TAG, "✅ Direct service restart attempted")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Direct restart failed: ${e.message}")
+            }
+            
+            // Method 3: Delayed restart using AlarmManager
+            scheduleDelayedRestart()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error scheduling restarts: ${e.message}")
         }
-        
-        val pendingIntent = android.app.PendingIntent.getBroadcast(
-            this, 
-            999, 
-            restartIntent, 
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
-        
-        val triggerTime = System.currentTimeMillis() + 30000 // 30 seconds delay
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.RTC_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        } else {
-            alarmManager.setExact(
-                android.app.AlarmManager.RTC_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        }
-        
-        Log.d("BackgroundService", "✅ Delayed restart scheduled for 30 seconds")
-        
-    } catch (e: Exception) {
-        Log.e("BackgroundService", "❌ Error scheduling delayed restart: ${e.message}")
     }
-}
+
+    private fun scheduleDelayedRestart() {
+        try {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val restartIntent = Intent(this, BootReceiver::class.java).apply {
+                action = "com.trackingWorld.tracking.DELAYED_RESTART"
+            }
+            
+            val pendingIntent = android.app.PendingIntent.getBroadcast(
+                this, 
+                999, 
+                restartIntent, 
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            val triggerTime = System.currentTimeMillis() + 30000 // 30 seconds delay
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Delayed restart scheduled for 30 seconds")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error scheduling delayed restart: ${e.message}")
+        }
+    }
     
     private fun scheduleRestart() {
-        Log.d("BackgroundService", "Scheduling service restart")
+        Log.d(TAG, "Scheduling service restart")
         val intent = Intent(ACTION_RESTART_SERVICE)
         sendBroadcast(intent)
         

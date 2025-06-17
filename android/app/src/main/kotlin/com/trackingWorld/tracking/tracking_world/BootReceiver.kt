@@ -78,19 +78,8 @@ class BootReceiver : BroadcastReceiver() {
                 Log.d(TAG, "✅ All required permissions available")
             }
 
-            // Step 2: Initialize IMEI immediately (IMEI ONLY)
-            try {
-                val imeiManager = ImeiManager.getInstance(context)
-                val deviceId = imeiManager.getDeviceIdentifier()
-                
-                if (deviceId != "unknown" && deviceId.isNotEmpty()) {
-                    Log.d(TAG, "✅ IMEI secured on boot: $deviceId")
-                } else {
-                    Log.e(TAG, "❌ IMEI not available on boot - check permissions")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error securing IMEI on boot: ${e.message}")
-            }
+            // Step 2: (IMEI logic removed)
+            // IMEIManager references removed. No IMEI check on boot.
 
             // Step 3: Start the Kotlin BackgroundService immediately
             val kotlinServiceIntent = Intent(context, BackgroundService::class.java).apply {

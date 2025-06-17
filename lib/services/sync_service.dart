@@ -5,22 +5,33 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'dart:convert';
 import 'database_helper.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tracking_world/services/car_power_service.dart';
 
 class SyncService {
   static final SyncService _instance = SyncService._internal();
   final DatabaseHelper _dbHelper = DatabaseHelper();
+  final CarPowerService _carPowerService = CarPowerService();
   final _connectivity = Connectivity();
   Timer? _syncTimer;
   bool _isSyncing = false;
+  String? _lastError;
+  int _retryCount = 0;
   static const String serverUrl = 'http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api/location';
   int _syncIntervalSeconds = 30; // Default sync interval
-  int _maxRetries = 3;
+  static const int maxRetries = 3;
+  static const Duration defaultSyncInterval = Duration(minutes: 1);
+  static const Duration retryDelay = Duration(seconds: 30);
   int _batchSize = 50; // Sync in smaller batches
 
   factory SyncService() => _instance;
 
   SyncService._internal() {
     _initConnectivityListener();
+    _carPowerService.onAccStateChanged = (bool isAccOn) {
+      // Update igStatus in the database when ACC state changes
+      _updateIgStatus(isAccOn ? 1 : 0);
+    };
   }
 
   void _initConnectivityListener() {
@@ -127,6 +138,13 @@ class SyncService {
         return;
       }
 
+      // Start car power monitoring
+      await _carPowerService.startMonitoring();
+
+      // Get initial ACC state
+      final initialAccState = await _carPowerService.getCurrentAccState();
+      await _updateIgStatus(initialAccState ? 1 : 0);
+
       final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
       if (unsyncedData.isEmpty) {
         print('No unsynced data to upload');
@@ -152,9 +170,9 @@ class SyncService {
           print('Data to send: ${jsonEncode(dataToSend)}');
 
           bool syncSuccess = false;
-          for (int retry = 0; retry < _maxRetries; retry++) {
+          for (int retry = 0; retry < maxRetries; retry++) {
             try {
-              print('Attempt ${retry + 1}/$_maxRetries for record ${data['id']}');
+              print('Attempt ${retry + 1}/$maxRetries for record ${data['id']}');
               
               final response = await http.post(
                 Uri.parse(serverUrl),
@@ -178,7 +196,7 @@ class SyncService {
               } else {
                 print('❌ Server error for record ${data['id']}: ${response.statusCode}');
                 print('Error response body: ${response.body}');
-                if (retry == _maxRetries - 1) {
+                if (retry == maxRetries - 1) {
                   failureCount++;
                   await _dbHelper.insertExceptionLog(
                     main: 'Sync Server Error',
@@ -188,7 +206,7 @@ class SyncService {
               }
             } catch (e) {
               print('❌ Network error for record ${data['id']} (attempt ${retry + 1}): $e');
-              if (retry == _maxRetries - 1) {
+              if (retry == maxRetries - 1) {
                 failureCount++;
                 await _dbHelper.insertExceptionLog(
                   main: 'Sync Network Error',
@@ -197,7 +215,7 @@ class SyncService {
               }
               
               // Wait before retrying
-              if (retry < _maxRetries - 1) {
+              if (retry < maxRetries - 1) {
                 await Future.delayed(Duration(seconds: (retry + 1) * 2));
               }
             }
@@ -241,6 +259,7 @@ class SyncService {
       );
     } finally {
       _isSyncing = false;
+      await _carPowerService.stopMonitoring();
     }
   }
 
@@ -337,4 +356,21 @@ class SyncService {
   Future<void> maintainRecordLimit() async {
     await _dbHelper.forceMaintainRecordLimit();
   }
+
+  Future<void> _updateIgStatus(int status) async {
+    try {
+      final db = await _dbHelper.database;
+      await db.update(
+        'location_data',
+        {'igStatus': status},
+        where: 'syncStatus = ?',
+        whereArgs: [0],
+      );
+    } catch (e) {
+      print('Error updating igStatus: $e');
+    }
+  }
+
+  String? get lastError => _lastError;
+  int get retryCount => _retryCount;
 }
