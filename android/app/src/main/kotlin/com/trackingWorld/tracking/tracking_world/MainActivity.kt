@@ -1,5 +1,8 @@
 package com.trackingWorld.tracking.tracking_world
 
+import android.app.admin.DevicePolicyManager
+import android.app.admin.DeviceAdminReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.os.Build
 import android.telephony.TelephonyManager
@@ -20,6 +23,7 @@ import android.os.PowerManager
 import android.annotation.SuppressLint
 import java.util.*
 import com.trackingWorld.CarPowerPlugin
+import com.trackingWorld.tracking.tracking_world.MyDeviceAdminReceiver
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.trackingWorld.tracking/launch"
@@ -35,6 +39,10 @@ class MainActivity: FlutterActivity() {
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
     private val CAR_POWER_CHANNEL = "com.trackingWorld.tracking/car_power"
     private var carPowerPlugin: CarPowerPlugin? = null
+    private val ADMIN_CHANNEL = "device_admin_channel"
+    private val REQUEST_CODE_ENABLE_ADMIN = 1
+    private lateinit var devicePolicyManager: DevicePolicyManager
+    private lateinit var adminComponent: ComponentName
 
     private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         arrayOf(
@@ -54,6 +62,27 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         this.flutterEngine = flutterEngine
+
+
+
+        devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
+        
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ADMIN_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "requestDeviceAdmin" -> {
+                    requestDeviceAdmin()
+                    result.success(null)
+                }
+                "isDeviceAdminActive" -> {
+                    val isActive = devicePolicyManager.isAdminActive(adminComponent)
+                    result.success(isActive)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+
         
          // IMPORTANT: Initialize Car Power Plugin FIRST
         try {
@@ -130,6 +159,21 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+     private fun requestDeviceAdmin() {
+        if (devicePolicyManager.isAdminActive(adminComponent)) {
+            Log.d("MainActivity", "Device admin already enabled")
+            flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                MethodChannel(messenger, ADMIN_CHANNEL).invokeMethod("onDeviceAdminEnabled", null)
+            }
+            return
+        }
+
+        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
+            "This app requires device admin privileges for security features")
+        startActivityForResult(intent, REQUEST_CODE_ENABLE_ADMIN)
+    }
     // IMEI ONLY - NO FALLBACK METHODS
     private fun getImeiOnly(result: MethodChannel.Result) {
         Log.d("MainActivity", "=== GETTING IMEI ONLY (NO FALLBACKS) ===")
@@ -365,6 +409,19 @@ class MainActivity: FlutterActivity() {
                     Log.w("MainActivity", "Battery optimization still enabled")
                     flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
                         MethodChannel(messenger, DEVICE_CHANNEL).invokeMethod("onBatteryOptimizationStillEnabled", null)
+                    }
+                }
+            }
+            REQUEST_CODE_ENABLE_ADMIN -> {
+                if (resultCode == Activity.RESULT_OK) {
+                    Log.d("MainActivity", "Device admin enabled successfully")
+                    flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                        MethodChannel(messenger, ADMIN_CHANNEL).invokeMethod("onDeviceAdminEnabled", null)
+                    }
+                } else {
+                    Log.w("MainActivity", "Device admin not enabled")
+                    flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                        MethodChannel(messenger, ADMIN_CHANNEL).invokeMethod("onDeviceAdminNotEnabled", null)
                     }
                 }
             }

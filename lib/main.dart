@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:tracking_world/services/device_admin_manager.dart';
 import 'services/api_service.dart';
 import 'services/background_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -90,6 +91,9 @@ class GPSTracker extends StatefulWidget {
 }
 
 class _GPSTrackerState extends State<GPSTracker> {
+
+  bool _isDeviceAdminActive = false;
+
   // Location data
   Position? _currentPosition;
   double _accuracy = 3.9;
@@ -133,6 +137,8 @@ class _GPSTrackerState extends State<GPSTracker> {
     _getDeviceInfo();
     _saveImei();
     _loadConfiguration();
+      _checkDeviceAdminStatus(); // Add this line
+
     
     // Set igStatus to 1 when app starts
     setState(() {
@@ -172,6 +178,48 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Don't stop the service on dispose, let it run in background
     super.dispose();
   }
+
+Future<void> _checkDeviceAdminStatus() async {
+  final isActive = await DeviceAdminManager.isDeviceAdminActive();
+  setState(() {
+    _isDeviceAdminActive = isActive;
+  });
+  
+  // Request device admin if not active
+  if (!isActive) {
+    _showDeviceAdminDialog();
+  }
+}
+
+void _showDeviceAdminDialog() {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (BuildContext context) {
+      return AlertDialog(
+        title: const Text('Security Protection Required'),
+        content: const Text(
+          'This GPS tracking app requires device administrator privileges to prevent unauthorized removal and ensure continuous tracking for security purposes.\n\n'
+          'Please enable device admin to continue.'
+        ),
+        actions: <Widget>[
+          TextButton(
+            child: const Text('Enable Device Admin'),
+            onPressed: () async {
+              Navigator.of(context).pop();
+              await DeviceAdminManager.requestDeviceAdmin();
+              // Check status again after user returns
+              await Future.delayed(const Duration(seconds: 1));
+              _checkDeviceAdminStatus();
+            },
+          ),
+        ],
+      );
+    },
+  );
+}
+
+
 
   // Get device information
   Future<void> _getDeviceInfo() async {
