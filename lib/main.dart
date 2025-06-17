@@ -244,30 +244,36 @@ class _GPSTrackerState extends State<GPSTracker> {
       }
     }
 
-    // Request storage permission for Android 12 and below
+    // Request storage permissions
     if (await Permission.storage.isDenied) {
       await Permission.storage.request();
     }
 
-    // If all permissions are granted, proceed with initialization
-    await _getDeviceInfo();
-    _startTrackingService();
+    // Request media permissions for Android 13+
+    if (await Permission.photos.isDenied) {
+      await Permission.photos.request();
+    }
+
+    if (await Permission.videos.isDenied) {
+      await Permission.videos.request();
+    }
   }
 
+  // Show permission dialog
   void _showPermissionDialog(String permissionType) {
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('Permission Required'),
-          content: Text('$permissionType permission is required to use this app. Please grant the permission in settings.'),
+          title: Text('$permissionType Permission Required'),
+          content: Text('This app needs $permissionType permission to function properly. Please grant the permission in settings.'),
           actions: <Widget>[
             TextButton(
               child: const Text('Open Settings'),
-              onPressed: () {
-                openAppSettings();
+              onPressed: () async {
                 Navigator.of(context).pop();
+                await openAppSettings();
               },
             ),
             TextButton(
