@@ -36,6 +36,8 @@ import android.content.IntentFilter
 import kotlin.math.abs
 import kotlin.math.sqrt
 import com.trackingWorld.CarPowerManager
+import android.app.AlarmManager
+import android.os.SystemClock
 
 class BackgroundService : Service() {
     companion object {
@@ -96,6 +98,9 @@ class BackgroundService : Service() {
 
     private var igStatus = 0 // Initialize to 0 (ACC off)
     private lateinit var carPowerManager: CarPowerManager
+    private var isCarPowerAvailable = false
+    private var serviceStartAttempts = 0
+    private val MAX_START_ATTEMPTS = 3
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 3) {
         override fun onCreate(db: SQLiteDatabase) {
@@ -174,108 +179,124 @@ class BackgroundService : Service() {
         Log.d(TAG, "Process ID: ${android.os.Process.myPid()}")
         Log.d(TAG, "Thread: ${Thread.currentThread().name}")
         
-        // Initialize components
-        dbHelper = LocationDatabaseHelper(this)
-        acquireWakeLock()
-        createNotificationChannel()
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        
-        // CRITICAL: Ensure IMEI is available
-        ensureImeiAvailable()
-        
-        // Register restart receiver
-        val filter = IntentFilter(ACTION_RESTART_SERVICE)
-        registerReceiver(restartReceiver, filter)
-        
-        loadConfiguration()
-        setupLocationUpdates()
-        startPeriodicSync()
-        
-        // Perform initial health check
-        verifyServiceHealth()
-        
-        // Schedule periodic health checks
-        val handler = android.os.Handler(Looper.getMainLooper())
-        handler.post(object : Runnable {
-            override fun run() {
-                logServiceStatus()
-                validateImeiPeriodically()
-                verifyServiceHealth()
-                handler.postDelayed(this, 30000) // Every 30 seconds
-            }
-        })
-        
-        Log.d(TAG, "✅ Service initialization completed")
-
-            initializeCarPowerDirectly()
-
-    }
-
-    private fun initializeCarPowerDirectly() {
-    try {
-        Log.d(TAG, "=== INITIALIZING CAR POWER DIRECTLY ===")
-        
-        carPowerManager = CarPowerManager(this)
-        carPowerManager.setAccStateCallback { isAccOn ->
-            val newIgStatus = if (isAccOn) 1 else 0
+        try {
+            // Initialize components
+            dbHelper = LocationDatabaseHelper(this)
+            acquireWakeLock()
+            createNotificationChannel()
+            fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
             
-            // Only update if state actually changed
-            if (newIgStatus != igStatus) {
-                val oldStatus = igStatus
-                igStatus = newIgStatus
-                Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus (isAccOn: $isAccOn)")
+            // Initialize car power manager
+            carPowerManager = CarPowerManager(this)
+            carPowerManager.setAccStateCallback { isAccOn ->
+                val newIgStatus = if (isAccOn) 1 else 0
                 
-                // Update existing unsynced records with new igStatus
-                updateIgStatus(newIgStatus)
-                
-                // Update notification with ACC state
-                updateNotificationWithAccState(isAccOn)
-            } else {
-                Log.d(TAG, "🚗 ACC state unchanged: $igStatus")
+                if (newIgStatus != igStatus) {
+                    val oldStatus = igStatus
+                    igStatus = newIgStatus
+                    Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus")
+                    
+                    // Store in shared preferences for Flutter background service
+                    storeAccStateForFlutter(newIgStatus)
+                    
+                    // Update notification with ACC state
+                    updateNotificationWithAccState(isAccOn)
+                }
             }
+            carPowerManager.initialize()
+            
+            // CRITICAL: Ensure IMEI is available
+            ensureImeiAvailable()
+            
+            // Register restart receiver
+            val filter = IntentFilter(ACTION_RESTART_SERVICE)
+            registerReceiver(restartReceiver, filter)
+            
+            loadConfiguration()
+            setupLocationUpdates()
+            startPeriodicSync()
+            
+            // Perform initial health check
+            verifyServiceHealth()
+            
+            // Schedule periodic health checks
+            val handler = android.os.Handler(Looper.getMainLooper())
+            handler.post(object : Runnable {
+                override fun run() {
+                    logServiceStatus()
+                    validateImeiPeriodically()
+                    verifyServiceHealth()
+                    handler.postDelayed(this, 30000) // Every 30 seconds
+                }
+            })
+            
+            Log.d(TAG, "✅ Service initialization completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error during service initialization", e)
+            scheduleServiceRestart()
         }
-        
-        carPowerManager.initialize()
-        Log.d(TAG, "✅ CarPowerManager initialized successfully in service")
-        
-        // Get initial ACC state
-        val initialState = carPowerManager.getCurrentAccState()
-        igStatus = if (initialState) 1 else 0
-        Log.d(TAG, "🚗 Initial ACC state: $igStatus")
-        
-    } catch (e: Exception) {
-        Log.e(TAG, "❌ Failed to initialize CarPowerManager in service: ${e.message}")
-        // Continue without car power management - set default ACC state
-        igStatus = 1 // Default to ACC ON if car power management fails
-        Log.w(TAG, "⚠️ Using default ACC state: $igStatus")
     }
-}
 
-private fun updateNotificationWithAccState(isAccOn: Boolean) {
-    try {
-        val accText = if (isAccOn) "ACC: ON" else "ACC: OFF"
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("GPS Tracking Active")
-            .setContentText("$accText | Satellites: $connectedSatellites/$totalSatellites")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "$accText\n" +
-                "Satellites: $connectedSatellites/$totalSatellites\n" +
-                "Status: ${if (connectedSatellites > 0) "GPS Lock" else "Searching..."}\n" +
-                "Service: Active"
-            ))
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .build()
-
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(NOTIFICATION_ID, notification)
-    } catch (e: Exception) {
-        Log.e(TAG, "Error updating notification with ACC state: ${e.message}")
+    private fun initializeAccStateMonitoring() {
+        try {
+            Log.d(TAG, "=== INITIALIZING ACC STATE MONITORING ===")
+            
+            carPowerManager = CarPowerManager(this)
+            carPowerManager.setAccStateCallback { isAccOn ->
+                val newIgStatus = if (isAccOn) 1 else 0
+                
+                if (newIgStatus != igStatus) {
+                    val oldStatus = igStatus
+                    igStatus = newIgStatus
+                    Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus")
+                    
+                    // Store in shared preferences for Flutter background service
+                    storeAccStateForFlutter(newIgStatus)
+                    
+                    // Update notification with ACC state
+                    updateNotificationWithAccState(isAccOn)
+                }
+            }
+            
+            carPowerManager.initialize()
+            isCarPowerAvailable = true
+            
+            // Get initial state and store it
+            val initialState = carPowerManager.getCurrentAccState()
+            igStatus = if (initialState) 1 else 0
+            storeAccStateForFlutter(igStatus)
+            
+            Log.d(TAG, "✅ ACC monitoring initialized. Initial state: $igStatus")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to initialize ACC monitoring: ${e.message}")
+            isCarPowerAvailable = false
+            igStatus = 1 // Default to ACC ON if monitoring fails
+            storeAccStateForFlutter(igStatus)
+            Log.w(TAG, "⚠️ Using default ACC state: $igStatus")
+        }
     }
-}
+
+    private fun storeAccStateForFlutter(igStatus: Int) {
+        try {
+            // Store in SharedPreferences for Flutter background service to read
+            val prefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putInt("current_ig_status", igStatus)
+                putLong("ig_status_timestamp", System.currentTimeMillis())
+                apply()
+            }
+            Log.d(TAG, "✅ Stored ACC state for Flutter: $igStatus")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error storing ACC state: ${e.message}")
+        }
+    }
+
+    private fun updateNotificationWithAccState(isAccOn: Boolean) {
+        val title = "Location Tracking"
+        val content = "Service running - ACC: ${if (isAccOn) "ON" else "OFF"}"
+        updateNotification(title, content)
+    }
 
     private fun validateImeiPeriodically() {
         try {
@@ -667,42 +688,21 @@ private fun updateNotificationWithAccState(isAccOn: Boolean) {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "TrackingWorld::LocationWakeLock"
+            "TrackingWorld::LocationServiceWakeLock"
         ).apply {
             acquire(10*60*1000L /*10 minutes*/)
         }
     }
 
-    private fun createNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("GPS Tracking Active")
-        .setContentText("Service running in background")
-        .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .setOngoing(true)
-        .setCategory(NotificationCompat.CATEGORY_SERVICE)
-        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        .setAutoCancel(false)
-        .setShowWhen(true)
-        .setWhen(System.currentTimeMillis())
-        .setStyle(NotificationCompat.BigTextStyle().bigText(
-            "GPS Tracking Service is active and monitoring location.\n" +
-            "Started: ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}\n" +
-            "IMEI: ${"unknown".take(10)}..."
-        ))
-        .build()
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "GPS Tracking Service",
+                "Location Tracking Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "This channel is used for GPS tracking notifications"
-                setSound(null, null)
-                enableVibration(false)
+                description = "Background location tracking service"
                 setShowBadge(false)
-                enableLights(false)
             }
 
             val notificationManager = getSystemService(NotificationManager::class.java)
@@ -1081,56 +1081,102 @@ private fun updateNotificationWithAccState(isAccOn: Boolean) {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "=== SERVICE START COMMAND ===")
-        Log.d(TAG, "Intent: ${intent?.action}")
+        Log.d(TAG, "=== BACKGROUND SERVICE STARTED ===")
+        Log.d(TAG, "Start ID: $startId")
         Log.d(TAG, "Flags: $flags")
-        Log.d(TAG, "StartId: $startId")
+        Log.d(TAG, "Intent: ${intent?.action}")
         
-        // Check if started automatically
-        val autoStarted = intent?.getBooleanExtra("auto_started", false) ?: false
-        val startedBy = intent?.getStringExtra("started_by") ?: "unknown"
-        
-        if (autoStarted) {
-            Log.d(TAG, "✅ Service auto-started by: $startedBy")
+        try {
+            // Start as a foreground service
+            startForeground(NOTIFICATION_ID, createNotification())
+            
+            // Start location updates
+            startLocationUpdates()
+            
+            // Reset start attempts counter on successful start
+            serviceStartAttempts = 0
+            
+            // Return START_STICKY to ensure the service restarts if killed
+            return START_STICKY
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error during service start", e)
+            serviceStartAttempts++
+            
+            if (serviceStartAttempts < MAX_START_ATTEMPTS) {
+                scheduleServiceRestart()
+            }
+            
+            return START_NOT_STICKY
         }
-        
-        // Ensure IMEI is available
-        ensureImeiAvailable()
-        
-        // Create and show notification immediately
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
-        
-        // Start location tracking
-        startLocationUpdates()
-        
-        Log.d(TAG, "✅ Service fully started and tracking")
-        
-        // Return START_STICKY to ensure restart if killed
-        return START_STICKY
     }
 
-    private fun createStopIntent(): PendingIntent {
-        val intent = Intent(this, BackgroundService::class.java)
-        intent.action = "STOP_SERVICE"
-        return PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(TAG, "Task removed, scheduling restart")
+        scheduleServiceRestart()
     }
 
-    private fun updateNotification(title: String, content: String) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .build()
-
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(NOTIFICATION_ID, notification)
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "=== BACKGROUND SERVICE DESTROYED ===")
+        
+        try {
+            // Stop location updates
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+            
+            // Release wake lock safely
+            wakeLock?.release()
+            
+            // Unregister receiver
+            unregisterReceiver(restartReceiver)
+            
+            // Clean up car power manager
+            carPowerManager.disconnect()
+            
+            // Stop foreground service
+            stopForeground(true)
+            
+            Log.d(TAG, "✅ Service cleanup completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during service cleanup", e)
+        }
     }
+
+    private fun scheduleServiceRestart() {
+        try {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(this, BackgroundService::class.java)
+            val pendingIntent = PendingIntent.getService(
+                this,
+                999,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Try to restart after 30 seconds
+            val triggerTime = SystemClock.elapsedRealtime() + 30000
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Service restart scheduled for 30 seconds")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to schedule service restart: ${e.message}")
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startLocationUpdates() {
         val locationRequest = LocationRequest.create().apply {
@@ -1157,149 +1203,43 @@ private fun updateNotificationWithAccState(isAccOn: Boolean) {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun updateNotification(title: String, content: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
 
-    override fun onDestroy() {
-        Log.d(TAG, "=== SERVICE BEING DESTROYED ===")
-        
-        try {
-            // Clean up resources
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
-            }
-            unregisterReceiver(restartReceiver)
-            syncExecutor.shutdown()
-            networkExecutor.shutdown()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in cleanup: ${e.message}")
-        }
-        
-        wakeLock?.release()
-        
-        // CRITICAL: Schedule multiple restart attempts
-        scheduleMultipleRestarts()
-        
-        super.onDestroy()
-
-         // Try to restart the service (like your original)
-        try {
-            val intent = Intent(applicationContext, BackgroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-            Log.d(TAG, "✅ Service restart attempted")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Service restart failed: ${e.message}")
-        }
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun scheduleMultipleRestarts() {
-        Log.d(TAG, "=== SCHEDULING SERVICE RESTARTS ===")
-        
-        try {
-            // Method 1: Immediate restart broadcast
-            val restartIntent = Intent(ACTION_RESTART_SERVICE)
-            sendBroadcast(restartIntent)
-            Log.d(TAG, "✅ Restart broadcast sent")
-            
-            // Method 2: Direct service restart
-            val serviceIntent = Intent(applicationContext, BackgroundService::class.java)
-            serviceIntent.putExtra("auto_started", true)
-            serviceIntent.putExtra("started_by", "SERVICE_RESTART")
-            
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
-                Log.d(TAG, "✅ Direct service restart attempted")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Direct restart failed: ${e.message}")
-            }
-            
-            // Method 3: Delayed restart using AlarmManager
-            scheduleDelayedRestart()
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error scheduling restarts: ${e.message}")
+    private fun createNotification(): android.app.Notification {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Location Tracking Service",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Background location tracking service"
+            setShowBadge(false)
         }
-    }
 
-    private fun scheduleDelayedRestart() {
-        try {
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            val restartIntent = Intent(this, BootReceiver::class.java).apply {
-                action = "com.trackingWorld.tracking.DELAYED_RESTART"
-            }
-            
-            val pendingIntent = android.app.PendingIntent.getBroadcast(
-                this, 
-                999, 
-                restartIntent, 
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-            )
-            
-            val triggerTime = System.currentTimeMillis() + 30000 // 30 seconds delay
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
-                )
-            }
-            
-            Log.d(TAG, "✅ Delayed restart scheduled for 30 seconds")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error scheduling delayed restart: ${e.message}")
-        }
-    }
-    
-    private fun scheduleRestart() {
-        Log.d(TAG, "Scheduling service restart")
-        val intent = Intent(ACTION_RESTART_SERVICE)
-        sendBroadcast(intent)
-        
-        // Also try to restart immediately
-        val serviceIntent = Intent(applicationContext, BackgroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
-    }
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
 
-    private fun updateIgStatus(newStatus: Int) {
-        try {
-        val db = dbHelper.writableDatabase
-        val values = ContentValues().apply {
-            put("igStatus", newStatus)
-        }
-        
-        val updatedRows = db.update(
-            "location_data", 
-            values, 
-            "sync_status = ? AND igStatus != ?", 
-            arrayOf("0", newStatus.toString())
-        )
-        
-        if (updatedRows > 0) {
-            Log.d(TAG, "Updated igStatus to $newStatus for $updatedRows unsynced records")
-        }
-    } catch (e: Exception) {
-        Log.e(TAG, "Error updating igStatus in database: ${e.message}")
-    }
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Location Tracking")
+            .setContentText("Service running")
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
     }
 }

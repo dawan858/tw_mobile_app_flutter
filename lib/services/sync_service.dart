@@ -6,12 +6,12 @@ import 'package:intl/intl.dart';
 import 'dart:convert';
 import 'database_helper.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tracking_world/services/car_power_service.dart';
+// REMOVED: import 'package:tracking_world/services/car_power_service.dart';
 
 class SyncService {
   static final SyncService _instance = SyncService._internal();
   final DatabaseHelper _dbHelper = DatabaseHelper();
-  final CarPowerService _carPowerService = CarPowerService();
+  // REMOVED: final CarPowerService _carPowerService = CarPowerService();
   final _connectivity = Connectivity();
   Timer? _syncTimer;
   bool _isSyncing = false;
@@ -28,10 +28,7 @@ class SyncService {
 
   SyncService._internal() {
     _initConnectivityListener();
-    _carPowerService.onAccStateChanged = (bool isAccOn) {
-      // Update igStatus in the database when ACC state changes
-      _updateIgStatus(isAccOn ? 1 : 0);
-    };
+    // REMOVED: CarPowerService callback - now handled by Kotlin BackgroundService
   }
 
   void _initConnectivityListener() {
@@ -138,12 +135,14 @@ class SyncService {
         return;
       }
 
-      // // Start car power monitoring
-      // await _carPowerService.startMonitoring();
+      // REMOVED: CarPowerService monitoring - now handled by Kotlin BackgroundService
+      // Get current ACC state from SharedPreferences (set by Kotlin BackgroundService)
+      final prefs = await SharedPreferences.getInstance();
+      int currentIgStatus = prefs.getInt('current_ig_status') ?? 1; // Default to ACC ON
+      print('Using current igStatus from Kotlin service: $currentIgStatus');
 
-      // // Get initial ACC state
-      // final initialAccState = await _carPowerService.getCurrentAccState();
-      // await _updateIgStatus(initialAccState ? 1 : 0);
+      // Update any unsynced records with current igStatus
+      await _updateUnsyncedRecordsIgStatus(currentIgStatus);
 
       final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
       if (unsyncedData.isEmpty) {
@@ -259,7 +258,24 @@ class SyncService {
       );
     } finally {
       _isSyncing = false;
-      await _carPowerService.stopMonitoring();
+      // REMOVED: CarPowerService.stopMonitoring() call
+      print('Sync process completed');
+    }
+  }
+
+  // NEW METHOD: Update unsynced records with current igStatus from Kotlin service
+  Future<void> _updateUnsyncedRecordsIgStatus(int igStatus) async {
+    try {
+      final db = await _dbHelper.database;
+      final updatedRows = await db.update(
+        'location_data',
+        {'igStatus': igStatus},
+        where: 'sync_status = ?', // Use sync_status not syncStatus
+        whereArgs: [0],
+      );
+      print('Updated $updatedRows unsynced records with igStatus: $igStatus');
+    } catch (e) {
+      print('Error updating igStatus: $e');
     }
   }
 
@@ -286,11 +302,18 @@ class SyncService {
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
     try {
+      // Get current ACC state from SharedPreferences for new location data
+      final prefs = await SharedPreferences.getInstance();
+      int currentIgStatus = prefs.getInt('current_ig_status') ?? 1;
+      
+      // Ensure the data has the current igStatus
+      data['igStatus'] = currentIgStatus;
+      
       // Check if entry already exists to prevent duplicates
       final exists = await _dbHelper.locationEntryExists(data);
       if (!exists) {
         await _dbHelper.insertLocationData(data);
-        print('Location data queued successfully');
+        print('Location data queued successfully with igStatus: $currentIgStatus');
         
         // Try to sync immediately if we have connection
         if (await _hasInternetConnection()) {
@@ -325,11 +348,19 @@ class SyncService {
 
   Future<Map<String, dynamic>> getSyncStats() async {
     final dbStats = await _dbHelper.getDatabaseStats();
+    
+    // Get current ACC state from SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    int currentIgStatus = prefs.getInt('current_ig_status') ?? 1;
+    int igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+    
     return {
       ...dbStats,
       'isSyncing': _isSyncing,
       'syncInterval': _syncIntervalSeconds,
       'hasInternet': await _hasInternetConnection(),
+      'currentIgStatus': currentIgStatus,
+      'igStatusLastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
     };
   }
 
@@ -357,17 +388,45 @@ class SyncService {
     await _dbHelper.forceMaintainRecordLimit();
   }
 
+  // UPDATED METHOD: Now reads from SharedPreferences instead of calling CarPowerService
   Future<void> _updateIgStatus(int status) async {
     try {
-      final db = await _dbHelper.database;
-      await db.update(
-        'location_data',
-        {'igStatus': status},
-        where: 'syncStatus = ?',
-        whereArgs: [0],
-      );
+      // Store in SharedPreferences (this will be set by Kotlin BackgroundService)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('current_ig_status', status);
+      await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
+      
+      // Update unsynced records
+      await _updateUnsyncedRecordsIgStatus(status);
+      
+      print('Updated igStatus to: $status');
     } catch (e) {
       print('Error updating igStatus: $e');
+    }
+  }
+
+  // NEW METHOD: Get current ACC state (for debugging/monitoring)
+  Future<Map<String, dynamic>> getAccState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      int currentIgStatus = prefs.getInt('current_ig_status') ?? 1;
+      int igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+      
+      return {
+        'igStatus': currentIgStatus,
+        'isAccOn': currentIgStatus == 1,
+        'lastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
+        'source': 'Kotlin BackgroundService via SharedPreferences',
+      };
+    } catch (e) {
+      print('Error getting ACC state: $e');
+      return {
+        'igStatus': 1,
+        'isAccOn': true,
+        'lastUpdated': 'unknown',
+        'source': 'default fallback',
+        'error': e.toString(),
+      };
     }
   }
 

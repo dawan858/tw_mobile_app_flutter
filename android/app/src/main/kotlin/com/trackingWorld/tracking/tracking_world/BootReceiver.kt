@@ -8,10 +8,14 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import android.Manifest
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.os.SystemClock
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "BootReceiver"
+        private const val DELAYED_START_ACTION = "com.trackingWorld.tracking.DELAYED_START"
     }
 
     init {
@@ -25,35 +29,16 @@ class BootReceiver : BroadcastReceiver() {
         Log.d(TAG, "Android version: ${Build.VERSION.SDK_INT}")
         
         when (intent.action) {
-            Intent.ACTION_BOOT_COMPLETED -> {
-                Log.d(TAG, "✅ BOOT_COMPLETED received")
-                startApp(context, "BOOT_COMPLETED")
-            }
-            Intent.ACTION_LOCKED_BOOT_COMPLETED -> {
-                Log.d(TAG, "✅ LOCKED_BOOT_COMPLETED received (Direct Boot)")
-                startApp(context, "LOCKED_BOOT_COMPLETED")
-            }
-            "android.intent.action.QUICKBOOT_POWERON" -> {
-                Log.d(TAG, "✅ QUICKBOOT_POWERON received")
-                startApp(context, "QUICKBOOT_POWERON")
-            }
-            "com.htc.intent.action.QUICKBOOT_POWERON" -> {
-                Log.d(TAG, "✅ HTC QUICKBOOT_POWERON received")
-                startApp(context, "HTC_QUICKBOOT_POWERON")
-            }
-            Intent.ACTION_MY_PACKAGE_REPLACED -> {
-                Log.d(TAG, "✅ MY_PACKAGE_REPLACED received")
-                startApp(context, "PACKAGE_REPLACED")
-            }
-            Intent.ACTION_PACKAGE_REPLACED -> {
-                Log.d(TAG, "✅ PACKAGE_REPLACED received")
-                if (intent.dataString?.contains(context.packageName) == true) {
-                    startApp(context, "PACKAGE_REPLACED")
-                }
-            }
-            Intent.ACTION_POWER_CONNECTED -> {
-                Log.d(TAG, "✅ POWER_CONNECTED received")
-                startApp(context, "POWER_CONNECTED")
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            "android.intent.action.QUICKBOOT_POWERON",
+            "com.htc.intent.action.QUICKBOOT_POWERON",
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            Intent.ACTION_PACKAGE_REPLACED,
+            Intent.ACTION_POWER_CONNECTED,
+            DELAYED_START_ACTION -> {
+                Log.d(TAG, "✅ ${intent.action} received")
+                startApp(context, intent.action ?: "unknown")
             }
             else -> {
                 Log.d(TAG, "⚠️ Unknown action received: ${intent.action}")
@@ -93,43 +78,97 @@ class BootReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Failed to start BackgroundService: ${e.message}")
                 
-                // Emergency fallback - try again with minimal intent
-                try {
-                    val emergencyIntent = Intent(context, BackgroundService::class.java)
-                    context.startService(emergencyIntent)
-                    Log.d(TAG, "✅ Emergency service start successful")
-                } catch (emergencyException: Exception) {
-                    Log.e(TAG, "❌ Emergency service start failed: ${emergencyException.message}")
-                }
+                // Schedule a delayed start attempt
+                scheduleDelayedStart(context)
             }
 
-            // Step 3: Start the main activity
-            val activityIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                putExtra("auto_started", true)
-                putExtra("started_by", trigger)
-            }
-            
-            if (activityIntent != null) {
-                try {
-                    Log.d(TAG, "Starting main activity")
-                    context.startActivity(activityIntent)
-                    Log.d(TAG, "✅ Main activity started successfully")
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Failed to start main activity: ${e.message}")
-                }
-            } else {
-                Log.e(TAG, "❌ Failed to get launch intent for package")
-            }
+            // Step 3: Schedule periodic health checks
+            schedulePeriodicHealthCheck(context)
 
             Log.d(TAG, "✅ Boot startup sequence completed")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Critical error in boot startup: ${e.message}", e)
             e.printStackTrace()
+            
+            // Schedule a delayed start attempt
+            scheduleDelayedStart(context)
+        }
+    }
+
+    private fun scheduleDelayedStart(context: Context) {
+        try {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, BootReceiver::class.java).apply {
+                action = DELAYED_START_ACTION
+            }
+            
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                999,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Try again after 30 seconds
+            val triggerTime = SystemClock.elapsedRealtime() + 30000
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Delayed start scheduled for 30 seconds")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to schedule delayed start: ${e.message}")
+        }
+    }
+
+    private fun schedulePeriodicHealthCheck(context: Context) {
+        try {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, BootReceiver::class.java).apply {
+                action = "com.trackingWorld.tracking.HEALTH_CHECK"
+            }
+            
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                888,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Check every 15 minutes
+            val interval = 15 * 60 * 1000L
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setRepeating(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + interval,
+                    interval,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setRepeating(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + interval,
+                    interval,
+                    pendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Periodic health check scheduled every 15 minutes")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to schedule health check: ${e.message}")
         }
     }
 
