@@ -55,6 +55,10 @@ class BackgroundService : Service() {
     private val CHANNEL_ID = "tracking_service"
     private val NOTIFICATION_ID = 888
     private var wakeLock: PowerManager.WakeLock? = null
+    private var cpuWakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
+    private var wifiWakeLock: PowerManager.WakeLock? = null
+    private var gpsWakeLock: PowerManager.WakeLock? = null
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -208,13 +212,36 @@ class BackgroundService : Service() {
             carPowerManager.setSleepStateCallback { isSleeping ->
                 Log.d(TAG, "Sleep state changed: $isSleeping")
                 if (isSleeping) {
-                    // Entering sleep/deep sleep
+                    // Entering sleep/deep sleep - AVN is going to sleep
+                    Log.d(TAG, "🚗 AVN entering sleep state - preparing for sleep")
+                    
+                    // Stop location updates but keep service alive
                     stopLocationUpdates()
-                    releaseWakeLock()
+                    
+                    // Keep wake locks to prevent service from being killed
+                    // Don't release wake locks during sleep
+                    
+                    // Schedule periodic wake-up checks
+                    scheduleSleepWakeUpChecks()
+                    
+                    // Store sleep state
+                    storeSleepState(true)
+                    
                 } else {
-                    // Exiting sleep/deep sleep
-                    acquireWakeLock()
+                    // Exiting sleep/deep sleep - AVN is waking up
+                    Log.d(TAG, "🚗 AVN exiting sleep state - resuming normal operation")
+                    
+                    // Refresh wake locks
+                    refreshWakeLocks()
+                    
+                    // Resume location updates
                     startLocationUpdates()
+                    
+                    // Cancel sleep wake-up checks
+                    cancelSleepWakeUpChecks()
+                    
+                    // Store sleep state
+                    storeSleepState(false)
                 }
             }
             
@@ -596,11 +623,24 @@ class BackgroundService : Service() {
     }
 
     private fun startPeriodicSync() {
-        syncExecutor.scheduleAtFixedRate({
-            if (!isSyncing) {
-                syncData()
-            }
-        }, 5, uploadTimer.toLong(), TimeUnit.SECONDS)
+        try {
+            Log.d(TAG, "Starting periodic sync")
+            
+            // Schedule periodic data sync
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    if (!isSyncing) {
+                        syncData()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in periodic sync", e)
+                }
+            }, 0, uploadTimer.toLong(), TimeUnit.SECONDS)
+            
+            Log.d(TAG, "Periodic sync started with interval: ${uploadTimer} seconds")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting periodic sync", e)
+        }
     }
 
     private fun syncData() {
@@ -696,25 +736,73 @@ class BackgroundService : Service() {
     private fun acquireWakeLock() {
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            
+            // Main wake lock for keeping the service alive
             wakeLock = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "TrackingWorld::LocationServiceWakeLock"
             )
             wakeLock?.acquire(10*60*1000L /*10 minutes*/)
-            Log.d(TAG, "Wake lock acquired")
+            
+            // CPU wake lock to prevent CPU from sleeping
+            cpuWakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TrackingWorld::CPUWakeLock"
+            )
+            cpuWakeLock?.acquire(10*60*1000L)
+            
+            // Screen wake lock to keep screen on (if needed)
+            screenWakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "TrackingWorld::ScreenWakeLock"
+            )
+            screenWakeLock?.acquire(10*60*1000L)
+            
+            // WiFi wake lock to keep WiFi connection alive
+            wifiWakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TrackingWorld::WiFiWakeLock"
+            )
+            wifiWakeLock?.acquire(10*60*1000L)
+            
+            // GPS wake lock to keep GPS active
+            gpsWakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TrackingWorld::GPSWakeLock"
+            )
+            gpsWakeLock?.acquire(10*60*1000L)
+            
+            Log.d(TAG, "All wake locks acquired successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Error acquiring wake lock", e)
+            Log.e(TAG, "Error acquiring wake locks", e)
         }
     }
 
     private fun releaseWakeLock() {
         try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-                Log.d(TAG, "Wake lock released")
+            val wakeLocks = listOf(wakeLock, cpuWakeLock, screenWakeLock, wifiWakeLock, gpsWakeLock)
+            
+            wakeLocks.forEach { lock ->
+                if (lock?.isHeld == true) {
+                    lock.release()
+                  //  Log.d(TAG, "Wake lock released: ${lock.tag}")
+                }
             }
+            
+            Log.d(TAG, "All wake locks released")
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing wake lock", e)
+            Log.e(TAG, "Error releasing wake locks", e)
+        }
+    }
+
+    private fun refreshWakeLocks() {
+        try {
+            Log.d(TAG, "Refreshing wake locks...")
+            releaseWakeLock()
+            acquireWakeLock()
+            Log.d(TAG, "Wake locks refreshed successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error refreshing wake locks", e)
         }
     }
 
@@ -1114,39 +1202,112 @@ class BackgroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "=== BACKGROUND SERVICE STARTED ===")
         Log.d(TAG, "Start ID: $startId")
-        Log.d(TAG, "Flags: $flags")
         Log.d(TAG, "Intent: ${intent?.action}")
         
-        // Log auto-start information
-        val startedBy = intent?.getStringExtra("started_by") ?: "unknown"
-        val autoStarted = intent?.getBooleanExtra("auto_started", false) ?: false
-        Log.d(TAG, "Started by: $startedBy")
-        Log.d(TAG, "Auto started: $autoStarted")
+        // Check if this is a wake-up from sleep
+        val isWakeUpFromSleep = intent?.getBooleanExtra("wake_up_from_sleep", false) ?: false
+        val isSleepKeepAlive = intent?.getBooleanExtra("sleep_keep_alive", false) ?: false
         
+        if (isWakeUpFromSleep) {
+            Log.d(TAG, "🚗 Waking up from sleep state - resuming full operation")
+            handleWakeUpFromSleep()
+        } else if (isSleepKeepAlive) {
+            Log.d(TAG, "🚗 Sleep keep-alive - maintaining minimal service")
+            handleSleepKeepAlive()
+        } else {
+            Log.d(TAG, "Normal service start - initializing full operation")
+            handleNormalStart()
+        }
+        
+        // Return START_STICKY to ensure service restarts if killed
+        return START_STICKY
+    }
+
+    private fun handleWakeUpFromSleep() {
         try {
-            // Start as a foreground service
-            startForeground(NOTIFICATION_ID, createNotification())
+            Log.d(TAG, "=== HANDLING WAKE-UP FROM SLEEP ===")
             
-            // Start location updates
+            // Refresh all wake locks
+            refreshWakeLocks()
+            
+            // Resume location updates
             startLocationUpdates()
             
-            // Reset start attempts counter on successful start
-            serviceStartAttempts = 0
+            // Cancel any pending sleep wake-up checks
+            cancelSleepWakeUpChecks()
             
-            // Log successful start
-            Log.d(TAG, "✅ Service started successfully from: $startedBy")
+            // Update sleep state
+            storeSleepState(false)
             
-            // Return START_STICKY to ensure the service restarts if killed
-            return START_STICKY
+            // Resume normal sync operations
+            startPeriodicSync()
+            
+            Log.d(TAG, "✅ Successfully resumed from sleep state")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error during service start", e)
-            serviceStartAttempts++
+            Log.e(TAG, "Error handling wake-up from sleep", e)
+        }
+    }
+
+    private fun handleSleepKeepAlive() {
+        try {
+            Log.d(TAG, "=== HANDLING SLEEP KEEP-ALIVE ===")
             
-            if (serviceStartAttempts < MAX_START_ATTEMPTS) {
-                scheduleServiceRestart()
-            }
+            // Keep wake locks but don't start location updates
+            // This maintains the service alive during sleep
             
-            return START_NOT_STICKY
+            // Update notification to show sleep state
+            updateNotificationWithSleepState()
+            
+            Log.d(TAG, "✅ Sleep keep-alive maintained")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling sleep keep-alive", e)
+        }
+    }
+
+    private fun handleNormalStart() {
+        try {
+            Log.d(TAG, "=== HANDLING NORMAL SERVICE START ===")
+            
+            // Start foreground service
+            startForeground(NOTIFICATION_ID, createNotification())
+            
+            // Initialize all components
+            initializeAccStateMonitoring()
+            startLocationUpdates()
+            startPeriodicSync()
+            
+            Log.d(TAG, "✅ Normal service start completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling normal start", e)
+        }
+    }
+
+    private fun updateNotificationWithSleepState() {
+        try {
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("GPS Tracking - Sleep Mode")
+                .setContentText("Service maintained during AVN sleep")
+                .setStyle(NotificationCompat.BigTextStyle().bigText(
+                    "GPS Tracking - Sleep Mode\n" +
+                    "Service maintained during AVN sleep\n" +
+                    "Waiting for wake-up signal..."
+                ))
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+                .build()
+
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            
+            Log.d(TAG, "Updated notification for sleep state")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating sleep state notification", e)
         }
     }
 
@@ -1291,6 +1452,69 @@ class BackgroundService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping location updates", e)
+        }
+    }
+
+    private fun scheduleSleepWakeUpChecks() {
+        try {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(this, SleepWakeUpReceiver::class.java).apply {
+                action = "com.trackingWorld.tracking.SLEEP_WAKE_UP_CHECK"
+            }
+            
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, 
+                0, 
+                intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Check every 30 seconds during sleep
+            alarmManager.setRepeating(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + 30000, // 30 seconds
+                30000, // 30 seconds interval
+                pendingIntent
+            )
+            
+            Log.d(TAG, "Scheduled sleep wake-up checks every 30 seconds")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error scheduling sleep wake-up checks", e)
+        }
+    }
+
+    private fun cancelSleepWakeUpChecks() {
+        try {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(this, SleepWakeUpReceiver::class.java).apply {
+                action = "com.trackingWorld.tracking.SLEEP_WAKE_UP_CHECK"
+            }
+            
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, 
+                0, 
+                intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            alarmManager.cancel(pendingIntent)
+            Log.d(TAG, "Cancelled sleep wake-up checks")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling sleep wake-up checks", e)
+        }
+    }
+
+    private fun storeSleepState(isSleeping: Boolean) {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putBoolean("flutter.is_sleeping", isSleeping)
+                putLong("flutter.sleep_state_timestamp", System.currentTimeMillis())
+                apply()
+            }
+            Log.d(TAG, "Stored sleep state: $isSleeping")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error storing sleep state", e)
         }
     }
 }

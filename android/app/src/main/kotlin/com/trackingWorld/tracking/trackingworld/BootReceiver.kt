@@ -54,14 +54,17 @@ class BootReceiver : BroadcastReceiver() {
             Log.d(TAG, "=== STARTING APP AFTER BOOT ===")
             Log.d(TAG, "Trigger: $trigger")
             
-            // Step 1: Check permissions (but don't block if missing)
+            // Step 1: Check for interrupted sleep state
+            checkForInterruptedSleepState(context)
+            
+            // Step 2: Check permissions (but don't block if missing)
             if (!hasRequiredPermissions(context)) {
                 Log.w(TAG, "⚠️ Missing some permissions - continuing anyway")
             } else {
                 Log.d(TAG, "✅ All required permissions available")
             }
 
-            // Step 2: Start the BackgroundService immediately (CRITICAL)
+            // Step 3: Start the BackgroundService immediately (CRITICAL)
             val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
@@ -85,7 +88,7 @@ class BootReceiver : BroadcastReceiver() {
                 scheduleDelayedStart(context)
             }
 
-            // Step 3: Also start the main activity to ensure app is visible
+            // Step 4: Also start the main activity to ensure app is visible
             try {
                 val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -103,7 +106,7 @@ class BootReceiver : BroadcastReceiver() {
                 Log.e(TAG, "❌ Failed to start main activity: ${e.message}")
             }
 
-            // Step 4: Schedule periodic health checks
+            // Step 5: Schedule periodic health checks
             schedulePeriodicHealthCheck(context)
 
             Log.d(TAG, "✅ Boot startup sequence completed")
@@ -114,6 +117,38 @@ class BootReceiver : BroadcastReceiver() {
             
             // Schedule a delayed start attempt
             scheduleDelayedStart(context)
+        }
+    }
+
+    private fun checkForInterruptedSleepState(context: Context) {
+        try {
+            Log.d(TAG, "=== CHECKING FOR INTERRUPTED SLEEP STATE ===")
+            
+            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
+            val sleepTimestamp = prefs.getLong("flutter.sleep_state_timestamp", 0)
+            
+            if (wasSleeping) {
+                Log.d(TAG, "🚗 Detected interrupted sleep state from boot")
+                Log.d(TAG, "Sleep timestamp: $sleepTimestamp")
+                
+                // Clear the sleep state since we're booting fresh
+                prefs.edit().apply {
+                    putBoolean("flutter.is_sleeping", false)
+                    putLong("flutter.sleep_state_timestamp", 0)
+                    apply()
+                }
+                
+                Log.d(TAG, "✅ Cleared interrupted sleep state")
+                
+                // This was likely an AVN restart during sleep
+                // The service will handle normal startup
+            } else {
+                Log.d(TAG, "No interrupted sleep state detected")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking for interrupted sleep state", e)
         }
     }
 
