@@ -46,8 +46,9 @@ class CarPowerManager(private val context: Context) {
                 override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
                     try {
                         carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as bw.car.power.CarPowerManager
-                        setupPowerStateListener()
+                        
                         connect()
+                        setupPowerStateListener()
                         // Get initial state
                         getCurrentAccState()
                     } catch (e: CarNotConnectedException) {

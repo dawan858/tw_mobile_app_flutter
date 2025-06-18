@@ -1,7 +1,11 @@
 package com.trackingworld.tracking.trackingworld
 
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.LocationManager
+import android.location.GnssStatus
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,16 +17,34 @@ import android.widget.Toast
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.core.app.ActivityCompat
+import android.Manifest
+import android.content.pm.PackageManager
+import android.app.ActivityManager
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.example.tracking_world/service"
-    private val DEVICE_INFO_CHANNEL = "com.example.tracking_world/device_info"
+    private val CHANNEL = "com.trackingWorld.tracking/service"
+    private val DEVICE_INFO_CHANNEL = "com.trackingWorld.tracking/device_info"
+    private val DEVICE_ADMIN_CHANNEL = "device_admin_channel"
+    private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
     private val TAG = "MainActivity"
     private var terminationReceiver: AppTerminationReceiver? = null
+    private lateinit var devicePolicyManager: DevicePolicyManager
+    private lateinit var adminComponent: ComponentName
+    private lateinit var locationManager: LocationManager
+    private var gnssStatusCallback: GnssStatus.Callback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "MainActivity onCreate")
+        
+        // Initialize device admin components
+        devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
+        
+        // Initialize location manager for satellite data
+        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        
         registerTerminationReceiver()
         checkAndRequestPermissions()
         startTrackingService()
@@ -170,18 +192,24 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // Service channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startService" -> {
                     Log.d(TAG, "Starting GPS tracking service from Flutter")
                     startTrackingService()
-                    result.success(null)
+                    result.success(true)
                 }
                 "stopService" -> {
                     Log.d(TAG, "Stopping GPS tracking service from Flutter")
                     val serviceIntent = Intent(this, GpsTrackingService::class.java)
                     stopService(serviceIntent)
-                    result.success(null)
+                    result.success(true)
+                }
+                "isServiceRunning" -> {
+                    // Check if service is running
+                    val isRunning = isServiceRunning(GpsTrackingService::class.java)
+                    result.success(isRunning)
                 }
                 else -> {
                     result.notImplemented()
@@ -189,17 +217,14 @@ class MainActivity : FlutterActivity() {
             }
         }
 
+        // Device info channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_INFO_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "getImei" -> {
                     try {
-                        val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            result.success(telephonyManager.imei)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            result.success(telephonyManager.deviceId)
-                        }
+                        val imeiManager = ImeiManager.getInstance(this)
+                        val imei = imeiManager.getDeviceIdentifier()
+                        result.success(imei)
                     } catch (e: Exception) {
                         Log.e(TAG, "Error getting IMEI", e)
                         result.error("IMEI_ERROR", "Failed to get IMEI", e.message)
@@ -210,6 +235,95 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+
+        // Device admin channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_ADMIN_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isDeviceAdminActive" -> {
+                    try {
+                        val isActive = devicePolicyManager.isAdminActive(adminComponent)
+                        result.success(isActive)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error checking device admin status", e)
+                        result.error("DEVICE_ADMIN_ERROR", "Failed to check device admin status", e.message)
+                    }
+                }
+                "requestDeviceAdmin" -> {
+                    try {
+                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
+                            "This app requires device admin privileges for security features")
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error requesting device admin", e)
+                        result.error("DEVICE_ADMIN_ERROR", "Failed to request device admin", e.message)
+                    }
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+
+        // Satellite channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SATELLITE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getSatelliteData" -> {
+                    try {
+                        val satelliteData = getSatelliteData()
+                        result.success(satelliteData)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error getting satellite data", e)
+                        result.error("SATELLITE_ERROR", "Failed to get satellite data", e.message)
+                    }
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+    }
+
+    private fun getSatelliteData(): Map<String, Int> {
+        val satelliteData = mutableMapOf<String, Int>()
+        
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    // Get satellite data from BackgroundService if available
+                    satelliteData["totalSatellites"] = BackgroundService.totalSatellites
+                    satelliteData["connectedSatellites"] = BackgroundService.connectedSatellites
+                    
+                    Log.d(TAG, "Satellite data: ${satelliteData["totalSatellites"]} total, ${satelliteData["connectedSatellites"]} connected")
+                } else {
+                    Log.w(TAG, "Location permission not granted for satellite data")
+                    satelliteData["totalSatellites"] = 0
+                    satelliteData["connectedSatellites"] = 0
+                }
+            } else {
+                Log.w(TAG, "GNSS status not available on this Android version")
+                satelliteData["totalSatellites"] = 0
+                satelliteData["connectedSatellites"] = 0
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting satellite data", e)
+            satelliteData["totalSatellites"] = 0
+            satelliteData["connectedSatellites"] = 0
+        }
+        
+        return satelliteData
+    }
+
+    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+        val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+        for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
+            if (serviceClass.name == service.service.className) {
+                return true
+            }
+        }
+        return false
     }
 
     override fun onDestroy() {
