@@ -36,6 +36,9 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED,
             Intent.ACTION_PACKAGE_REPLACED,
             Intent.ACTION_POWER_CONNECTED,
+            "android.intent.action.TIME_SET",
+            "android.intent.action.TIMEZONE_CHANGED",
+            "android.bluetooth.adapter.action.STATE_CHANGED",
             DELAYED_START_ACTION -> {
                 Log.d(TAG, "✅ ${intent.action} received")
                 startApp(context, intent.action ?: "unknown")
@@ -82,7 +85,25 @@ class BootReceiver : BroadcastReceiver() {
                 scheduleDelayedStart(context)
             }
 
-            // Step 3: Schedule periodic health checks
+            // Step 3: Also start the main activity to ensure app is visible
+            try {
+                val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                    putExtra("auto_started", true)
+                    putExtra("started_by", trigger)
+                }
+                
+                if (launchIntent != null) {
+                    context.startActivity(launchIntent)
+                    Log.d(TAG, "✅ Main activity started successfully")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to start main activity: ${e.message}")
+            }
+
+            // Step 4: Schedule periodic health checks
             schedulePeriodicHealthCheck(context)
 
             Log.d(TAG, "✅ Boot startup sequence completed")

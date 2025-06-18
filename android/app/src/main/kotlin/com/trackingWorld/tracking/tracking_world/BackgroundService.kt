@@ -577,27 +577,21 @@ class BackgroundService : Service() {
     }
 
     private fun logServiceStatus() {
-        Log.d(TAG, "=== SERVICE STATUS ===")
-        Log.d(TAG, "Service running: ${this.javaClass.simpleName}")
-        Log.d(TAG, "GPS Timer: ${gpsTimer}s")
-        Log.d(TAG, "Location client initialized: ${::fusedLocationClient.isInitialized}")
-        Log.d(TAG, "Location callback initialized: ${::locationCallback.isInitialized}")
-        
         try {
-            val db = dbHelper.readableDatabase
-            val cursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
-            cursor.moveToFirst()
-            val totalRecords = cursor.getInt(0)
-            cursor.close()
+            val imei = getImei()
+            val locationCount = recentLocations.size
+            val isMoving = this.isMoving
+            val accState = igStatus
             
-            val unsyncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 0", null)
-            unsyncedCursor.moveToFirst()
-            val unsyncedRecords = unsyncedCursor.getInt(0)
-            unsyncedCursor.close()
+            Log.d(TAG, "=== SERVICE STATUS ===")
+            Log.d(TAG, "IMEI: $imei")
+            Log.d(TAG, "Recent locations: $locationCount")
+            Log.d(TAG, "Moving: $isMoving")
+            Log.d(TAG, "ACC State: $accState")
+            Log.d(TAG, "Service uptime: ${System.currentTimeMillis() - lastLocationUpdateTime}ms")
             
-            Log.d(TAG, "Database records - Total: $totalRecords, Unsynced: $unsyncedRecords")
         } catch (e: Exception) {
-            Log.e(TAG, "Error checking database: ${e.message}")
+            Log.e(TAG, "Error logging service status: ${e.message}")
         }
     }
 
@@ -741,37 +735,44 @@ class BackgroundService : Service() {
     }
 
     private fun verifyServiceHealth() {
-        Log.d(TAG, "=== SERVICE HEALTH CHECK ===")
-        
         try {
-            // Check IMEI
-            val imei = "unknown"
-            Log.d(TAG, "IMEI Status: ${if (imei.isNotEmpty() && imei != "unknown") "✅ Valid" else "❌ Invalid"}")
+            Log.d(TAG, "=== VERIFYING SERVICE HEALTH ===")
             
-            // Check location client
-            Log.d(TAG, "Location Client: ${if (::fusedLocationClient.isInitialized) "✅ Ready" else "❌ Not Ready"}")
-            
-            // Check database
-            try {
-                val db = dbHelper.readableDatabase
-                val cursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
-                cursor.moveToFirst()
-                val recordCount = cursor.getInt(0)
-                cursor.close()
-                Log.d(TAG, "Database: ✅ $recordCount records")
+            // Check if location updates are active
+            val isLocationActive = try {
+                fusedLocationClient.lastLocation.isComplete
             } catch (e: Exception) {
-                Log.e(TAG, "Database: ❌ Error - ${e.message}")
+                false
+            }
+            Log.d(TAG, "Location service active: $isLocationActive")
+            
+            // Check if IMEI is available
+            val imei = getImei()
+            Log.d(TAG, "IMEI available: ${imei != "unknown" && imei.isNotEmpty()}")
+            
+            // Check if database is accessible
+            val dbAccessible = try {
+                dbHelper.readableDatabase.isOpen
+            } catch (e: Exception) {
+                false
+            }
+            Log.d(TAG, "Database accessible: $dbAccessible")
+            
+            // Check if wake lock is held
+            val wakeLockHeld = wakeLock?.isHeld ?: false
+            Log.d(TAG, "Wake lock held: $wakeLockHeld")
+            
+            // If any critical component is not working, restart the service
+            if (!isLocationActive || imei == "unknown" || imei.isEmpty() || !dbAccessible) {
+                Log.w(TAG, "⚠️ Service health check failed, scheduling restart")
+                scheduleServiceRestart()
+            } else {
+                Log.d(TAG, "✅ Service health check passed")
             }
             
-            // Check network connectivity
-            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            val networkInfo = connectivityManager.activeNetworkInfo
-            Log.d(TAG, "Network: ${if (networkInfo?.isConnected == true) "✅ Connected" else "❌ Disconnected"}")
-            
-            Log.d(TAG, "✅ Service health check completed")
-            
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error in health check: ${e.message}")
+            Log.e(TAG, "Error during service health check: ${e.message}")
+            scheduleServiceRestart()
         }
     }
 
@@ -1116,6 +1117,12 @@ class BackgroundService : Service() {
         Log.d(TAG, "Flags: $flags")
         Log.d(TAG, "Intent: ${intent?.action}")
         
+        // Log auto-start information
+        val startedBy = intent?.getStringExtra("started_by") ?: "unknown"
+        val autoStarted = intent?.getBooleanExtra("auto_started", false) ?: false
+        Log.d(TAG, "Started by: $startedBy")
+        Log.d(TAG, "Auto started: $autoStarted")
+        
         try {
             // Start as a foreground service
             startForeground(NOTIFICATION_ID, createNotification())
@@ -1125,6 +1132,9 @@ class BackgroundService : Service() {
             
             // Reset start attempts counter on successful start
             serviceStartAttempts = 0
+            
+            // Log successful start
+            Log.d(TAG, "✅ Service started successfully from: $startedBy")
             
             // Return START_STICKY to ensure the service restarts if killed
             return START_STICKY
