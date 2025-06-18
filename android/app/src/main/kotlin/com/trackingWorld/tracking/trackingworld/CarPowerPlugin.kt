@@ -39,7 +39,7 @@ class CarPowerPlugin(
 
         // Set up sleep state callback
         carPowerManager.setSleepStateCallback { isSleeping ->
-            Log.d(TAG, "Sending sleep state to Flutter: $isSleeping")
+            Log.d(TAG, "Sleep state changed: $isSleeping")
             try {
                 channel.invokeMethod("onSleepStateChanged", isSleeping)
             } catch (e: Exception) {

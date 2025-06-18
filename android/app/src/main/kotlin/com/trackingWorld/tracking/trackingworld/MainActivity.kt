@@ -52,8 +52,7 @@ class MainActivity : FlutterActivity() {
         carPowerManager.initialize()
         
         registerTerminationReceiver()
-        checkAndRequestPermissions()
-        startTrackingService()
+        // Don't start tracking service here - let Flutter control it after IMEI is obtained
     }
 
     private fun checkAndRequestPermissions() {
@@ -216,6 +215,11 @@ class MainActivity : FlutterActivity() {
                     // Check if service is running
                     val isRunning = isServiceRunning(GpsTrackingService::class.java)
                     result.success(isRunning)
+                }
+                "appReady" -> {
+                    Log.d(TAG, "Flutter app is ready - IMEI obtained, starting tracking service")
+                    startTrackingService()
+                    result.success(true)
                 }
                 else -> {
                     result.notImplemented()

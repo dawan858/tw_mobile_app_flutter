@@ -661,7 +661,7 @@ class BackgroundService : Service() {
                 Log.d(TAG, "🚗 Triggering wake-up from sleep")
                 
                 // Trigger wake-up
-                handleWakeUpFromSleep()
+                handleWakeUpFromSleep(false)
             }
             // If we think we're awake but ACC is off, we should go to sleep
             else if (!storedSleepState && currentIgStatus == 0) {
@@ -1245,14 +1245,15 @@ class BackgroundService : Service() {
         // Check if this is a wake-up from sleep
         val isWakeUpFromSleep = intent?.getBooleanExtra("wake_up_from_sleep", false) ?: false
         val isSleepKeepAlive = intent?.getBooleanExtra("sleep_keep_alive", false) ?: false
+        val isBackgroundOnly = intent?.getBooleanExtra("background_only", false) ?: false
         
         // Check for interrupted sleep state
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
         
         if (isWakeUpFromSleep) {
-            Log.d(TAG, "🚗 Waking up from sleep state - resuming full operation")
-            handleWakeUpFromSleep()
+            Log.d(TAG, "🚗 Waking up from sleep state - resuming background operation only")
+            handleWakeUpFromSleep(isBackgroundOnly)
         } else if (isSleepKeepAlive) {
             Log.d(TAG, "🚗 Sleep keep-alive - maintaining minimal service")
             handleSleepKeepAlive()
@@ -1268,9 +1269,13 @@ class BackgroundService : Service() {
         return START_STICKY
     }
 
-    private fun handleWakeUpFromSleep() {
+    private fun handleWakeUpFromSleep(isBackgroundOnly: Boolean) {
         try {
             Log.d(TAG, "=== HANDLING WAKE-UP FROM SLEEP ===")
+            Log.d(TAG, "Background only mode: $isBackgroundOnly")
+            
+            // Update wake-up timestamp
+            updateWakeUpTimestamp()
             
             // Refresh all wake locks
             refreshWakeLocks()
@@ -1287,10 +1292,46 @@ class BackgroundService : Service() {
             // Resume normal sync operations
             startPeriodicSync()
             
-            Log.d(TAG, "✅ Successfully resumed from sleep state")
+            // Always show background notification for wake-up from sleep
+            showBackgroundWakeUpNotification()
+            
+            Log.d(TAG, "✅ Successfully resumed from sleep state (background mode)")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error handling wake-up from sleep", e)
+        }
+    }
+
+    private fun showBackgroundWakeUpNotification() {
+        try {
+            Log.d(TAG, "Showing background wake-up notification")
+            
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("GPS Tracking Resumed")
+                .setContentText("Service restarted after AVN wake-up")
+                .setStyle(NotificationCompat.BigTextStyle().bigText(
+                    "GPS Tracking Resumed\n" +
+                    "Service restarted after AVN wake-up\n" +
+                    "Running in background mode"
+                ))
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+                .setAutoCancel(false)
+                .build()
+
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            
+            // Start foreground service with this notification
+            startForeground(NOTIFICATION_ID, notification)
+            
+            Log.d(TAG, "✅ Background wake-up notification shown")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error showing background wake-up notification", e)
         }
     }
 
@@ -1553,6 +1594,35 @@ class BackgroundService : Service() {
             Log.d(TAG, "Stored sleep state: $isSleeping")
         } catch (e: Exception) {
             Log.e(TAG, "Error storing sleep state", e)
+        }
+    }
+
+    private fun shouldStartInBackground(): Boolean {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val isSleeping = prefs.getBoolean("flutter.is_sleeping", false)
+            val lastWakeUpTime = prefs.getLong("flutter.last_wake_up_time", 0)
+            val currentTime = System.currentTimeMillis()
+            
+            // If we're in sleep state or recently woke up, start in background
+            if (isSleeping || (currentTime - lastWakeUpTime) < 60000) { // Within 1 minute of wake-up
+                Log.d(TAG, "Should start in background: sleep state or recent wake-up")
+                return true
+            }
+            
+            return false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking background start condition", e)
+            return false
+        }
+    }
+
+    private fun updateWakeUpTimestamp() {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().putLong("flutter.last_wake_up_time", System.currentTimeMillis()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating wake-up timestamp", e)
         }
     }
 }

@@ -10,6 +10,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:tracking_world/services/device_admin_manager.dart';
 import 'services/api_service.dart';
 import 'services/background_service.dart';
+import 'services/permission_flow_manager.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'welcome.dart';
 import 'live_status_screen.dart';
@@ -129,16 +130,16 @@ class _GPSTrackerState extends State<GPSTracker> {
   static const serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
   static const MethodChannel satelliteChannel = MethodChannel('com.trackingWorld.tracking/satellite');
   
+  // Permission flow manager
+  final PermissionFlowManager _permissionManager = PermissionFlowManager();
+  bool _permissionsGranted = false;
+
   @override
   void initState() {
     super.initState();
     _loadAppVersion();
-    _checkAllPermissions();
-    _getDeviceInfo();
-    _saveImei();
+    _setupPermissionFlow();
     _loadConfiguration();
-      _checkDeviceAdminStatus(); // Add this line
-
     
     // Set igStatus to 1 when app starts
     setState(() {
@@ -150,7 +151,7 @@ class _GPSTrackerState extends State<GPSTracker> {
       switch (call.method) {
         case 'onPermissionGranted':
           // Permission was granted, try getting IMEI again
-          await _getDeviceInfo();
+          await _initializeApp();
           break;
         case 'onPermissionDenied':
           if (mounted) {
@@ -162,12 +163,8 @@ class _GPSTrackerState extends State<GPSTracker> {
       }
     });
 
-    // Get satellite data once after permissions and service checks
-    _getSatelliteData();
-
-    // Check if service is already running
-    _checkServiceStatus();
-    _startTracking();
+    // Start the initialization sequence
+    _initializeApp();
   }
   
   @override
@@ -179,149 +176,81 @@ class _GPSTrackerState extends State<GPSTracker> {
     super.dispose();
   }
 
-Future<void> _checkDeviceAdminStatus() async {
-  final isActive = await DeviceAdminManager.isDeviceAdminActive();
-  setState(() {
-    _isDeviceAdminActive = isActive;
-  });
-  
-  // Request device admin if not active
-  if (!isActive) {
-    _showDeviceAdminDialog();
-  }
-}
-
-void _showDeviceAdminDialog() {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (BuildContext context) {
-      return AlertDialog(
-        title: const Text('Security Protection Required'),
-        content: const Text(
-          'This GPS tracking app requires device administrator privileges to prevent unauthorized removal and ensure continuous tracking for security purposes.\n\n'
-          'Please enable device admin to continue.'
-        ),
-        actions: <Widget>[
-          TextButton(
-            child: const Text('Enable Device Admin'),
-            onPressed: () async {
-              Navigator.of(context).pop();
-              await DeviceAdminManager.requestDeviceAdmin();
-              // Check status again after user returns
-              await Future.delayed(const Duration(seconds: 1));
-              _checkDeviceAdminStatus();
-            },
-          ),
-        ],
-      );
-    },
-  );
-}
-
-
-
-  // Get device information
-  Future<void> _getDeviceInfo() async {
-    try {
-      try {
-        final String? imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
-        if (imei != null && imei.isNotEmpty) {
-          setState(() {
-            _imei = imei;
-            _name = imei; // Using IMEI as name for consistency
-          });
-        } else {
-          debugPrint('Failed to get IMEI: IMEI is null or empty');
-        }
-      } on PlatformException catch (e) {
-        debugPrint('Failed to get IMEI: ${e.message}');
-      }
-
-      final androidInfo = await deviceInfo.androidInfo;
+  // Setup permission flow with callbacks
+  void _setupPermissionFlow() {
+    _permissionManager.onAllPermissionsGranted = () async {
       setState(() {
-        _phoneNo = androidInfo.model;
+        _permissionsGranted = true;
       });
-    } catch (e) {
-      debugPrint('Error getting device info: $e');
-    }
+      print('✅ All permissions granted - app is ready');
+      
+      // Now that permissions are granted, initialize the app
+      await _initializeApp();
+    };
+
+    _permissionManager.onPermissionDenied = (String permissionName) {
+      print('❌ Permission denied: $permissionName');
+      _showPermissionDeniedDialog(permissionName);
+    };
+
+    _permissionManager.onFlowCompleted = () async {
+      print('✅ Permission flow completed');
+      
+      // Try to initialize app after permission flow completes
+      await _initializeApp();
+    };
+
+    // Start permission flow after a short delay
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startPermissionFlow();
+    });
   }
 
-  // Check all required permissions
-  Future<void> _checkAllPermissions() async {
-    // Request phone state permission first
-    final phoneStatus = await Permission.phone.request();
-    if (phoneStatus.isDenied) {
-      _showPermissionDialog('Phone State');
+  // Start the permission flow
+  Future<void> _startPermissionFlow() async {
+    // Check if critical permissions are already granted
+    final criticalGranted = await _permissionManager.checkCriticalPermissions();
+    if (criticalGranted) {
+      setState(() {
+        _permissionsGranted = true;
+      });
+      print('✅ Critical permissions already granted');
+      
+      // Initialize app since permissions are already granted
+      await _initializeApp();
       return;
     }
 
-    // Check location services
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      _showPermissionDialog('Location Services');
-      return;
-    }
-
-    // Check location permission
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        _showPermissionDialog('Location');
-        return;
-      }
-    }
-    
-    if (permission == LocationPermission.deniedForever) {
-      _showPermissionDialog('Location (Permanent)');
-      return;
-    }
-
-    // Request notification permission for Android 13+
-    if (await Permission.notification.isDenied) {
-      await Permission.notification.request();
-    }
-
-    // Request background location permission
-    if (await Permission.locationWhenInUse.isGranted) {
-      final backgroundStatus = await Permission.locationAlways.request();
-      if (backgroundStatus.isDenied) {
-        _showPermissionDialog('Background Location');
-        return;
-      }
-    }
-
-    // Request storage permissions
-    if (await Permission.storage.isDenied) {
-      await Permission.storage.request();
-    }
-
-    // Request media permissions for Android 13+
-    if (await Permission.photos.isDenied) {
-      await Permission.photos.request();
-    }
-
-    if (await Permission.videos.isDenied) {
-      await Permission.videos.request();
-    }
+    // Start the full permission flow
+    print('🔄 Starting permission flow...');
+    await _permissionManager.startPermissionFlow(context);
   }
 
-  // Show permission dialog
-  void _showPermissionDialog(String permissionType) {
+  // Show dialog when critical permission is denied
+  void _showPermissionDeniedDialog(String permissionName) {
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Text('$permissionType Permission Required'),
-          content: Text('This app needs $permissionType permission to function properly. Please grant the permission in settings.'),
+          title: const Text('Permission Required'),
+          content: Text(
+            '$permissionName permission is required for this app to function properly. '
+            'Please grant the permission to continue.'
+          ),
           actions: <Widget>[
             TextButton(
               child: const Text('Open Settings'),
               onPressed: () async {
                 Navigator.of(context).pop();
                 await openAppSettings();
+              },
+            ),
+            TextButton(
+              child: const Text('Retry'),
+              onPressed: () {
+                Navigator.of(context).pop();
+                _startPermissionFlow();
               },
             ),
             TextButton(
@@ -336,6 +265,48 @@ void _showDeviceAdminDialog() {
     );
   }
 
+  // Get device information
+  Future<bool> _getDeviceInfo() async {
+    try {
+      print('🔄 Attempting to get device info...');
+      
+      // Try to get IMEI
+      try {
+        final String? imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
+        if (imei != null && imei.isNotEmpty && imei != 'unknown') {
+          setState(() {
+            _imei = imei;
+            _name = imei; // Using IMEI as name for consistency
+          });
+          print('✅ IMEI obtained successfully: $imei');
+        } else {
+          debugPrint('❌ Failed to get IMEI: IMEI is null, empty, or unknown');
+          return false;
+        }
+      } on PlatformException catch (e) {
+        debugPrint('❌ Failed to get IMEI: ${e.message}');
+        return false;
+      }
+
+      // Get device model
+      try {
+        final androidInfo = await deviceInfo.androidInfo;
+        setState(() {
+          _phoneNo = androidInfo.model;
+        });
+        print('✅ Device model obtained: ${androidInfo.model}');
+      } catch (e) {
+        debugPrint('⚠️ Failed to get device model: $e');
+        // Don't fail the entire process for device model
+      }
+      
+      return true;
+    } catch (e) {
+      debugPrint('❌ Error getting device info: $e');
+      return false;
+    }
+  }
+
   // Start tracking location
   void _startTracking() {
     debugPrint('Starting tracking...');
@@ -343,8 +314,8 @@ void _showDeviceAdminDialog() {
       _isTracking = true;
     });
     
-    // Start the native service for background tracking
-    _startTrackingService();
+    // Service is now started by native side after IMEI is obtained
+    // No need to call _startTrackingService() here
     
     // Only use Flutter Geolocator for UI updates when app is in foreground
     const LocationSettings locationSettings = LocationSettings(
@@ -560,56 +531,155 @@ void _showDeviceAdminDialog() {
     });
   }
 
+  // Proper app initialization sequence
+  Future<void> _initializeApp() async {
+    print('🔄 Starting app initialization...');
+    
+    // Step 1: Get device info (IMEI) - this requires phone permission
+    final deviceInfoSuccess = await _getDeviceInfo();
+    
+    // Step 2: Check if we have IMEI
+    if (!deviceInfoSuccess || _imei.isEmpty || _imei == 'unknown') {
+      print('⚠️ IMEI not available yet - waiting for permissions');
+      return; // Wait for permissions to be granted
+    }
+    
+    print('✅ IMEI obtained: $_imei');
+    
+    // Step 3: Save IMEI
+    await _saveImei();
+    
+    // Step 4: Get satellite data
+    await _getSatelliteData();
+    
+    // Step 5: Signal to native side that app is ready
+    await _signalAppReady();
+    
+    // Step 6: Check service status and start tracking
+    await _checkServiceStatus();
+    _startTracking();
+    
+    print('✅ App initialization completed');
+  }
+
+  // Signal to native side that app is ready (IMEI obtained)
+  Future<void> _signalAppReady() async {
+    try {
+      await serviceChannel.invokeMethod('appReady');
+      print('✅ Signaled app ready to native side');
+    } catch (e) {
+      print('❌ Error signaling app ready: $e');
+    }
+  }
+
+  // Check if app is properly initialized
+  bool get isAppInitialized {
+    return _permissionsGranted && _imei.isNotEmpty && _imei != 'unknown';
+  }
+
+  // Get initialization status message
+  String get initializationStatus {
+    if (!_permissionsGranted) return 'Waiting for permissions...';
+    if (_imei.isEmpty || _imei == 'unknown') return 'Getting device ID...';
+    return 'Ready';
+  }
+
   @override
   Widget build(BuildContext context) {
-    return WelcomeScreen(
-      imei: _imei,
-      version: _appVersion,
-      trackingData: {
-        'totalSatellites': _totalSatellites.toString(),
-        'connectedSatellites': _connectedSatellites.toString(),
-        'status': _isTracking ? 'Location Found' : 'Not Tracking',
-        'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
-        'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
-        'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
-        'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
-        'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
-        'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
-        'lastPollTime': _deviceRDT,
-        'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-        'gmt': _gmtSettings,
-        'pendingData': '0', // This would require sync service info
-        'server': 'Connected', // This would require network status check
-        'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-      },
-      onInfoTap: () async {
-        await _getSatelliteData();
-        setState(() {}); // Ensure UI is updated with latest satellite data
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => LiveStatusScreen(
-              trackingData: {
-                'totalSatellites': _totalSatellites.toString(),
-                'connectedSatellites': _connectedSatellites.toString(),
-                'status': _isTracking ? 'Location Found' : 'Not Tracking',
-                'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
-                'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
-                'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
-                'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
-                'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
-                'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
-                'lastPollTime': _deviceRDT,
-                'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-                'gmt': _gmtSettings,
-                'pendingData': '0',
-                'server': 'Connected',
-                'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-              },
-            ),
+    return Scaffold(
+      body: Stack(
+        children: [
+          WelcomeScreen(
+            imei: _imei,
+            version: _appVersion,
+            trackingData: {
+              'totalSatellites': _totalSatellites.toString(),
+              'connectedSatellites': _connectedSatellites.toString(),
+              'status': _isTracking ? 'Location Found' : 'Not Tracking',
+              'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
+              'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
+              'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
+              'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
+              'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
+              'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
+              'lastPollTime': _deviceRDT,
+              'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+              'gmt': _gmtSettings,
+              'pendingData': '0', // This would require sync service info
+              'server': 'Connected', // This would require network status check
+              'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+            },
+            onInfoTap: () async {
+              await _getSatelliteData();
+              setState(() {}); // Ensure UI is updated with latest satellite data
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => LiveStatusScreen(
+                    trackingData: {
+                      'totalSatellites': _totalSatellites.toString(),
+                      'connectedSatellites': _connectedSatellites.toString(),
+                      'status': _isTracking ? 'Location Found' : 'Not Tracking',
+                      'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
+                      'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
+                      'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
+                      'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
+                      'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
+                      'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
+                      'lastPollTime': _deviceRDT,
+                      'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+                      'gmt': _gmtSettings,
+                      'pendingData': '0',
+                      'server': 'Connected',
+                      'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+                    },
+                  ),
+                ),
+              );
+            },
           ),
-        );
-      },
+          
+          // Permission status indicator
+          if (!_permissionsGranted || !isAppInitialized)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 10,
+              right: 10,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isAppInitialized ? Colors.green.withOpacity(0.9) : Colors.orange.withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isAppInitialized ? Icons.check_circle : Icons.warning_amber_rounded,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      initializationStatus,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+      floatingActionButton: !isAppInitialized ? FloatingActionButton(
+        onPressed: () {
+          _startPermissionFlow();
+        },
+        backgroundColor: Colors.orange,
+        child: const Icon(Icons.security, color: Colors.white),
+      ) : null,
     );
   }
 }

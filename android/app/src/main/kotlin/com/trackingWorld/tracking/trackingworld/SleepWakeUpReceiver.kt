@@ -36,12 +36,13 @@ class SleepWakeUpReceiver : BroadcastReceiver() {
                 // Check if ACC is back on (indicating AVN wake-up)
                 val currentIgStatus = prefs.getInt("current_ig_status", 0)
                 if (currentIgStatus == 1) {
-                    Log.d(TAG, "ACC is ON - AVN has woken up, resuming service")
+                    Log.d(TAG, "ACC is ON - AVN has woken up, starting background service only")
                     
-                    // Restart the background service
+                    // Start ONLY the background service - NO UI launch
                     val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         putExtra("wake_up_from_sleep", true)
+                        putExtra("background_only", true) // Flag to indicate background-only start
                     }
                     
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -53,6 +54,8 @@ class SleepWakeUpReceiver : BroadcastReceiver() {
                     // Update sleep state
                     prefs.edit().putBoolean("flutter.is_sleeping", false).apply()
                     
+                    Log.d(TAG, "✅ Background service started from sleep wake-up")
+                    
                 } else {
                     Log.d(TAG, "ACC still OFF - continuing sleep mode")
                     
@@ -60,6 +63,7 @@ class SleepWakeUpReceiver : BroadcastReceiver() {
                     val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         putExtra("sleep_keep_alive", true)
+                        putExtra("background_only", true)
                     }
                     
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

@@ -80,7 +80,7 @@ class CarPowerManager(private val context: Context) {
                         sleepStateCallback?.invoke(true)
                     }
                     STATE_SUSPEND_EXIT -> {
-                        Log.d(TAG, "Exiting sleep state")
+                        Log.d(TAG, "Exiting sleep state - background service will handle wake-up")
                         isSleeping = false
                         sleepStateCallback?.invoke(false)
                     }
@@ -90,7 +90,7 @@ class CarPowerManager(private val context: Context) {
                         sleepStateCallback?.invoke(true)
                     }
                     STATE_SHUTDOWN_EXIT -> {
-                        Log.d(TAG, "Exiting deep sleep state")
+                        Log.d(TAG, "Exiting deep sleep state - background service will handle wake-up")
                         isSleeping = false
                         sleepStateCallback?.invoke(false)
                     }
