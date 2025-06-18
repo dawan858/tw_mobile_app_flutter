@@ -190,7 +190,31 @@ class BackgroundService : Service() {
             createNotificationChannel()
             fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
             
-            // Initialize car power manager
+            // Initialize car power manager (ONLY ONCE)
+            initializeAccStateMonitoring()
+            
+            // CRITICAL: Ensure IMEI is available
+            ensureImeiAvailable()
+            
+            // Register restart receiver
+            val filter = IntentFilter(ACTION_RESTART_SERVICE)
+            registerReceiver(restartReceiver, filter)
+            
+            loadConfiguration()
+            setupLocationUpdates()
+            startPeriodicSync()
+            
+            Log.d(TAG, "✅ Service onCreate completed successfully")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in service onCreate", e)
+        }
+    }
+
+    private fun initializeAccStateMonitoring() {
+        try {
+            Log.d(TAG, "=== INITIALIZING ACC STATE MONITORING ===")
+            
             carPowerManager = CarPowerManager(this)
             carPowerManager.setAccStateCallback { isAccOn ->
                 val newIgStatus = if (isAccOn) 1 else 0
@@ -246,61 +270,6 @@ class BackgroundService : Service() {
             }
             
             carPowerManager.initialize()
-            
-            // CRITICAL: Ensure IMEI is available
-            ensureImeiAvailable()
-            
-            // Register restart receiver
-            val filter = IntentFilter(ACTION_RESTART_SERVICE)
-            registerReceiver(restartReceiver, filter)
-            
-            loadConfiguration()
-            setupLocationUpdates()
-            startPeriodicSync()
-            
-            // Perform initial health check
-            verifyServiceHealth()
-            
-            // Schedule periodic health checks
-            val handler = android.os.Handler(Looper.getMainLooper())
-            handler.post(object : Runnable {
-                override fun run() {
-                    logServiceStatus()
-                    validateImeiPeriodically()
-                    verifyServiceHealth()
-                    handler.postDelayed(this, 30000) // Every 30 seconds
-                }
-            })
-            
-            Log.d(TAG, "✅ Service initialization completed")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error during service initialization", e)
-            scheduleServiceRestart()
-        }
-    }
-
-    private fun initializeAccStateMonitoring() {
-        try {
-            Log.d(TAG, "=== INITIALIZING ACC STATE MONITORING ===")
-            
-            carPowerManager = CarPowerManager(this)
-            carPowerManager.setAccStateCallback { isAccOn ->
-                val newIgStatus = if (isAccOn) 1 else 0
-                
-                if (newIgStatus != igStatus) {
-                    val oldStatus = igStatus
-                    igStatus = newIgStatus
-                    Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus")
-                    
-                    // Store in shared preferences for Flutter background service
-                    storeAccStateForFlutter(newIgStatus)
-                    
-                    // Update notification with ACC state
-                    updateNotificationWithAccState(isAccOn)
-                }
-            }
-            
-            carPowerManager.initialize()
             isCarPowerAvailable = true
             
             // Get initial state and store it
@@ -335,9 +304,30 @@ class BackgroundService : Service() {
     }
 
     private fun updateNotificationWithAccState(isAccOn: Boolean) {
-        val title = "Location Tracking"
-        val content = "Service running - ACC: ${if (isAccOn) "ON" else "OFF"}"
-        updateNotification(title, content)
+        try {
+            val status = if (isAccOn) "ACC ON" else "ACC OFF"
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("GPS Tracking Active")
+                .setContentText("Status: $status")
+                .setStyle(NotificationCompat.BigTextStyle().bigText(
+                    "GPS Tracking Active\n" +
+                    "Status: $status\n" +
+                    "Service: Running"
+                ))
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+                .build()
+
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            
+            Log.d(TAG, "Updated notification with ACC state: $status")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating ACC state notification", e)
+        }
     }
 
     private fun validateImeiPeriodically() {
@@ -637,9 +627,57 @@ class BackgroundService : Service() {
                 }
             }, 0, uploadTimer.toLong(), TimeUnit.SECONDS)
             
+            // Schedule periodic sleep state validation
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    validateSleepState()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in sleep state validation", e)
+                }
+            }, 60, 60, TimeUnit.SECONDS) // Every 60 seconds
+            
             Log.d(TAG, "Periodic sync started with interval: ${uploadTimer} seconds")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting periodic sync", e)
+        }
+    }
+
+    private fun validateSleepState() {
+        try {
+            Log.d(TAG, "=== VALIDATING SLEEP STATE ===")
+            
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val storedSleepState = prefs.getBoolean("flutter.is_sleeping", false)
+            val currentAccState = carPowerManager.getCurrentAccState()
+            val currentIgStatus = if (currentAccState) 1 else 0
+            
+            Log.d(TAG, "Stored sleep state: $storedSleepState")
+            Log.d(TAG, "Current ACC state: $currentAccState")
+            Log.d(TAG, "Current igStatus: $currentIgStatus")
+            
+            // If we think we're sleeping but ACC is on, we should wake up
+            if (storedSleepState && currentIgStatus == 1) {
+                Log.d(TAG, "🚗 Sleep state mismatch detected - ACC is ON but we think we're sleeping")
+                Log.d(TAG, "🚗 Triggering wake-up from sleep")
+                
+                // Trigger wake-up
+                handleWakeUpFromSleep()
+            }
+            // If we think we're awake but ACC is off, we should go to sleep
+            else if (!storedSleepState && currentIgStatus == 0) {
+                Log.d(TAG, "🚗 Sleep state mismatch detected - ACC is OFF but we think we're awake")
+                Log.d(TAG, "🚗 Triggering sleep mode")
+                
+                // Trigger sleep
+                val isSleeping = true
+                storeSleepState(isSleeping)
+                stopLocationUpdates()
+                scheduleSleepWakeUpChecks()
+                updateNotificationWithSleepState()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error validating sleep state", e)
         }
     }
 
@@ -1208,11 +1246,18 @@ class BackgroundService : Service() {
         val isWakeUpFromSleep = intent?.getBooleanExtra("wake_up_from_sleep", false) ?: false
         val isSleepKeepAlive = intent?.getBooleanExtra("sleep_keep_alive", false) ?: false
         
+        // Check for interrupted sleep state
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
+        
         if (isWakeUpFromSleep) {
             Log.d(TAG, "🚗 Waking up from sleep state - resuming full operation")
             handleWakeUpFromSleep()
         } else if (isSleepKeepAlive) {
             Log.d(TAG, "🚗 Sleep keep-alive - maintaining minimal service")
+            handleSleepKeepAlive()
+        } else if (wasSleeping) {
+            Log.d(TAG, "🚗 Service restart during sleep - maintaining sleep state")
             handleSleepKeepAlive()
         } else {
             Log.d(TAG, "Normal service start - initializing full operation")
@@ -1274,7 +1319,6 @@ class BackgroundService : Service() {
             startForeground(NOTIFICATION_ID, createNotification())
             
             // Initialize all components
-            initializeAccStateMonitoring()
             startLocationUpdates()
             startPeriodicSync()
             
@@ -1322,6 +1366,16 @@ class BackgroundService : Service() {
         Log.d(TAG, "=== BACKGROUND SERVICE DESTROYED ===")
         
         try {
+            // Check if we're in sleep state - if so, restart the service
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val isSleeping = prefs.getBoolean("flutter.is_sleeping", false)
+            
+            if (isSleeping) {
+                Log.d(TAG, "🚗 Service destroyed during sleep - restarting to maintain sleep state")
+                scheduleServiceRestart()
+                return
+            }
+            
             // Stop location updates
             fusedLocationClient.removeLocationUpdates(locationCallback)
             
@@ -1380,25 +1434,10 @@ class BackgroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startLocationUpdates() {
-        val locationRequest = LocationRequest.create().apply {
-            priority = LocationRequest.PRIORITY_HIGH_ACCURACY
-            interval = gpsTimer * 1000L
-            fastestInterval = 1000L
-            maxWaitTime = gpsTimer * 2000L
-            smallestDisplacement = 1f
-        }
-
         try {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                fusedLocationClient.requestLocationUpdates(
-                    locationRequest,
-                    locationCallback,
-                    Looper.getMainLooper()
-                )
-                Log.d(TAG, "Location updates started with interval: ${gpsTimer} seconds")
-            } else {
-                Log.e(TAG, "Location permission not granted")
-            }
+            Log.d(TAG, "Starting location updates")
+            setupLocationUpdates()
+            Log.d(TAG, "Location updates started")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting location updates", e)
         }
@@ -1446,10 +1485,9 @@ class BackgroundService : Service() {
 
     private fun stopLocationUpdates() {
         try {
-            if (locationCallback != null) {
-                fusedLocationClient?.removeLocationUpdates(locationCallback!!)
-                Log.d(TAG, "Location updates stopped")
-            }
+            Log.d(TAG, "Stopping location updates")
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+            Log.d(TAG, "Location updates stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping location updates", e)
         }

@@ -109,9 +109,10 @@ class CarPowerManager(private val context: Context) {
                 }
             }
         }
+        
         try {
             carPowerManager?.registerPowerStateListener(powerStateListener)
-            Log.d(TAG, "Power state listener registered")
+            Log.d(TAG, "Power state listener registered successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register power state listener", e)
         }

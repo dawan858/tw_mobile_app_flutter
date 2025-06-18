@@ -27,12 +27,14 @@ class MainActivity : FlutterActivity() {
     private val DEVICE_INFO_CHANNEL = "com.trackingWorld.tracking/device_info"
     private val DEVICE_ADMIN_CHANNEL = "device_admin_channel"
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
+    private val AVN_SLEEP_CHANNEL = "com.trackingWorld.tracking/avn_sleep"
     private val TAG = "MainActivity"
     private var terminationReceiver: AppTerminationReceiver? = null
     private lateinit var devicePolicyManager: DevicePolicyManager
     private lateinit var adminComponent: ComponentName
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
+    private lateinit var carPowerManager: CarPowerManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +46,10 @@ class MainActivity : FlutterActivity() {
         
         // Initialize location manager for satellite data
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        
+        // Initialize car power manager for sleep monitoring
+        carPowerManager = CarPowerManager(this)
+        carPowerManager.initialize()
         
         registerTerminationReceiver()
         checkAndRequestPermissions()
@@ -277,6 +283,44 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "Error getting satellite data", e)
                         result.error("SATELLITE_ERROR", "Failed to get satellite data", e.message)
+                    }
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+
+        // AVN Sleep channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AVN_SLEEP_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getCurrentSleepState" -> {
+                    try {
+                        val isSleeping = carPowerManager.getCurrentSleepState()
+                        result.success(isSleeping)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error getting sleep state", e)
+                        result.error("SLEEP_STATE_ERROR", "Failed to get sleep state", e.message)
+                    }
+                }
+                "startSleepMonitoring" -> {
+                    try {
+                        carPowerManager.connect()
+                        Log.d(TAG, "Started sleep monitoring")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error starting sleep monitoring", e)
+                        result.error("SLEEP_MONITORING_ERROR", "Failed to start sleep monitoring", e.message)
+                    }
+                }
+                "stopSleepMonitoring" -> {
+                    try {
+                        carPowerManager.disconnect()
+                        Log.d(TAG, "Stopped sleep monitoring")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping sleep monitoring", e)
+                        result.error("SLEEP_MONITORING_ERROR", "Failed to stop sleep monitoring", e.message)
                     }
                 }
                 else -> {
