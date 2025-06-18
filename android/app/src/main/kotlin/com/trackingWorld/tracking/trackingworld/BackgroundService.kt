@@ -1,4 +1,4 @@
-package com.trackingWorld.tracking.tracking_world
+package com.trackingworld.tracking.trackingworld
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -35,7 +35,7 @@ import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import kotlin.math.abs
 import kotlin.math.sqrt
-import com.trackingWorld.CarPowerManager
+import com.trackingworld.tracking.trackingworld.CarPowerManager
 import android.app.AlarmManager
 import android.os.SystemClock
 

@@ -11,7 +11,7 @@ plugins {
 def kotlin_version = '1.9.22'
 
 android {
-    namespace = "com.trackingWorld.tracking.tracking_world"
+    namespace = "com.trackingworld.tracking.trackingworld"
     compileSdk = 35
     ndkVersion = "26.1.10909125"
 
@@ -28,7 +28,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.trackingWorld.tracking.tracking_world"
+        applicationId = "com.trackingworld.tracking.trackingworld"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28  // Updated to 28 to support bwcarproxy-debug.aar

@@ -1,4 +1,4 @@
-package com.trackingWorld.tracking_world
+package com.trackingworld.trackingworld
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

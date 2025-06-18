@@ -1,4 +1,4 @@
-package com.trackingWorld.tracking.tracking_world
+package com.trackingworld.tracking.trackingworld
 
 import android.app.admin.DeviceAdminReceiver
 import android.content.Context
