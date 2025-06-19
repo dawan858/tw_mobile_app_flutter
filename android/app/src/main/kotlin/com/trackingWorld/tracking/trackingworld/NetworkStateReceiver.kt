@@ -14,7 +14,7 @@ class NetworkStateReceiver : BroadcastReceiver() {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    override fun onReceive(context: Context, intent: Intent) {
+       override fun onReceive(context: Context, intent: Intent) {
         Log.d("NetworkStateReceiver", "Received action: ${intent.action}")
         
         when (intent.action) {
@@ -24,37 +24,41 @@ class NetworkStateReceiver : BroadcastReceiver() {
                 val isConnected = networkInfo != null && networkInfo.isConnected
 
                 if (isConnected) {
-                    Log.d("NetworkStateReceiver", "Network connected - waking up app")
-                    startTrackingService(context)
+                    Log.d("NetworkStateReceiver", "Network connected - starting background service only")
+                    startBackgroundServiceOnly(context, "network_connected")
                 }
             }
             "android.bluetooth.adapter.action.STATE_CHANGED" -> {
-                Log.d("NetworkStateReceiver", "Bluetooth state changed - waking up app")
-                startTrackingService(context)
+                Log.d("NetworkStateReceiver", "Bluetooth state changed - starting background service only")
+                startBackgroundServiceOnly(context, "bluetooth_state_changed")
             }
             "android.intent.action.TIME_SET" -> {
-                Log.d("NetworkStateReceiver", "Time set - waking up app")
-                startTrackingService(context)
+                Log.d("NetworkStateReceiver", "Time set - starting background service only")
+                startBackgroundServiceOnly(context, "time_set")
             }
             "android.intent.action.TIMEZONE_CHANGED" -> {
-                Log.d("NetworkStateReceiver", "Timezone changed - waking up app")
-                startTrackingService(context)
+                Log.d("NetworkStateReceiver", "Timezone changed - starting background service only")
+                startBackgroundServiceOnly(context, "timezone_changed")
             }
             "android.intent.action.BOOT_COMPLETED" -> {
-                Log.d("NetworkStateReceiver", "Boot completed - starting services")
-                startTrackingService(context)
+                Log.d("NetworkStateReceiver", "Boot completed - starting background service only")
+                startBackgroundServiceOnly(context, "boot_completed")
             }
         }
     }
 
-    private fun startTrackingService(context: Context) {
+    private fun startBackgroundServiceOnly(context: Context, trigger: String) {
         try {
-            // Start the background service
+            Log.d("NetworkStateReceiver", "=== STARTING BACKGROUND SERVICE ONLY ===")
+            Log.d("NetworkStateReceiver", "Trigger: $trigger")
+            
+            // Start ONLY the background service - NO UI
             val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                putExtra("started_by", "NetworkStateReceiver")
+                putExtra("started_by", trigger)
                 putExtra("auto_started", true)
+                putExtra("background_only", true) // Key flag for background-only operation
             }
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -63,43 +67,21 @@ class NetworkStateReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
             }
             
-            // Also start the main activity to ensure app is visible
-            try {
-                val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                    putExtra("auto_started", true)
-                    putExtra("started_by", "NetworkStateReceiver")
-                }
-                
-                if (launchIntent != null) {
-                    context.startActivity(launchIntent)
-                    Log.d("NetworkStateReceiver", "Main activity started successfully")
-                }
-            } catch (e: Exception) {
-                Log.e("NetworkStateReceiver", "Failed to start main activity: ${e.message}")
-            }
-            
-            Log.d("NetworkStateReceiver", "BackgroundService started successfully")
+            Log.d("NetworkStateReceiver", "✅ Background service started (NO UI)")
         } catch (e: Exception) {
-            Log.e("NetworkStateReceiver", "Failed to start BackgroundService: ${e.message}")
+            Log.e("NetworkStateReceiver", "❌ Failed to start background service: ${e.message}")
         }
     }
 
+    // Network callback methods remain the same but also use background-only start
     fun registerNetworkCallback(context: Context) {
         connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    Log.d("NetworkStateReceiver", "Network available - waking up app")
-                    val serviceIntent = Intent(context, BackgroundService::class.java)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        context.startForegroundService(serviceIntent)
-                    } else {
-                        context.startService(serviceIntent)
-                    }
+                    Log.d("NetworkStateReceiver", "Network available - starting background service only")
+                    startBackgroundServiceOnly(context, "network_callback_available")
                 }
 
                 override fun onLost(network: Network) {

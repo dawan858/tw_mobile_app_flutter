@@ -3,11 +3,8 @@ package com.trackingworld.tracking.trackingworld
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
-import androidx.core.app.ActivityCompat
-import android.Manifest
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.os.SystemClock
@@ -18,15 +15,9 @@ class BootReceiver : BroadcastReceiver() {
         private const val DELAYED_START_ACTION = "com.trackingWorld.tracking.DELAYED_START"
     }
 
-    init {
-        Log.d(TAG, "BootReceiver initialized")
-    }
-
     override fun onReceive(context: Context, intent: Intent) {
         Log.d(TAG, "=== BOOT RECEIVER TRIGGERED ===")
         Log.d(TAG, "Received action: ${intent.action}")
-        Log.d(TAG, "Package name: ${context.packageName}")
-        Log.d(TAG, "Android version: ${Build.VERSION.SDK_INT}")
         
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
@@ -40,36 +31,31 @@ class BootReceiver : BroadcastReceiver() {
             "android.intent.action.TIMEZONE_CHANGED",
             "android.bluetooth.adapter.action.STATE_CHANGED",
             DELAYED_START_ACTION -> {
-                Log.d(TAG, "✅ ${intent.action} received")
-                startApp(context, intent.action ?: "unknown")
+                Log.d(TAG, "✅ Auto-start trigger: ${intent.action}")
+                startIndependentBackgroundService(context, intent.action ?: "unknown")
             }
             else -> {
-                Log.d(TAG, "⚠️ Unknown action received: ${intent.action}")
+                Log.d(TAG, "⚠️ Unknown action: ${intent.action}")
             }
         }
     }
 
-    private fun startApp(context: Context, trigger: String) {
+    /**
+     * CRITICAL: Start BackgroundService directly - NO MainActivity dependency
+     */
+    private fun startIndependentBackgroundService(context: Context, trigger: String) {
         try {
-            Log.d(TAG, "=== STARTING APP AFTER BOOT ===")
+            Log.d(TAG, "=== STARTING INDEPENDENT BACKGROUND SERVICE ===")
             Log.d(TAG, "Trigger: $trigger")
             
-            // Step 1: Check for interrupted sleep state
-            checkForInterruptedSleepState(context)
-            
-            // Step 2: Check permissions (but don't block if missing)
-            if (!hasRequiredPermissions(context)) {
-                Log.w(TAG, "⚠️ Missing some permissions - continuing anyway")
-            } else {
-                Log.d(TAG, "✅ All required permissions available")
-            }
-
-            // Step 3: Start the BackgroundService immediately (CRITICAL)
+            // Start BackgroundService DIRECTLY - it will initialize its own CarPowerManager
             val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 putExtra("started_by", trigger)
                 putExtra("auto_started", true)
+                putExtra("background_only", true) // CRITICAL: No UI launch
+                putExtra("independent_start", true) // Mark as independent start
             }
             
             try {
@@ -80,75 +66,24 @@ class BootReceiver : BroadcastReceiver() {
                     Log.d(TAG, "Starting regular service (Android 7-)")
                     context.startService(serviceIntent)
                 }
-                Log.d(TAG, "✅ BackgroundService started successfully")
+                Log.d(TAG, "✅ Independent BackgroundService started successfully")
+                Log.d(TAG, "✅ CarPowerManager will be initialized inside the service")
+                
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Failed to start BackgroundService: ${e.message}")
                 
-                // Schedule a delayed start attempt
+                // Schedule a delayed retry
                 scheduleDelayedStart(context)
             }
 
-            // Step 4: Also start the main activity to ensure app is visible
-            try {
-                val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                    putExtra("auto_started", true)
-                    putExtra("started_by", trigger)
-                }
-                
-                if (launchIntent != null) {
-                    context.startActivity(launchIntent)
-                    Log.d(TAG, "✅ Main activity started successfully")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Failed to start main activity: ${e.message}")
-            }
-
-            // Step 5: Schedule periodic health checks
-            schedulePeriodicHealthCheck(context)
-
-            Log.d(TAG, "✅ Boot startup sequence completed")
+            // IMPORTANT: NO MainActivity startup - pure background operation
+            Log.d(TAG, "✅ Pure background startup completed - NO UI launched")
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Critical error in boot startup: ${e.message}", e)
-            e.printStackTrace()
+            Log.e(TAG, "❌ Critical error in independent startup: ${e.message}", e)
             
-            // Schedule a delayed start attempt
+            // Schedule a delayed retry
             scheduleDelayedStart(context)
-        }
-    }
-
-    private fun checkForInterruptedSleepState(context: Context) {
-        try {
-            Log.d(TAG, "=== CHECKING FOR INTERRUPTED SLEEP STATE ===")
-            
-            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
-            val sleepTimestamp = prefs.getLong("flutter.sleep_state_timestamp", 0)
-            
-            if (wasSleeping) {
-                Log.d(TAG, "🚗 Detected interrupted sleep state from boot")
-                Log.d(TAG, "Sleep timestamp: $sleepTimestamp")
-                
-                // Clear the sleep state since we're booting fresh
-                prefs.edit().apply {
-                    putBoolean("flutter.is_sleeping", false)
-                    putLong("flutter.sleep_state_timestamp", 0)
-                    apply()
-                }
-                
-                Log.d(TAG, "✅ Cleared interrupted sleep state")
-                
-                // This was likely an AVN restart during sleep
-                // The service will handle normal startup
-            } else {
-                Log.d(TAG, "No interrupted sleep state detected")
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking for interrupted sleep state", e)
         }
     }
 
@@ -187,67 +122,5 @@ class BootReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to schedule delayed start: ${e.message}")
         }
-    }
-
-    private fun schedulePeriodicHealthCheck(context: Context) {
-        try {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(context, BootReceiver::class.java).apply {
-                action = "com.trackingWorld.tracking.HEALTH_CHECK"
-            }
-            
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                888,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            
-            // Check every 15 minutes
-            val interval = 15 * 60 * 1000L
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setRepeating(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + interval,
-                    interval,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setRepeating(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + interval,
-                    interval,
-                    pendingIntent
-                )
-            }
-            
-            Log.d(TAG, "✅ Periodic health check scheduled every 15 minutes")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to schedule health check: ${e.message}")
-        }
-    }
-
-    private fun hasRequiredPermissions(context: Context): Boolean {
-        val requiredPermissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-        
-        // Add background location for Android 10+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            requiredPermissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-        }
-
-        val missingPermissions = requiredPermissions.filter {
-            ActivityCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missingPermissions.isNotEmpty()) {
-            Log.w(TAG, "Missing permissions: ${missingPermissions.joinToString()}")
-            return false
-        }
-
-        return true
     }
 }

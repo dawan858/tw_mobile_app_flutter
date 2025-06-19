@@ -12,7 +12,7 @@ class BluetoothStateReceiver : BroadcastReceiver() {
         private const val TAG = "BluetoothStateReceiver"
     }
 
-    override fun onReceive(context: Context, intent: Intent) {
+        override fun onReceive(context: Context, intent: Intent) {
         Log.d(TAG, "=== BLUETOOTH STATE RECEIVER TRIGGERED ===")
         Log.d(TAG, "Received action: ${intent.action}")
         
@@ -24,8 +24,8 @@ class BluetoothStateReceiver : BroadcastReceiver() {
             
             when (state) {
                 BluetoothAdapter.STATE_ON -> {
-                    Log.d(TAG, "✅ Bluetooth turned ON - waking up app")
-                    startApp(context, "bluetooth_on")
+                    Log.d(TAG, "✅ Bluetooth turned ON - starting background service only")
+                    startBackgroundServiceOnly(context, "bluetooth_on")
                 }
                 BluetoothAdapter.STATE_OFF -> {
                     Log.d(TAG, "Bluetooth turned OFF")
@@ -40,17 +40,18 @@ class BluetoothStateReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun startApp(context: Context, trigger: String) {
+    private fun startBackgroundServiceOnly(context: Context, trigger: String) {
         try {
-            Log.d(TAG, "=== STARTING APP FROM BLUETOOTH ===")
+            Log.d(TAG, "=== STARTING BACKGROUND SERVICE ONLY ===")
             Log.d(TAG, "Trigger: $trigger")
             
-            // Start the background service
+            // Start ONLY the background service - NO UI
             val serviceIntent = Intent(context, BackgroundService::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 putExtra("started_by", trigger)
                 putExtra("auto_started", true)
+                putExtra("background_only", true) // Key flag for background-only operation
             }
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -58,27 +59,10 @@ class BluetoothStateReceiver : BroadcastReceiver() {
             } else {
                 context.startService(serviceIntent)
             }
-            Log.d(TAG, "✅ Background service started")
-
-            // Start the main activity
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                putExtra("auto_started", true)
-                putExtra("started_by", trigger)
-            }
-            
-            if (launchIntent != null) {
-                context.startActivity(launchIntent)
-                Log.d(TAG, "✅ Main activity started")
-            } else {
-                Log.e(TAG, "❌ Failed to get launch intent")
-            }
+            Log.d(TAG, "✅ Background service started (NO UI)")
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error starting app from bluetooth", e)
-            e.printStackTrace()
+            Log.e(TAG, "❌ Error starting background service", e)
         }
     }
-} 
+}

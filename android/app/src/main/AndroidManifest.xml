@@ -6,10 +6,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.QUICKBOOT_POWERON" />
     
-    <!-- Additional auto-start permissions -->
+    <!-- Power Management & Wake Lock Permissions -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -19,49 +17,44 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     
-    <!-- Foreground Service Permissions -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    
-    
-    
     <!-- Phone State for IMEI -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     
-    <!-- Network -->
+    <!-- Network & Connectivity -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- Storage permissions -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <!-- For Android 13+ -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-
-    <!-- Add these permissions -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    
+    <!-- Bluetooth Permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-
-    <!-- Power Management -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     
-    <!-- Additional AVN sleep management permissions -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
+    <!-- Notification & UI Permissions -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
-    <uses-permission android:name="android.permission.MODIFY_PHONE_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_SUPERUSER" />
     
-    <!-- Alarm permissions for sleep wake-up checks -->
+    <!-- Storage permissions -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    
+    <!-- AVN & Alarm Permissions -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
+
+    <!-- Car Power Management (CRITICAL for independent operation) -->
+    <uses-permission android:name="android.car.permission.CAR_POWER" />
+    <uses-permission android:name="android.car.permission.CONTROL_CAR_POWER_POLICY" />
+    
+    <!-- Additional car permissions for better integration -->
+    <uses-permission android:name="android.car.permission.CAR_INFO" />
+    <uses-permission android:name="android.car.permission.READ_CAR_DISPLAY_UNITS" />
 
     <application
         android:label="tracking_world"
@@ -69,8 +62,11 @@
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:allowBackup="false"
-        android:killAfterRestore="false">
+        android:killAfterRestore="false"
+        android:supportsRtl="true"
+        android:persistent="true">
 
+        <!-- MAIN ACTIVITY - UI only, no auto-start dependency -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -78,7 +74,9 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:taskAffinity=""
+            android:excludeFromRecents="false">
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
@@ -88,9 +86,10 @@
             </intent-filter>
         </activity>
 
+        <!-- SPLASH ACTIVITY -->
         <activity
             android:name=".SplashActivity"
-            android:exported="true"
+            android:exported="false"
             android:theme="@style/Theme.AppCompat.Light.NoActionBar"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
@@ -100,17 +99,20 @@
                 android:resource="@style/NormalTheme" />
         </activity>
 
-        <!-- CRITICAL: Background Service -->
+        <!-- INDEPENDENT BACKGROUND SERVICE - CRITICAL COMPONENT -->
         <service
             android:name=".BackgroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location"
-            android:stopWithTask="false" />
+            android:stopWithTask="false"
+            android:directBootAware="true"
+            android:process=":background"
+            android:isolatedProcess="false" />
 
-        <!-- CRITICAL: Boot Receiver with MAXIMUM PRIORITY -->
-
-        <receiver android:name=".MyDeviceAdminReceiver"
+        <!-- DEVICE ADMIN RECEIVER -->
+        <receiver 
+            android:name=".MyDeviceAdminReceiver"
             android:label="Tracking_World"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
             android:exported="true">
@@ -122,25 +124,25 @@
             </intent-filter>
         </receiver>
 
+        <!-- PRIMARY BOOT RECEIVER - Independent BackgroundService starter -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="true"
             android:directBootAware="true"
-            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED"
+            android:process=":background">
             
+            <!-- HIGHEST PRIORITY - Boot and Reboot Events -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            
-            <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             
+            <!-- Package Events -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.PACKAGE_REPLACED" />
@@ -148,36 +150,91 @@
                 <data android:scheme="package" />
             </intent-filter>
             
+            <!-- Power Events (CRITICAL for AVN) -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.POWER_CONNECTED" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+        </receiver>
 
-            <!-- Add these new intent filters for time and bluetooth events -->
-            <intent-filter android:priority="2147483647">
+        <!-- BACKUP RECEIVERS - Lower priority, background-only starts -->
+        
+        <!-- Time Change Receiver - Background only -->
+        <receiver
+            android:name=".TimeChangeReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true"
+            android:process=":background">
+            <intent-filter android:priority="1000">
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+        </receiver>
 
-            <intent-filter android:priority="2147483647">
+        <!-- Bluetooth State Receiver - Background only -->
+        <receiver
+            android:name=".BluetoothStateReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true"
+            android:process=":background">
+            <intent-filter android:priority="1000">
                 <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 
-        <!-- Ignition Receiver (Keep this from your working version) -->
+        <!-- Network State Receiver - Background only -->
         <receiver
-            android:name=".IgnitionReceiver"
+            android:name=".NetworkStateReceiver"
             android:enabled="true"
             android:exported="true"
+            android:directBootAware="true"
+            android:process=":background">
+            <intent-filter android:priority="1000">
+                <action android:name="android.net.conn.CONNECTIVITY_ACTION" />
+                <action android:name="android.net.wifi.WIFI_STATE_CHANGED" />
+                <action android:name="android.net.wifi.STATE_CHANGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Sleep Wake-up Receiver - Internal alarm handling -->
+        <receiver
+            android:name=".SleepWakeUpReceiver"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":background">
+            <intent-filter>
+                <action android:name="com.trackingWorld.tracking.SLEEP_WAKE_UP_CHECK" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Service Restart Receiver - For service recovery -->
+        <receiver
+            android:name=".ServiceRestartReceiver"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":background">
+            <intent-filter>
+                <action android:name="com.trackingWorld.tracking.RESTART_SERVICE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- DISABLED RECEIVERS - Temporarily disable to test CarPowerManager alone -->
+        <!-- Enable these later once CarPowerManager is working -->
+        
+        <!-- Ignition Receiver - DISABLED for testing -->
+        <receiver
+            android:name=".IgnitionReceiver"
+            android:enabled="false"
+            android:exported="true"
             android:directBootAware="true">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            <intent-filter android:priority="500">
                 <action android:name="android.intent.action.POWER_CONNECTED" />
                 <action android:name="android.intent.action.POWER_DISCONNECTED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
@@ -187,56 +244,25 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Add the NetworkStateReceiver -->
-        <receiver
-            android:name=".NetworkStateReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
-                <action android:name="android.net.wifi.WIFI_STATE_CHANGED" />
-                <action android:name="android.net.wifi.STATE_CHANGE" />
-                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
+        <!-- CRITICAL: Car App metadata for better AVN integration -->
+        <meta-data
+            android:name="com.android.automotive"
+            android:value="true" />
+            
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
 
-        <!-- Add the BluetoothStateReceiver -->
-        <receiver
-            android:name=".BluetoothStateReceiver"
-            android:enabled="true"
-            android:exported="true"
-            android:priority="2147483647">
-            <intent-filter>
-                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Add the TimeChangeReceiver -->
-        <receiver
-            android:name=".TimeChangeReceiver"
-            android:enabled="true"
-            android:exported="true"
-            android:priority="2147483647">
-            <intent-filter>
-                <action android:name="android.intent.action.TIME_SET" />
-                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Add the SleepWakeUpReceiver for AVN sleep state management -->
-        <receiver
-            android:name=".SleepWakeUpReceiver"
-            android:enabled="true"
-            android:exported="false"
-            android:priority="2147483647">
-            <intent-filter>
-                <action android:name="com.trackingWorld.tracking.SLEEP_WAKE_UP_CHECK" />
-            </intent-filter>
-        </receiver>
     </application>
+
+    <!-- AUTOMOTIVE FEATURES - Declare as automotive app -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+        
+    <uses-feature
+        android:name="android.software.car.templates_host"
+        android:required="false" />
 
     <!-- Queries for system interactions -->
     <queries>
@@ -245,4 +271,5 @@
             <data android:mimeType="text/plain" />
         </intent>
     </queries>
+
 </manifest>
