@@ -1,4 +1,4 @@
-package com.trackingworld.tracking.trackingworld
+package com.example.twtracking
 
 import android.content.BroadcastReceiver
 import android.content.Context

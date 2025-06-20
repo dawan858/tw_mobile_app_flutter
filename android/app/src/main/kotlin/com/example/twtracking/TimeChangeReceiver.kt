@@ -1,41 +1,32 @@
-package com.trackingworld.tracking.trackingworld
+package com.example.twtracking
 
-import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.*
 
-class BluetoothStateReceiver : BroadcastReceiver() {
+class TimeChangeReceiver : BroadcastReceiver() {
     companion object {
-        private const val TAG = "BluetoothStateReceiver"
+        private const val TAG = "TimeChangeReceiver"
     }
 
-        override fun onReceive(context: Context, intent: Intent) {
-        Log.d(TAG, "=== BLUETOOTH STATE RECEIVER TRIGGERED ===")
+       override fun onReceive(context: Context, intent: Intent) {
+        Log.d(TAG, "=== TIME CHANGE RECEIVER TRIGGERED ===")
         Log.d(TAG, "Received action: ${intent.action}")
         
-        if (intent.action == "android.bluetooth.adapter.action.STATE_CHANGED") {
-            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-            val previousState = intent.getIntExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, BluetoothAdapter.ERROR)
-            
-            Log.d(TAG, "Bluetooth state changed from $previousState to $state")
-            
-            when (state) {
-                BluetoothAdapter.STATE_ON -> {
-                    Log.d(TAG, "✅ Bluetooth turned ON - starting background service only")
-                    startBackgroundServiceOnly(context, "bluetooth_on")
-                }
-                BluetoothAdapter.STATE_OFF -> {
-                    Log.d(TAG, "Bluetooth turned OFF")
-                }
-                BluetoothAdapter.STATE_TURNING_ON -> {
-                    Log.d(TAG, "Bluetooth turning ON")
-                }
-                BluetoothAdapter.STATE_TURNING_OFF -> {
-                    Log.d(TAG, "Bluetooth turning OFF")
-                }
+        when (intent.action) {
+            "android.intent.action.TIME_SET" -> {
+                val currentTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                Log.d(TAG, "✅ Time set to: $currentTime - starting background service only")
+                startBackgroundServiceOnly(context, "time_set")
+            }
+            "android.intent.action.TIMEZONE_CHANGED" -> {
+                val timeZone = TimeZone.getDefault().id
+                Log.d(TAG, "✅ Timezone changed to: $timeZone - starting background service only")
+                startBackgroundServiceOnly(context, "timezone_changed")
             }
         }
     }
@@ -65,4 +56,4 @@ class BluetoothStateReceiver : BroadcastReceiver() {
             Log.e(TAG, "❌ Error starting background service", e)
         }
     }
-}
+} 

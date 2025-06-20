@@ -1,4 +1,4 @@
-package com.trackingworld.tracking.trackingworld
+package com.example.twtracking
 
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
