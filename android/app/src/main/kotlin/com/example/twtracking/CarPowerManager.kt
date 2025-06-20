@@ -59,8 +59,15 @@ class CarPowerManager(private val context: Context) {
             val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
             Log.d(TAG, "   - Car service available: $carServiceAvailable")
             
+            // NEW: Check device type
+            val isAutomotiveDevice = carServiceAvailable
+            Log.d(TAG, "   - Is Automotive Device: $isAutomotiveDevice")
+            Log.d(TAG, "   - Expected igStatus on this device: ${if (isAutomotiveDevice) "0 or 1 (depending on ACC)" else "0 (no car ignition)"}")
+            
             if (!carServiceAvailable) {
                 Log.w(TAG, "⚠️ Car service not available on this device - using fallback mode")
+                Log.w(TAG, "   - This is expected for non-automotive devices like Infinix phones")
+                Log.w(TAG, "   - igStatus will be 0 (ACC OFF) on this device")
                 tryFallbackInitialization()
                 return
             }
@@ -248,30 +255,10 @@ class CarPowerManager(private val context: Context) {
         }
     }
 
-    // UPDATED METHOD: More permissive power state detection
+    // SIMPLIFIED METHOD: Match the sample code approach
     private fun isPowerStateAccOn(state: Int): Boolean {
-        val result = when (state) {
-            POWER_STATE_ON -> true
-            POWER_STATE_ON_DISP_OFF -> true
-            POWER_STATE_SUSPEND_EXIT -> true
-            POWER_STATE_HIBERNATION_EXIT -> true
-            POWER_STATE_WAIT_FOR_VHAL -> true
-            POWER_STATE_OFF -> false
-            POWER_STATE_SUSPEND -> false
-            POWER_STATE_SUSPEND_ENTER -> false
-            POWER_STATE_SHUTDOWN_PREPARE -> false
-            POWER_STATE_SHUTDOWN_POSTPONE -> false
-            POWER_STATE_SHUTDOWN_START -> false
-            POWER_STATE_SHUTDOWN_ENTER -> false
-            POWER_STATE_SHUTDOWN_PREPARE_UPDATE -> false
-            POWER_STATE_HIBERNATION_ENTER -> false
-            else -> {
-                // NEW: More permissive approach - treat any unknown state as potentially ACC ON
-                // This is because different car manufacturers might use different state values
-                Log.w(TAG, "⚠️ Unknown power state: $state, treating as ACC ON (permissive mode)")
-                true
-            }
-        }
+        // Follow the exact same logic as the sample code: acc_on = i == 1
+        val result = (state == POWER_STATE_ON)
         
         Log.d(TAG, "🔍 Power state analysis: state=$state, name=${getPowerStateName(state)}, isAccOn=$result")
         return result
