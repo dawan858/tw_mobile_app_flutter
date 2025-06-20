@@ -16,7 +16,7 @@ class GpsTrackingService : Service() {
     private var locationCallback: LocationCallback? = null
     private val CHANNEL_ID = "GpsTrackingChannel"
     private val NOTIFICATION_ID = 1
-    private var igStatus = 1 // Set to 1 when service starts
+    private var igStatus = 0 // Set to 0 when service starts (ACC OFF)
     private var lastLocationUpdateTime: Long = 0
     private var lastProcessedLocation: Location? = null
     private var gpsTimer: Int = 5 // Default 5 seconds
@@ -149,7 +149,7 @@ class GpsTrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        igStatus = 1 // Ensure igStatus is 1 when service starts
+        igStatus = 0 // Ensure igStatus is 0 when service starts (ACC OFF)
         return START_STICKY
     }
 

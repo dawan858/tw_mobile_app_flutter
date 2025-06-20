@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import 'package:tracking_world/services/database_helper.dart';
 import 'dart:math';
 import 'sync_service.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 @pragma('vm:entry-point')
 Future<void> initializeService() async {
@@ -419,13 +420,13 @@ Future<void> _queueLocationData(Position position, String reason, double accurat
       'timestamp': DateTime.now().toIso8601String(),
       'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
       'gmtSettings': "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}",
-      'igStatus': 1,
+      'igStatus': 0, // Default to ACC OFF, will be updated by sync service
       'localPrimaryId': DateTime.now().millisecondsSinceEpoch % 100000,
       'name': (await DeviceInfoPlugin().androidInfo).model,
       'phoneNo': (await DeviceInfoPlugin().androidInfo).serialNumber,
       'provider': 'fused',
       'reason': reason,
-      'versionNo': 'v ${(await DeviceInfoPlugin().androidInfo).version.release}',
+      'versionNo': 'v${(await PackageInfo.fromPlatform()).version}',
     };
 
     print('Enhanced location data:');

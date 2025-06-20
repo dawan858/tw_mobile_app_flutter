@@ -30,25 +30,31 @@ void main() async {
   final service = FlutterBackgroundService();
   await service.startService();
 
-  // Get IMEI and wait for it to be available
-  String? imei;
-  int retryCount = 0;
-  while (imei == null || imei == 'unknown') {
-    try {
-      imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
-      if (imei != null && imei.isNotEmpty) {
-        await prefs.setString('imei', imei);
+  // Check if IMEI is already available from MainActivity
+  String? imei = prefs.getString('imei');
+  
+  // If IMEI is not available from SharedPreferences, try to get it from method channel
+  if (imei == null || imei.isEmpty || imei == 'unknown') {
+    int retryCount = 0;
+    while (imei == null || imei == 'unknown') {
+      try {
+        imei = await const MethodChannel('com.trackingWorld.tracking/device_info').invokeMethod('getImei');
+        if (imei != null && imei.isNotEmpty && imei != 'unknown') {
+          await prefs.setString('imei', imei);
+          break;
+        }
+      } catch (e) {
+        // Error getting IMEI from method channel
+      }
+      retryCount++;
+      if (retryCount > 5) {
         break;
       }
-    } catch (e) {
-      print('Error getting IMEI: $e');
+      await Future.delayed(const Duration(seconds: 2)); // Wait before retrying
     }
-    retryCount++;
-    if (retryCount > 10) break; // Prevent infinite loop
-    await Future.delayed(const Duration(seconds: 1)); // Wait before retrying
   }
 
-  if (imei != null && imei != 'unknown') {
+  if (imei != null && imei.isNotEmpty && imei != 'unknown') {
     // Fetch and store default config
     final isConfigInitialized = prefs.getBool('flutter.isConfigInitialized') ?? false;
     if (!isConfigInitialized) {
@@ -108,7 +114,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   String _deviceRDT = "30/01/2025 02:04:27.703";
   String _emailAddress = "email";
   String _gmtSettings = "GMT+05:00 2025";
-  int _igStatus = 1;
+  int _igStatus = 0; // Default to ACC OFF
   String _imei = "865632050026800";
   int _localPrimaryId = 10253;
   String _name = "865632050026800";
@@ -129,6 +135,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   static const serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
   static const MethodChannel satelliteChannel = MethodChannel('com.trackingWorld.tracking/satellite');
+  static const MethodChannel avnSleepChannel = MethodChannel('com.trackingWorld.tracking/avn_sleep');
   
   // Permission flow manager
   final PermissionFlowManager _permissionManager = PermissionFlowManager();
@@ -141,9 +148,9 @@ class _GPSTrackerState extends State<GPSTracker> {
     _setupPermissionFlow();
     _loadConfiguration();
     
-    // Set igStatus to 1 when app starts
+    // Set igStatus to 0 when app starts (ACC OFF)
     setState(() {
-      _igStatus = 1;
+      _igStatus = 0;
     });
     
     // Listen for permission events from native side
@@ -280,11 +287,11 @@ class _GPSTrackerState extends State<GPSTracker> {
           });
           print('✅ IMEI obtained successfully: $imei');
         } else {
-          debugPrint('❌ Failed to get IMEI: IMEI is null, empty, or unknown');
+          print('❌ Failed to get IMEI: IMEI is null, empty, or unknown');
           return false;
         }
       } on PlatformException catch (e) {
-        debugPrint('❌ Failed to get IMEI: ${e.message}');
+        print('❌ Failed to get IMEI: ${e.message}');
         return false;
       }
 
@@ -296,20 +303,20 @@ class _GPSTrackerState extends State<GPSTracker> {
         });
         print('✅ Device model obtained: ${androidInfo.model}');
       } catch (e) {
-        debugPrint('⚠️ Failed to get device model: $e');
+        print('⚠️ Failed to get device model: $e');
         // Don't fail the entire process for device model
       }
       
       return true;
     } catch (e) {
-      debugPrint('❌ Error getting device info: $e');
+      print('❌ Error getting device info: $e');
       return false;
     }
   }
 
   // Start tracking location
   void _startTracking() {
-    debugPrint('Starting tracking...');
+    print('Starting tracking...');
     setState(() {
       _isTracking = true;
     });
@@ -325,7 +332,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: locationSettings
     ).listen((Position position) {
-      debugPrint('Received position update: ${position.latitude}, ${position.longitude}');
+      print('Received position update: ${position.latitude}, ${position.longitude}');
       if (mounted) {
         setState(() {
           _currentPosition = position;
@@ -348,7 +355,7 @@ class _GPSTrackerState extends State<GPSTracker> {
         });
       }
     }, onError: (error) {
-      debugPrint('Error getting location: $error');
+      print('Error getting location: $error');
     });
   }
 
@@ -377,7 +384,7 @@ class _GPSTrackerState extends State<GPSTracker> {
 
   // Stop tracking location
   void _stopTracking() {
-    debugPrint('Stopping tracking...');
+    print('Stopping tracking...');
     _positionStreamSubscription?.cancel();
     _stopTrackingService();
     if (mounted) {
@@ -415,16 +422,16 @@ class _GPSTrackerState extends State<GPSTracker> {
     try {
       final success = await _apiService.sendLocationData(locationData);
       if (success) {
-        debugPrint('Data sent successfully to backend');
+        print('Data sent successfully to backend');
       } else {
-        debugPrint('Failed to send data to backend');
+        print('Failed to send data to backend');
       }
     } catch (e) {
-      debugPrint('Error sending data to backend: $e');
+      print('Error sending data to backend: $e');
     }
     
     // For debugging purposes
-    debugPrint('Location data: $locationData');
+    print('Location data: $locationData');
   }
 
   // Check service status
@@ -435,7 +442,7 @@ class _GPSTrackerState extends State<GPSTracker> {
         _isTracking = isRunning;
       });
     } catch (e) {
-      debugPrint('Error checking service status: $e');
+      print('Error checking service status: $e');
     }
   }
 
@@ -448,10 +455,10 @@ class _GPSTrackerState extends State<GPSTracker> {
           _isTracking = true;
         });
       } else {
-        debugPrint('Failed to start service');
+        print('Failed to start service');
       }
     } catch (e) {
-      debugPrint('Error starting service: $e');
+      print('Error starting service: $e');
     }
   }
 
@@ -464,10 +471,10 @@ class _GPSTrackerState extends State<GPSTracker> {
           _isTracking = false;
         });
       } else {
-        debugPrint('Failed to stop service');
+        print('Failed to stop service');
       }
     } catch (e) {
-      debugPrint('Error stopping service: $e');
+      print('Error stopping service: $e');
     }
   }
 
@@ -479,7 +486,7 @@ class _GPSTrackerState extends State<GPSTracker> {
         await prefs.setString('imei', imei);
       }
     } catch (e) {
-      debugPrint('Error saving IMEI: $e');
+      print('Error saving IMEI: $e');
     }
   }
 
@@ -493,7 +500,7 @@ class _GPSTrackerState extends State<GPSTracker> {
         });
       }
     } catch (e) {
-      debugPrint('Error getting satellite data: $e');
+      print('Error getting satellite data: $e');
     }
   }
 

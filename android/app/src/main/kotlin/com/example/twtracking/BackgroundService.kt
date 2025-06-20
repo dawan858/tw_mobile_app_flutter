@@ -37,6 +37,8 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 import android.app.AlarmManager
 import android.os.SystemClock
+import com.google.gson.Gson
+import android.os.Handler
 
 class BackgroundService : Service() {
     companion object {
@@ -103,7 +105,7 @@ class BackgroundService : Service() {
         }
     }
 
-    private var igStatus = 0
+    private var igStatus = 0 // Initialize to 0 (ACC off)
     private var isCarPowerAvailable = false
     private var serviceStartAttempts = 0
     private val MAX_START_ATTEMPTS = 3
@@ -176,15 +178,81 @@ class BackgroundService : Service() {
                 Log.e(TAG, "Error maintaining record limit: ${e.message}")
             }
         }
+
+        // NEW METHOD: Get unsynced data
+        fun getUnsyncedData(limit: Int = 50): List<Map<String, Any>> {
+            val db = readableDatabase
+            val data = mutableListOf<Map<String, Any>>()
+            
+            try {
+                val cursor = db.query(
+                    "location_data",
+                    null,
+                    "sync_status = ?",
+                    arrayOf("0"),
+                    null,
+                    null,
+                    "created_at ASC",
+                    limit.toString()
+                )
+                
+                while (cursor.moveToNext()) {
+                    val row = mutableMapOf<String, Any>()
+                    for (i in 0 until cursor.columnCount) {
+                        val columnName = cursor.getColumnName(i)
+                        when (cursor.getType(i)) {
+                            android.database.Cursor.FIELD_TYPE_INTEGER -> row[columnName] = cursor.getLong(i)
+                            android.database.Cursor.FIELD_TYPE_FLOAT -> row[columnName] = cursor.getDouble(i)
+                            android.database.Cursor.FIELD_TYPE_STRING -> row[columnName] = cursor.getString(i)
+                            android.database.Cursor.FIELD_TYPE_BLOB -> row[columnName] = cursor.getBlob(i)
+                            else -> row[columnName] = cursor.getString(i) ?: ""
+                        }
+                    }
+                    data.add(row)
+                }
+                cursor.close()
+                
+                Log.d(TAG, "Retrieved ${data.size} unsynced records")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error getting unsynced data: ${e.message}")
+            }
+            
+            return data
+        }
+
+        // NEW METHOD: Mark records as synced
+        fun markAsSynced(ids: List<Long>) {
+            if (ids.isEmpty()) return
+            
+            val db = writableDatabase
+            try {
+                val placeholders = ids.joinToString(",") { "?" }
+                val args = ids.map { it.toString() }.toTypedArray()
+                
+                val updatedRows = db.update(
+                    "location_data",
+                    ContentValues().apply { put("sync_status", 1) },
+                    "id IN ($placeholders)",
+                    args
+                )
+                
+                Log.d(TAG, "Marked $updatedRows records as synced")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error marking records as synced: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "=== BACKGROUND SERVICE CREATED (INDEPENDENT) ===")
+        Log.d(TAG, "=== BACKGROUND SERVICE ONCREATE (INDEPENDENT) ===")
         Log.d(TAG, "Process ID: ${android.os.Process.myPid()}")
         Log.d(TAG, "Thread: ${Thread.currentThread().name}")
         
         try {
+            // Clear old igStatus values to start fresh
+            clearOldIgStatusValues()
+            
             dbHelper = LocationDatabaseHelper(this)
             acquireWakeLock()
             createNotificationChannel()
@@ -203,6 +271,11 @@ class BackgroundService : Service() {
             setupLocationUpdates()
             startPeriodicSync()
             
+            // NEW: Force update igStatus after initialization
+            Handler().postDelayed({
+                forceUpdateIgStatusOnStart()
+            }, 2000) // Wait 2 seconds for CarPowerManager to initialize
+            
             Log.d(TAG, "✅ Service onCreate completed successfully (INDEPENDENT)")
             
         } catch (e: Exception) {
@@ -217,48 +290,180 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "=== INITIALIZING SERVICE-OWNED CAR POWER MANAGER ===")
             
+            // Initialize CarPowerManager with simple callback
             carPowerManager = CarPowerManager(this)
-            
             carPowerManager?.setAccStateCallback { isAccOn ->
                 val newIgStatus = if (isAccOn) 1 else 0
+                val oldStatus = igStatus
                 
-                if (newIgStatus != igStatus) {
-                    val oldStatus = igStatus
+                Log.d(TAG, "🚗 ACC STATE CALLBACK RECEIVED:")
+                Log.d(TAG, "   - ACC ON: $isAccOn")
+                Log.d(TAG, "   - Old igStatus: $oldStatus")
+                Log.d(TAG, "   - New igStatus: $newIgStatus")
+                
+                if (newIgStatus != oldStatus) {
                     igStatus = newIgStatus
-                    Log.d(TAG, "🚗 ACC state changed from $oldStatus to $igStatus (Service-owned)")
+                    Log.d(TAG, "🔄 igStatus CHANGED: $oldStatus → $newIgStatus")
                     
+                    // Store ACC state for Flutter
                     storeAccStateForFlutter(newIgStatus)
+                    
+                    // Trigger immediate sync with new igStatus
+                    triggerImmediateSync(newIgStatus)
+                    
+                    // Update notification
                     updateNotificationWithAccState(isAccOn)
-                }
-            }
-
-            carPowerManager?.setSleepStateCallback { isSleeping ->
-                Log.d(TAG, "🚗 Sleep state changed: $isSleeping (Service-owned)")
-                
-                if (isSleeping) {
-                    Log.d(TAG, "🚗 AVN entering sleep state - service handling")
-                    handleSleepStateChange(true)
+                    
                 } else {
-                    Log.d(TAG, "🚗 AVN exiting sleep state - service handling")
-                    handleSleepStateChange(false)
+                    Log.d(TAG, "ℹ️ igStatus unchanged: $oldStatus")
                 }
             }
-            
             carPowerManager?.initialize()
-            isCarPowerInitialized = true
             
-            val initialState = carPowerManager?.getCurrentAccState() ?: false
-            igStatus = if (initialState) 1 else 0
-            storeAccStateForFlutter(igStatus)
-            
-            Log.d(TAG, "✅ Service-owned CarPowerManager initialized. Initial state: $igStatus")
+            // Get initial ACC state after initialization
+            Handler().postDelayed({
+                try {
+                    val initialState = carPowerManager?.getCurrentAccState() ?: false
+                    val initialIgStatus = if (initialState) 1 else 0
+                    
+                    Log.d(TAG, "🚗 GETTING INITIAL STATE:")
+                    Log.d(TAG, "   - ACC ON: $initialState")
+                    Log.d(TAG, "   - igStatus: $initialIgStatus")
+                    
+                    if (igStatus != initialIgStatus) {
+                        val oldStatus = igStatus
+                        igStatus = initialIgStatus
+                        Log.d(TAG, "🔄 Initial igStatus updated: $oldStatus → $initialIgStatus")
+                        storeAccStateForFlutter(initialIgStatus)
+                    }
+                    
+                    Log.d(TAG, "✅ Service-owned CarPowerManager initialized. Final igStatus: $igStatus")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error getting initial state", e)
+                }
+            }, 1000) // Wait 1 second for initialization
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to initialize service-owned CarPowerManager: ${e.message}")
             isCarPowerInitialized = false
-            igStatus = 1
+            igStatus = 0  // Default to 0 (ACC OFF) instead of 1
             storeAccStateForFlutter(igStatus)
-            Log.w(TAG, "⚠️ Using default ACC state: $igStatus")
+            Log.w(TAG, "⚠️ Using default ACC state: $igStatus (ACC OFF)")
+        }
+    }
+
+    // NEW METHOD: Trigger immediate sync with current igStatus
+    private fun triggerImmediateSync(newIgStatus: Int) {
+        try {
+            Log.d(TAG, "🔄 TRIGGERING IMMEDIATE SYNC with igStatus: $newIgStatus")
+            
+            // Update any pending location records with new igStatus
+            updatePendingRecordsWithIgStatus(newIgStatus)
+            
+            // Trigger sync service
+            val syncIntent = Intent(this, BackgroundService::class.java).apply {
+                action = "SYNC_IMMEDIATE"
+                putExtra("ig_status", newIgStatus)
+            }
+            startService(syncIntent)
+            
+            Log.d(TAG, "✅ Immediate sync triggered")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error triggering immediate sync", e)
+        }
+    }
+
+    // NEW METHOD: Update pending records with new igStatus
+    private fun updatePendingRecordsWithIgStatus(newIgStatus: Int) {
+        try {
+            val db = dbHelper.writableDatabase
+            
+            val updateCount = db.update(
+                "location_data",
+                android.content.ContentValues().apply {
+                    put("ig_status", newIgStatus)
+                },
+                "synced = 0",
+                null
+            )
+            
+            Log.d(TAG, "📊 Updated $updateCount pending records with igStatus: $newIgStatus")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error updating pending records", e)
+        }
+    }
+
+    // NEW METHOD: Perform sync with specific igStatus
+    private fun performSyncWithIgStatus(newIgStatus: Int) {
+        try {
+            Log.d(TAG, "🔄 PERFORMING SYNC WITH igStatus: $newIgStatus")
+            
+            // Update current igStatus
+            igStatus = newIgStatus
+            
+            // Update any pending records
+            updatePendingRecordsWithIgStatus(newIgStatus)
+            
+            // Trigger the existing sync logic
+            // This will use the updated igStatus for all pending records
+            Log.d(TAG, "✅ Sync with igStatus $newIgStatus completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error performing sync with igStatus", e)
+        }
+    }
+
+    // NEW METHOD: Test current igStatus and power state (for debugging)
+    private fun testCurrentIgStatus() {
+        try {
+            Log.d(TAG, "🧪 TESTING CURRENT IG STATUS:")
+            Log.d(TAG, "   - Service igStatus: $igStatus")
+            Log.d(TAG, "   - CarPowerManager initialized: $isCarPowerInitialized")
+            
+            // Test CarPowerManager state
+            carPowerManager?.testCurrentPowerState()
+            
+            // Check SharedPreferences
+            val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val storedIgStatus = flutterPrefs.getInt("current_ig_status", -1)
+            val timestamp = flutterPrefs.getLong("ig_status_timestamp", 0)
+            
+            Log.d(TAG, "   - Stored igStatus: $storedIgStatus")
+            Log.d(TAG, "   - Timestamp: $timestamp")
+            
+            // Check tracking_prefs
+            val trackingPrefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            val trackingIgStatus = trackingPrefs.getInt("current_ig_status", -1)
+            val trackingTimestamp = trackingPrefs.getLong("ig_status_timestamp", 0)
+            
+            Log.d(TAG, "   - Tracking igStatus: $trackingIgStatus")
+            Log.d(TAG, "   - Tracking timestamp: $trackingTimestamp")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error testing igStatus", e)
+        }
+    }
+
+    // NEW METHOD: Clear old igStatus values on startup
+    private fun clearOldIgStatusValues() {
+        try {
+            Log.d(TAG, "🧹 CLEARING OLD IG STATUS VALUES")
+            
+            // Clear FlutterSharedPreferences
+            val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            flutterPrefs.edit().remove("current_ig_status").remove("ig_status_timestamp").apply()
+            
+            // Clear tracking_prefs
+            val trackingPrefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            trackingPrefs.edit().remove("current_ig_status").remove("ig_status_timestamp").apply()
+            
+            Log.d(TAG, "✅ Cleared old igStatus values from SharedPreferences")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error clearing old igStatus values", e)
         }
     }
 
@@ -325,15 +530,26 @@ class BackgroundService : Service() {
         }
     }
 
+    // NEW METHOD: Store ACC state for Flutter
     private fun storeAccStateForFlutter(igStatus: Int) {
         try {
-            val prefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
-            prefs.edit().apply {
+            // Store in FlutterSharedPreferences (for Flutter sync service)
+            val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            flutterPrefs.edit().apply {
                 putInt("current_ig_status", igStatus)
                 putLong("ig_status_timestamp", System.currentTimeMillis())
                 apply()
             }
-            Log.d(TAG, "✅ Stored ACC state for Flutter: $igStatus")
+            
+            // Store in tracking_prefs (for BackgroundService)
+            val trackingPrefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            trackingPrefs.edit().apply {
+                putInt("current_ig_status", igStatus)
+                putLong("ig_status_timestamp", System.currentTimeMillis())
+                apply()
+            }
+            
+            Log.d(TAG, "✅ Stored ACC state consistently for Flutter: $igStatus")
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error storing ACC state: ${e.message}")
         }
@@ -400,16 +616,36 @@ class BackgroundService : Service() {
         val isCarPowerTriggered = intent?.getBooleanExtra("car_power_triggered", false) ?: false
         val isWakeUpFromSleep = intent?.getBooleanExtra("wake_up_from_sleep", false) ?: false
         val isSleepKeepAlive = intent?.getBooleanExtra("sleep_keep_alive", false) ?: false
+        val isImeiAvailable = intent?.getBooleanExtra("imei_available", false) ?: false
+        val imei = intent?.getStringExtra("imei")
         
         Log.d(TAG, "Started by: $startedBy")
         Log.d(TAG, "Auto started: $isAutoStarted")
         Log.d(TAG, "Background only: $isBackgroundOnly")
         Log.d(TAG, "Car Power Triggered: $isCarPowerTriggered")
+        Log.d(TAG, "IMEI Available: $isImeiAvailable")
+        Log.d(TAG, "IMEI: $imei")
+        
+        // Handle IMEI if provided by MainActivity
+        if (isImeiAvailable && imei != null && imei.isNotEmpty()) {
+            Log.d(TAG, "=== HANDLING IMEI FROM MAIN ACTIVITY ===")
+            handleImeiFromMainActivity(imei)
+        }
         
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
         
         when {
+            intent?.action == "SYNC_IMMEDIATE" -> {
+                Log.d(TAG, "🔄 HANDLING IMMEDIATE SYNC REQUEST")
+                val newIgStatus = intent.getIntExtra("ig_status", igStatus)
+                Log.d(TAG, "Sync with igStatus: $newIgStatus")
+                performSyncWithIgStatus(newIgStatus)
+            }
+            intent?.action == "CHECK_POWER_STATE" -> {
+                Log.d(TAG, "🔍 HANDLING MANUAL POWER STATE CHECK")
+                checkAndUpdatePowerState()
+            }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
                 handleCarPowerStart(intent)
@@ -505,111 +741,25 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "=== HANDLING CAR POWER START ===")
             
-            val trigger = intent?.getStringExtra("started_by") ?: "unknown"
+            // Handle car power extras
             val igStatus = intent?.getIntExtra("current_ig_status", 0) ?: 0
-            val isSleeping = intent?.getBooleanExtra("is_sleeping", false) ?: false
-            val isWakeUp = intent?.getBooleanExtra("wake_up_from_sleep", false) ?: false
-            val isSleepKeepAlive = intent?.getBooleanExtra("sleep_keep_alive", false) ?: false
+            val trigger = intent?.getStringExtra("started_by") ?: "unknown"
             
+            Log.d(TAG, "=== HANDLING CAR POWER START ===")
+            Log.d(TAG, "Trigger: $trigger")
+            Log.d(TAG, "igStatus: $igStatus")
+            
+            // Update current igStatus
             this.igStatus = igStatus
             
-            when {
-                isWakeUp -> {
-                    Log.d(TAG, "🚗 Car power wake-up - resuming background operation")
-                    handleWakeUpFromSleep(true)
-                    showCarPowerWakeUpNotification(trigger)
-                }
-                isSleepKeepAlive -> {
-                    Log.d(TAG, "🚗 Car power sleep - maintaining service")
-                    handleSleepKeepAlive()
-                    showCarPowerSleepNotification()
-                }
-                else -> {
-                    Log.d(TAG, "🚗 Car power normal start - background mode")
-                    handleCarPowerNormalStart(trigger)
-                }
-            }
+            // Store ACC state for Flutter
+            storeAccStateForFlutter(igStatus)
+            
+            // Continue with normal service operation
+            Log.d(TAG, "🚗 Car power start - continuing normal operation")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error handling car power start", e)
-        }
-    }
-
-    private fun handleCarPowerNormalStart(trigger: String) {
-        try {
-            Log.d(TAG, "=== CAR POWER NORMAL START ===")
-            
-            refreshWakeLocks()
-            startLocationUpdates()
-            startPeriodicSync()
-            showCarPowerNotification(trigger)
-            
-            Log.d(TAG, "✅ Car power normal start completed")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in car power normal start", e)
-        }
-    }
-
-    private fun showCarPowerWakeUpNotification(trigger: String) {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("GPS Tracking - AVN Wake Up")
-                .setContentText("Service resumed after AVN wake-up")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .setAutoCancel(false)
-                .build()
-
-            startForeground(NOTIFICATION_ID, notification)
-            Log.d(TAG, "✅ Car power wake-up notification shown")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing car power wake-up notification", e)
-        }
-    }
-
-    private fun showCarPowerSleepNotification() {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("GPS Tracking - AVN Sleep")
-                .setContentText("Service maintained during AVN sleep")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .build()
-
-            startForeground(NOTIFICATION_ID, notification)
-            Log.d(TAG, "✅ Car power sleep notification shown")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing car power sleep notification", e)
-        }
-    }
-
-    private fun showCarPowerNotification(trigger: String) {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("GPS Tracking - Car Power")
-                .setContentText("Started by car power system")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .setAutoCancel(false)
-                .build()
-
-            startForeground(NOTIFICATION_ID, notification)
-            Log.d(TAG, "✅ Car power notification shown")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing car power notification", e)
         }
     }
 
@@ -904,9 +1054,69 @@ class BackgroundService : Service() {
                 }
             }, 0, uploadTimer.toLong(), TimeUnit.SECONDS)
             
+            // Add periodic igStatus test (every 30 seconds)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    testCurrentIgStatus()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in periodic igStatus test", e)
+                }
+            }, 30, 30, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic power state checker (every 15 seconds)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    checkAndUpdatePowerState()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in periodic power state check", e)
+                }
+            }, 15, 15, TimeUnit.SECONDS)
+            
             Log.d(TAG, "Periodic sync started")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting periodic sync", e)
+        }
+    }
+
+    // NEW METHOD: Check and update power state periodically
+    private fun checkAndUpdatePowerState() {
+        try {
+            Log.d(TAG, "🔍 PERIODIC POWER STATE CHECK")
+            
+            // Test current power state
+            carPowerManager?.testCurrentPowerState()
+            
+            // Get current power state from CarPowerManager
+            val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
+            val expectedIgStatus = if (currentPowerState) 1 else 0
+            
+            Log.d(TAG, "   - Current ACC state: $currentPowerState")
+            Log.d(TAG, "   - Expected igStatus: $expectedIgStatus")
+            Log.d(TAG, "   - Service igStatus: $igStatus")
+            
+            // Check if igStatus needs to be updated
+            if (igStatus != expectedIgStatus) {
+                val oldStatus = igStatus
+                igStatus = expectedIgStatus
+                
+                Log.d(TAG, "🔄 PERIODIC CHECK: igStatus updated: $oldStatus → $expectedIgStatus")
+                
+                // Store ACC state for Flutter
+                storeAccStateForFlutter(igStatus)
+                
+                // Update any pending records with new igStatus
+                updatePendingRecordsWithIgStatus(igStatus)
+                
+                // Update notification
+                updateNotificationWithAccState(currentPowerState)
+                
+                Log.d(TAG, "✅ Periodic power state check completed - igStatus updated")
+            } else {
+                Log.d(TAG, "ℹ️ Periodic check: igStatus unchanged ($igStatus)")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in periodic power state check", e)
         }
     }
 
@@ -977,7 +1187,7 @@ class BackgroundService : Service() {
                 put("phoneNo", "unknown")
                 put("provider", "fused")
                 put("reason", reason)
-                put("versionNo", "v ${Build.VERSION.RELEASE}")
+                put("versionNo", "v ${getAppVersion()}")
                 put("sync_status", 0)
                 put("created_at", currentTime)
             }
@@ -1180,6 +1390,272 @@ class BackgroundService : Service() {
             prefs.edit().putLong("flutter.last_wake_up_time", System.currentTimeMillis()).apply()
         } catch (e: Exception) {
             Log.e(TAG, "Error updating wake-up timestamp", e)
+        }
+    }
+
+    // NEW METHOD: Handle immediate sync requests
+    private fun handleImmediateSync(igStatus: Int, reason: String) {
+        try {
+            Log.d(TAG, "=== HANDLING IMMEDIATE SYNC ===")
+            Log.d(TAG, "igStatus: $igStatus, Reason: $reason")
+            
+            // Update current igStatus
+            this.igStatus = igStatus
+            
+            // Store consistently
+            storeAccStateForFlutter(igStatus)
+            
+            // Update notification
+            updateNotificationWithAccState(igStatus == 1)
+            
+            // Force sync to server immediately
+            forceSyncToServer(igStatus, reason)
+            
+            Log.d(TAG, "✅ Immediate sync completed for igStatus: $igStatus")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling immediate sync", e)
+        }
+    }
+
+    // NEW METHOD: Force sync to server with current igStatus
+    private fun forceSyncToServer(igStatus: Int, reason: String) {
+        try {
+            Log.d(TAG, "🔄 Force syncing to server - igStatus: $igStatus, Reason: $reason")
+            
+            // Update all unsynced records with current igStatus
+            updateUnsyncedRecordsIgStatus(igStatus)
+            
+            // Trigger immediate sync
+            syncExecutor.execute {
+                try {
+                    Log.d(TAG, "Starting forced sync to server...")
+                    performSyncToServer()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in forced sync", e)
+                }
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error forcing sync to server", e)
+        }
+    }
+
+    // NEW METHOD: Update unsynced records with current igStatus
+    private fun updateUnsyncedRecordsIgStatus(igStatus: Int) {
+        try {
+            val db = dbHelper.writableDatabase
+            val updatedRows = db.update(
+                "location_data",
+                ContentValues().apply { put("igStatus", igStatus) },
+                "sync_status = ?",
+                arrayOf("0")
+            )
+            Log.d(TAG, "Updated $updatedRows unsynced records with igStatus: $igStatus")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating unsynced records igStatus", e)
+        }
+    }
+
+    // NEW METHOD: Perform actual sync to server
+    private fun performSyncToServer() {
+        if (isSyncing) {
+            Log.d(TAG, "Sync already in progress, skipping...")
+            return
+        }
+
+        isSyncing = true
+        Log.d(TAG, "Starting sync to server...")
+
+        try {
+            val unsyncedData = dbHelper.getUnsyncedData(limit = 50)
+            if (unsyncedData.isEmpty()) {
+                Log.d(TAG, "No unsynced data to upload")
+                return
+            }
+
+            Log.d(TAG, "Found ${unsyncedData.size} records to sync")
+            val syncedIds = mutableListOf<Long>()
+
+            for (data in unsyncedData) {
+                try {
+                    // Remove internal fields before sending
+                    val dataToSend = data.toMutableMap()
+                    dataToSend.remove("id")
+                    dataToSend.remove("sync_status")
+                    dataToSend.remove("created_at")
+
+                    Log.d(TAG, "Sending data: ${dataToSend}")
+
+                    val request = okhttp3.Request.Builder()
+                        .url(serverUrl)
+                        .post(Gson().toJson(dataToSend).toRequestBody("application/json".toMediaTypeOrNull()))
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("User-Agent", "TrackingWorld-Mobile-App")
+                        .build()
+
+                    val response = client.newCall(request).execute()
+
+                    if (response.isSuccessful) {
+                        syncedIds.add(data["id"] as Long)
+                        Log.d(TAG, "✅ Successfully synced record ID: ${data["id"]}")
+                    } else {
+                        Log.e(TAG, "❌ Server error: ${response.code} - ${response.body?.string()}")
+                    }
+
+                    response.close()
+
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error syncing record ${data["id"]}: $e")
+                }
+            }
+
+            // Mark successfully synced records
+            if (syncedIds.isNotEmpty()) {
+                dbHelper.markAsSynced(syncedIds)
+                Log.d(TAG, "Marked ${syncedIds.size} records as synced")
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in sync to server", e)
+        } finally {
+            isSyncing = false
+            Log.d(TAG, "Sync to server completed")
+        }
+    }
+
+    // NEW METHOD: Get current igStatus
+    fun getCurrentIgStatus(): Int {
+        return igStatus
+    }
+
+    // NEW METHOD: Handle IMEI from MainActivity
+    private fun handleImeiFromMainActivity(imei: String) {
+        try {
+            Log.d(TAG, "=== HANDLING IMEI FROM MAIN ACTIVITY ===")
+            Log.d(TAG, "IMEI: $imei")
+            
+            // Store IMEI in SharedPreferences
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().putString("flutter.imei", imei).apply()
+            
+            // Also store in tracking_prefs for consistency
+            val trackingPrefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            trackingPrefs.edit().putString("imei", imei).apply()
+            
+            Log.d(TAG, "✅ IMEI stored successfully: $imei")
+            
+            // Now that IMEI is available, ensure the service is fully operational
+            ensureServiceOperational()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling IMEI from MainActivity", e)
+        }
+    }
+
+    // NEW METHOD: Ensure service is fully operational
+    private fun ensureServiceOperational() {
+        try {
+            Log.d(TAG, "=== ENSURING SERVICE OPERATIONAL ===")
+            
+            // Check if IMEI is available
+            val imei = getImei()
+            if (imei.isNotEmpty() && imei != "unknown") {
+                Log.d(TAG, "✅ IMEI is available: $imei")
+                
+                // Start location updates if not already started
+                if (!::fusedLocationClient.isInitialized) {
+                    Log.d(TAG, "🔄 Initializing location client")
+                    fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                }
+                
+                // Start location updates
+                startLocationUpdates()
+                
+                // Start periodic sync
+                startPeriodicSync()
+                
+                // Show operational notification
+                showOperationalNotification(imei)
+                
+                Log.d(TAG, "✅ Service is now fully operational with IMEI: $imei")
+                
+            } else {
+                Log.w(TAG, "⚠️ IMEI not available yet, service will wait")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error ensuring service operational", e)
+        }
+    }
+
+    // NEW METHOD: Show operational notification
+    private fun showOperationalNotification(imei: String) {
+        try {
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("GPS Tracking Active")
+                .setContentText("IMEI: $imei - Service operational")
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+                .build()
+
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            
+            Log.d(TAG, "✅ Operational notification shown with IMEI: $imei")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error showing operational notification", e)
+        }
+    }
+
+    private fun getAppVersion(): String {
+        return try {
+            val packageInfo = packageManager.getPackageInfo(packageName, 0)
+            packageInfo.versionName ?: "unknown"
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting app version", e)
+            "unknown"
+        }
+    }
+
+    // NEW METHOD: Force update igStatus on service start
+    private fun forceUpdateIgStatusOnStart() {
+        try {
+            Log.d(TAG, "🚀 FORCE UPDATE IG STATUS ON START")
+            
+            // Test current power state
+            carPowerManager?.testCurrentPowerState()
+            
+            // Get current power state from CarPowerManager
+            val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
+            val expectedIgStatus = if (currentPowerState) 1 else 0
+            
+            Log.d(TAG, "   - Current ACC state: $currentPowerState")
+            Log.d(TAG, "   - Expected igStatus: $expectedIgStatus")
+            Log.d(TAG, "   - Current service igStatus: $igStatus")
+            
+            // Always update igStatus on start to ensure consistency
+            val oldStatus = igStatus
+            igStatus = expectedIgStatus
+            
+            Log.d(TAG, "🔄 FORCE UPDATE: igStatus set to: $oldStatus → $expectedIgStatus")
+            
+            // Store ACC state for Flutter
+            storeAccStateForFlutter(igStatus)
+            
+            // Update any pending records with new igStatus
+            updatePendingRecordsWithIgStatus(igStatus)
+            
+            // Update notification
+            updateNotificationWithAccState(currentPowerState)
+            
+            Log.d(TAG, "✅ Force update igStatus on start completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in force update igStatus on start", e)
         }
     }
 }

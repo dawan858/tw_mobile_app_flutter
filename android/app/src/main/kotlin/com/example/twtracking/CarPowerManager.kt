@@ -3,6 +3,7 @@ package com.example.twtracking
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.util.Log
 import bw.car.Car
 import bw.car.CarNotConnectedException
@@ -14,41 +15,33 @@ class CarPowerManager(private val context: Context) {
     private var powerStateListener: CarPowerManager.CarPowerStateListener? = null
     private var isConnected = false
     private var accStateCallback: ((Boolean) -> Unit)? = null
-    private var currentAccState = false
-    private var lastValidState = false
-    private var stateChangeCount = 0
-    private var lastStateChangeTime = 0L
     private var sleepStateCallback: ((Boolean) -> Unit)? = null
-    private var isSleeping = false
-    private var igStatus = 0 // Initialize to 0 (ACC off)
+    private var currentAccState = false
+    private var currentIgStatus = 0 // Default to 0 (ACC OFF)
 
     companion object {
         private const val TAG = "CarPowerManager"
-        private const val STATE_SUSPEND_ENTER = 1
-        private const val STATE_SUSPEND_EXIT = 2
-        private const val STATE_SHUTDOWN_ENTER = 3
-        private const val STATE_SHUTDOWN_EXIT = 4
-        private const val STATE_ACC_ON = 1
-        private const val STATE_ACC_OFF = 0
-        private const val STATE_ENGINE_ON = 2
-        private const val STATE_FULL_POWER = 3
-    }
-
-    fun setSleepStateCallback(callback: (Boolean) -> Unit) {
-        sleepStateCallback = callback
-    }
-
-    fun getCurrentSleepState(): Boolean {
-        return isSleeping
-    }
-
-    fun getCurrentIgStatus(): Int {
-        return igStatus
+        
+        // Enhanced power state constants
+        private const val POWER_STATE_OFF = 0
+        private const val POWER_STATE_ON = 1
+        private const val POWER_STATE_SUSPEND = 2
+        private const val POWER_STATE_WAIT_FOR_VHAL = 3
+        private const val POWER_STATE_SHUTDOWN_PREPARE = 4
+        private const val POWER_STATE_ON_DISP_OFF = 5
+        private const val POWER_STATE_SHUTDOWN_POSTPONE = 6
+        private const val POWER_STATE_SHUTDOWN_START = 7
+        private const val POWER_STATE_SHUTDOWN_ENTER = 8
+        private const val POWER_STATE_SHUTDOWN_PREPARE_UPDATE = 9
+        private const val POWER_STATE_SUSPEND_EXIT = 10
+        private const val POWER_STATE_SUSPEND_ENTER = 11
+        private const val POWER_STATE_HIBERNATION_ENTER = 12
+        private const val POWER_STATE_HIBERNATION_EXIT = 13
     }
 
     fun initialize() {
         try {
-            Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER (PRIMARY AUTO-START) ===")
+            Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER ===")
             
             car = Car.createCar(context, object : android.content.ServiceConnection {
                 override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
@@ -58,10 +51,6 @@ class CarPowerManager(private val context: Context) {
                         
                         connect()
                         setupPowerStateListener()
-                        
-                        // Get initial state and trigger auto-start if needed
-                        val initialState = getCurrentAccState()
-                        handleInitialPowerState(initialState)
                         
                     } catch (e: CarNotConnectedException) {
                         Log.e(TAG, "Failed to get car power manager", e)
@@ -81,259 +70,101 @@ class CarPowerManager(private val context: Context) {
         }
     }
 
-    private fun handleInitialPowerState(isAccOn: Boolean) {
-        Log.d(TAG, "=== HANDLING INITIAL POWER STATE ===")
-        Log.d(TAG, "Initial ACC state: $isAccOn")
-        
-        if (isAccOn) {
-            Log.d(TAG, "🚗 ACC is ON - Auto-starting background service")
-            startBackgroundServiceOnly("car_power_initial_acc_on")
-        } else {
-            Log.d(TAG, "🚗 ACC is OFF - Checking for sleep state")
-            checkAndHandleSleepState()
-        }
-    }
-
     private fun setupPowerStateListener() {
         powerStateListener = object : CarPowerManager.CarPowerStateListener {
             override fun onPowerStateChanged(state: Int) {
-                Log.d(TAG, "=== CAR POWER STATE CHANGED ===")
-                Log.d(TAG, "New power state: $state")
+                val oldIgStatus = currentIgStatus
+                val isAccOn = isPowerStateAccOn(state)
+                currentIgStatus = if (isAccOn) 1 else 0
                 
-                handlePowerStateChange(state)
+                Log.d(TAG, "🚗 POWER STATE CHANGED:")
+                Log.d(TAG, "   - Raw State: $state")
+                Log.d(TAG, "   - State Name: ${getPowerStateName(state)}")
+                Log.d(TAG, "   - ACC ON: $isAccOn")
+                Log.d(TAG, "   - igStatus: $oldIgStatus → $currentIgStatus")
+                
+                currentAccState = isAccOn
+                accStateCallback?.invoke(isAccOn)
+                
+                Log.d(TAG, "✅ ACC state callback invoked with: $isAccOn")
             }
         }
         
         try {
             carPowerManager?.registerPowerStateListener(powerStateListener)
             Log.d(TAG, "✅ Power state listener registered successfully")
+            
+            // Get initial state immediately after registering listener
+            try {
+                val initialState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
+                val isAccOn = isPowerStateAccOn(initialState)
+                currentAccState = isAccOn
+                currentIgStatus = if (isAccOn) 1 else 0
+                
+                Log.d(TAG, "🚗 INITIAL STATE DETECTED:")
+                Log.d(TAG, "   - Initial state: $initialState")
+                Log.d(TAG, "   - State Name: ${getPowerStateName(initialState)}")
+                Log.d(TAG, "   - ACC ON: $isAccOn")
+                Log.d(TAG, "   - igStatus: $currentIgStatus")
+                
+                // Trigger initial callback
+                accStateCallback?.invoke(isAccOn)
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to get initial power state", e)
+                // Use default state
+                currentAccState = false
+                currentIgStatus = 0  // Default to 0 (ACC OFF)
+                accStateCallback?.invoke(false)
+            }
+            
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to register power state listener", e)
         }
     }
 
-    private fun handlePowerStateChange(state: Int) {
-        Log.d(TAG, "=== PROCESSING POWER STATE CHANGE ===")
-        Log.d(TAG, "State: $state")
-        
-        when (state) {
-            STATE_SUSPEND_ENTER -> {
-                Log.d(TAG, "🚗 ENTERING SLEEP STATE")
-                isSleeping = true
-                igStatus = 0 // ACC OFF during sleep
-                currentAccState = false
-                
-                // Store sleep state
-                storeSleepState(true)
-                
-                // Notify callbacks
-                sleepStateCallback?.invoke(true)
-                accStateCallback?.invoke(false)
-                
-                // Start background service in sleep mode
-                startBackgroundServiceOnly("car_power_sleep_enter")
-            }
-            
-            STATE_SUSPEND_EXIT -> {
-                Log.d(TAG, "🚗 EXITING SLEEP STATE - AVN WAKE UP")
-                isSleeping = false
-                igStatus = 1 // ACC ON when waking up
-                currentAccState = true
-                
-                // Store wake state
-                storeSleepState(false)
-                
-                // Notify callbacks
-                sleepStateCallback?.invoke(false)
-                accStateCallback?.invoke(true)
-                
-                // This is the CRITICAL auto-start moment - AVN just woke up
-                startBackgroundServiceOnly("car_power_wake_up")
-            }
-            
-            STATE_SHUTDOWN_ENTER -> {
-                Log.d(TAG, "🚗 ENTERING DEEP SLEEP STATE")
-                isSleeping = true
-                igStatus = 0
-                currentAccState = false
-                
-                storeSleepState(true)
-                sleepStateCallback?.invoke(true)
-                accStateCallback?.invoke(false)
-                
-                startBackgroundServiceOnly("car_power_shutdown_enter")
-            }
-            
-            STATE_SHUTDOWN_EXIT -> {
-                Log.d(TAG, "🚗 EXITING DEEP SLEEP STATE - CRITICAL WAKE UP")
-                isSleeping = false
-                igStatus = 1
-                currentAccState = true
-                
-                storeSleepState(false)
-                sleepStateCallback?.invoke(false)
-                accStateCallback?.invoke(true)
-                
-                // MOST IMPORTANT: Deep sleep wake-up auto-start
-                startBackgroundServiceOnly("car_power_shutdown_exit")
-            }
-            
-            STATE_ACC_ON -> {
-                Log.d(TAG, "🚗 ACC TURNED ON")
-                if (!currentAccState) {
-                    igStatus = 1
-                    currentAccState = true
-                    accStateCallback?.invoke(true)
-                    
-                    // Auto-start on ACC ON
-                    startBackgroundServiceOnly("car_power_acc_on")
-                }
-            }
-            
-            STATE_ACC_OFF -> {
-                Log.d(TAG, "🚗 ACC TURNED OFF")
-                if (currentAccState) {
-                    igStatus = 0
-                    currentAccState = false
-                    accStateCallback?.invoke(false)
-                    
-                    // Don't stop service on ACC OFF, just update state
-                    Log.d(TAG, "ACC OFF - Service continues in background")
-                }
-            }
-            
-            STATE_ENGINE_ON -> {
-                Log.d(TAG, "🚗 ENGINE ON (ACC also ON)")
-                igStatus = 1
-                currentAccState = true
-                accStateCallback?.invoke(true)
-                
-                startBackgroundServiceOnly("car_power_engine_on")
-            }
-            
-            STATE_FULL_POWER -> {
-                Log.d(TAG, "🚗 FULL POWER ON")
-                igStatus = 1
-                currentAccState = true
-                accStateCallback?.invoke(true)
-                
-                startBackgroundServiceOnly("car_power_full_power")
-            }
-            
-            else -> {
-                Log.w(TAG, "⚠️ Unknown power state: $state")
-                // Try to interpret as ACC state
-                val isAccOn = interpretPowerState(state)
-                if (isAccOn != currentAccState) {
-                    val oldStatus = igStatus
-                    igStatus = if (isAccOn) 1 else 0
-                    currentAccState = isAccOn
-                    
-                    Log.d(TAG, "Power state interpreted - ACC changed from $oldStatus to $igStatus")
-                    accStateCallback?.invoke(isAccOn)
-                    
-                    if (isAccOn) {
-                        startBackgroundServiceOnly("car_power_unknown_acc_on")
-                    }
-                }
-            }
-        }
-        
-        // Update last state tracking
-        lastValidState = currentAccState
-        stateChangeCount++
-        lastStateChangeTime = System.currentTimeMillis()
-    }
-
-    private fun startBackgroundServiceOnly(trigger: String) {
-        try {
-            Log.d(TAG, "=== STARTING BACKGROUND SERVICE ONLY ===")
-            Log.d(TAG, "Trigger: $trigger")
-            Log.d(TAG, "ACC State: $igStatus")
-            Log.d(TAG, "Sleep State: $isSleeping")
-            
-            val serviceIntent = Intent(context, BackgroundService::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                putExtra("started_by", trigger)
-                putExtra("auto_started", true)
-                putExtra("background_only", true) // CRITICAL: Background only
-                putExtra("car_power_triggered", true) // Mark as car power triggered
-                putExtra("current_ig_status", igStatus)
-                putExtra("is_sleeping", isSleeping)
-                
-                // Add wake-up specific flags
-                if (trigger.contains("wake_up") || trigger.contains("shutdown_exit")) {
-                    putExtra("wake_up_from_sleep", true)
-                    putExtra("background_only", true)
-                }
-                
-                // Add sleep specific flags
-                if (trigger.contains("sleep") || trigger.contains("shutdown_enter")) {
-                    putExtra("sleep_keep_alive", true)
-                    putExtra("background_only", true)
-                }
-            }
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
-            
-            Log.d(TAG, "✅ Background service started successfully (NO UI)")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error starting background service", e)
-        }
-    }
-
-    private fun checkAndHandleSleepState() {
-        try {
-            Log.d(TAG, "Checking for existing sleep state...")
-            
-            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
-            
-            if (wasSleeping) {
-                Log.d(TAG, "🚗 Found interrupted sleep state - resuming sleep mode")
-                isSleeping = true
-                startBackgroundServiceOnly("car_power_resume_sleep")
-            } else {
-                Log.d(TAG, "No sleep state detected")
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking sleep state", e)
-        }
-    }
-
-    private fun storeSleepState(isSleeping: Boolean) {
-        try {
-            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            prefs.edit().apply {
-                putBoolean("flutter.is_sleeping", isSleeping)
-                putLong("flutter.sleep_state_timestamp", System.currentTimeMillis())
-                putInt("current_ig_status", igStatus)
-                apply()
-            }
-            Log.d(TAG, "Stored sleep state: $isSleeping, igStatus: $igStatus")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error storing sleep state", e)
-        }
-    }
-
-    private fun interpretPowerState(state: Int): Boolean {
-        // Based on your reference code and common automotive implementations
+    // NEW METHOD: Enhanced power state detection
+    private fun isPowerStateAccOn(state: Int): Boolean {
         return when (state) {
-            0 -> false  // ACC OFF
-            1 -> true   // ACC ON
-            2 -> true   // Engine ON (also means ACC is ON)
-            3 -> true   // Full power ON
+            POWER_STATE_ON -> true
+            POWER_STATE_ON_DISP_OFF -> true
+            POWER_STATE_SUSPEND_EXIT -> true
+            POWER_STATE_HIBERNATION_EXIT -> true
+            POWER_STATE_WAIT_FOR_VHAL -> true
+            POWER_STATE_OFF -> false
+            POWER_STATE_SUSPEND -> false
+            POWER_STATE_SUSPEND_ENTER -> false
+            POWER_STATE_SHUTDOWN_PREPARE -> false
+            POWER_STATE_SHUTDOWN_POSTPONE -> false
+            POWER_STATE_SHUTDOWN_START -> false
+            POWER_STATE_SHUTDOWN_ENTER -> false
+            POWER_STATE_SHUTDOWN_PREPARE_UPDATE -> false
+            POWER_STATE_HIBERNATION_ENTER -> false
             else -> {
-                Log.w(TAG, "Unknown power state: $state, using last valid state: $lastValidState")
-                lastValidState // Return last known valid state for unknown values
+                Log.w(TAG, "⚠️ Unknown power state: $state, treating as ACC OFF")
+                false
             }
+        }
+    }
+
+    // NEW METHOD: Get power state name for debugging
+    private fun getPowerStateName(state: Int): String {
+        return when (state) {
+            POWER_STATE_OFF -> "POWER_STATE_OFF"
+            POWER_STATE_ON -> "POWER_STATE_ON"
+            POWER_STATE_SUSPEND -> "POWER_STATE_SUSPEND"
+            POWER_STATE_WAIT_FOR_VHAL -> "POWER_STATE_WAIT_FOR_VHAL"
+            POWER_STATE_SHUTDOWN_PREPARE -> "POWER_STATE_SHUTDOWN_PREPARE"
+            POWER_STATE_ON_DISP_OFF -> "POWER_STATE_ON_DISP_OFF"
+            POWER_STATE_SHUTDOWN_POSTPONE -> "POWER_STATE_SHUTDOWN_POSTPONE"
+            POWER_STATE_SHUTDOWN_START -> "POWER_STATE_SHUTDOWN_START"
+            POWER_STATE_SHUTDOWN_ENTER -> "POWER_STATE_SHUTDOWN_ENTER"
+            POWER_STATE_SHUTDOWN_PREPARE_UPDATE -> "POWER_STATE_SHUTDOWN_PREPARE_UPDATE"
+            POWER_STATE_SUSPEND_EXIT -> "POWER_STATE_SUSPEND_EXIT"
+            POWER_STATE_SUSPEND_ENTER -> "POWER_STATE_SUSPEND_ENTER"
+            POWER_STATE_HIBERNATION_ENTER -> "POWER_STATE_HIBERNATION_ENTER"
+            POWER_STATE_HIBERNATION_EXIT -> "POWER_STATE_HIBERNATION_EXIT"
+            else -> "UNKNOWN_STATE_$state"
         }
     }
 
@@ -343,6 +174,56 @@ class CarPowerManager(private val context: Context) {
 
     fun setAccStateCallback(callback: (Boolean) -> Unit) {
         accStateCallback = callback
+    }
+
+    // NEW METHOD: Set sleep state callback (for compatibility)
+    fun setSleepStateCallback(callback: (Boolean) -> Unit) {
+        sleepStateCallback = callback
+        Log.d(TAG, "Sleep state callback set (not implemented in simplified version)")
+    }
+
+    // NEW METHOD: Get current sleep state (for compatibility)
+    fun getCurrentSleepState(): Boolean {
+        // In simplified version, we don't track sleep state
+        // Return false (not sleeping) as default
+        Log.d(TAG, "getCurrentSleepState called (returning false in simplified version)")
+        return false
+    }
+
+    // NEW METHOD: Get current igStatus (for compatibility)
+    fun getCurrentIgStatus(): Int {
+        return currentIgStatus
+    }
+
+    // NEW METHOD: Test and log current power state (for debugging)
+    fun testCurrentPowerState() {
+        try {
+            Log.d(TAG, "🧪 TESTING CURRENT POWER STATE:")
+            Log.d(TAG, "   - isConnected: $isConnected")
+            Log.d(TAG, "   - carPowerManager: ${carPowerManager != null}")
+            Log.d(TAG, "   - currentAccState: $currentAccState")
+            Log.d(TAG, "   - currentIgStatus: $currentIgStatus")
+            
+            if (carPowerManager != null) {
+                try {
+                    val powerState = carPowerManager?.getPowerState()
+                    val stateName = getPowerStateName(powerState ?: -1)
+                    val isAccOn = isPowerStateAccOn(powerState ?: -1)
+                    
+                    Log.d(TAG, "   - Raw power state: $powerState")
+                    Log.d(TAG, "   - State name: $stateName")
+                    Log.d(TAG, "   - ACC ON: $isAccOn")
+                    Log.d(TAG, "   - Should igStatus be: ${if (isAccOn) 1 else 0}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "   - Error getting power state: ${e.message}")
+                }
+            } else {
+                Log.w(TAG, "   - carPowerManager is null")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error testing power state", e)
+        }
     }
 
     fun connect() {
@@ -358,15 +239,28 @@ class CarPowerManager(private val context: Context) {
     }
 
     fun disconnect() {
-        if (isConnected) {
-            try {
-                carPowerManager?.unregisterPowerStateListener(powerStateListener)
-                car?.disconnect()
-                isConnected = false
-                Log.d(TAG, "✅ Disconnected from car power manager")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Failed to disconnect from car power manager", e)
+        try {
+            Log.d(TAG, "Disconnecting CarPowerManager")
+            
+            // Unregister power state listener
+            powerStateListener?.let { listener ->
+                try {
+                    carPowerManager?.unregisterPowerStateListener(listener)
+                    Log.d(TAG, "Power state listener unregistered")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error unregistering power state listener", e)
+                }
             }
+            
+            // Disconnect car
+            car?.disconnect()
+            car = null
+            carPowerManager = null
+            powerStateListener = null
+            
+            Log.d(TAG, "CarPowerManager disconnected")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting CarPowerManager", e)
         }
     }
 
@@ -379,9 +273,11 @@ class CarPowerManager(private val context: Context) {
         }
     }
 
-    // Method to manually trigger auto-start for testing
-    fun triggerManualAutoStart() {
-        Log.d(TAG, "Manual auto-start trigger")
-        startBackgroundServiceOnly("manual_trigger_test")
+    fun getCurrentPowerStatus(): Map<String, Any> {
+        return mapOf(
+            "isConnected" to isConnected,
+            "currentAccState" to currentAccState,
+            "currentIgStatus" to currentIgStatus
+        )
     }
 }
