@@ -133,9 +133,9 @@ class _GPSTrackerState extends State<GPSTracker> {
   final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
   final ApiService _apiService = ApiService();
   
-  static const serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
+  static const serviceChannel = MethodChannel('com.example.twtracking/service');
   static const MethodChannel satelliteChannel = MethodChannel('com.trackingWorld.tracking/satellite');
-  static const MethodChannel avnSleepChannel = MethodChannel('com.trackingWorld.tracking/avn_sleep');
+  static const MethodChannel avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
   
   // Permission flow manager
   final PermissionFlowManager _permissionManager = PermissionFlowManager();

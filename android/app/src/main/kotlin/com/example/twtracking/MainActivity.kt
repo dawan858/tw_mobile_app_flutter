@@ -25,11 +25,11 @@ import android.content.Context
 import android.app.AlertDialog
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.trackingWorld.tracking/service"
+    private val CHANNEL = "com.example.twtracking/service"
     private val DEVICE_INFO_CHANNEL = "com.trackingWorld.tracking/device_info"
     private val DEVICE_ADMIN_CHANNEL = "device_admin_channel"
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
-    private val AVN_SLEEP_CHANNEL = "com.trackingWorld.tracking/avn_sleep"
+    private val AVN_SLEEP_CHANNEL = "com.example.twtracking/avn_sleep"
     private val TAG = "MainActivity"
     private var terminationReceiver: AppTerminationReceiver? = null
     private lateinit var devicePolicyManager: DevicePolicyManager

@@ -2,7 +2,7 @@ import 'package:flutter/services.dart';
 
 class AutoStartService {
   static const MethodChannel _launchChannel = MethodChannel('com.trackingWorld.tracking/launch');
-  static const MethodChannel _serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
+  static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
   static const MethodChannel _deviceChannel = MethodChannel('com.trackingWorld.tracking/device_info');
   
   static Future<Map<String, dynamic>> getLaunchDetails() async {

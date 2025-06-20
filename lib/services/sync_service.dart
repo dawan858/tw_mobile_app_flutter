@@ -28,7 +28,7 @@ class SyncService {
   
   // Method channel for power state check
   static const MethodChannel _avnSleepChannel = MethodChannel('com.trackingWorld.tracking/avn_sleep');
-  static const MethodChannel _serviceChannel = MethodChannel('com.trackingWorld.tracking/service');
+  static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
 
   factory SyncService() => _instance;
 
@@ -537,7 +537,7 @@ class SyncService {
   Future<void> triggerPowerStateCheck() async {
     try {
       print('🔄 Triggering power state check from Flutter sync service');
-      print('   - Channel: com.trackingWorld.tracking/service');
+      print('   - Channel: com.example.twtracking/service');
       print('   - Method: triggerPowerStateCheck');
       
       // Try using the service channel first (simpler approach)
