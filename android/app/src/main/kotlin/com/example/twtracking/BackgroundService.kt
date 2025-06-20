@@ -259,7 +259,7 @@ class BackgroundService : Service() {
             fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
             
             // CRITICAL: Initialize CarPowerManager INSIDE the service
-            initializeServiceOwnedCarPowerManager()
+            initializeCarPowerManager()
             
             // CRITICAL: Ensure IMEI is available
             ensureImeiAvailable()
@@ -286,9 +286,11 @@ class BackgroundService : Service() {
     /**
      * CRITICAL: Initialize CarPowerManager INSIDE the BackgroundService
      */
-    private fun initializeServiceOwnedCarPowerManager() {
+    private fun initializeCarPowerManager() {
         try {
             Log.d(TAG, "=== INITIALIZING SERVICE-OWNED CAR POWER MANAGER ===")
+            Log.d(TAG, "   - Service context: ${this.javaClass.simpleName}")
+            Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
             
             // Initialize CarPowerManager with simple callback
             carPowerManager = CarPowerManager(this)
@@ -300,6 +302,7 @@ class BackgroundService : Service() {
                 Log.d(TAG, "   - ACC ON: $isAccOn")
                 Log.d(TAG, "   - Old igStatus: $oldStatus")
                 Log.d(TAG, "   - New igStatus: $newIgStatus")
+                Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
                 
                 if (newIgStatus != oldStatus) {
                     igStatus = newIgStatus
@@ -318,34 +321,62 @@ class BackgroundService : Service() {
                     Log.d(TAG, "ℹ️ igStatus unchanged: $oldStatus")
                 }
             }
+            
+            // Initialize CarPowerManager
             carPowerManager?.initialize()
             
-            // Get initial ACC state after initialization
+            // Check initialization status after a delay
             Handler().postDelayed({
                 try {
-                    val initialState = carPowerManager?.getCurrentAccState() ?: false
-                    val initialIgStatus = if (initialState) 1 else 0
+                    Log.d(TAG, "🔄 CHECKING CAR POWER MANAGER INITIALIZATION STATUS:")
                     
-                    Log.d(TAG, "🚗 GETTING INITIAL STATE:")
-                    Log.d(TAG, "   - ACC ON: $initialState")
-                    Log.d(TAG, "   - igStatus: $initialIgStatus")
+                    val isProperlyInitialized = carPowerManager?.isProperlyInitialized() ?: false
+                    val detailedStatus = carPowerManager?.getDetailedStatus()
                     
-                    if (igStatus != initialIgStatus) {
-                        val oldStatus = igStatus
-                        igStatus = initialIgStatus
-                        Log.d(TAG, "🔄 Initial igStatus updated: $oldStatus → $initialIgStatus")
-                        storeAccStateForFlutter(initialIgStatus)
+                    Log.d(TAG, "   - isProperlyInitialized: $isProperlyInitialized")
+                    detailedStatus?.forEach { (key, value) ->
+                        Log.d(TAG, "   - $key: $value")
                     }
                     
-                    Log.d(TAG, "✅ Service-owned CarPowerManager initialized. Final igStatus: $igStatus")
+                    if (isProperlyInitialized) {
+                        val initialState = carPowerManager?.getCurrentAccState() ?: false
+                        val initialIgStatus = if (initialState) 1 else 0
+                        
+                        Log.d(TAG, "🚗 GETTING INITIAL STATE:")
+                        Log.d(TAG, "   - ACC ON: $initialState")
+                        Log.d(TAG, "   - igStatus: $initialIgStatus")
+                        
+                        if (igStatus != initialIgStatus) {
+                            val oldStatus = igStatus
+                            igStatus = initialIgStatus
+                            Log.d(TAG, "🔄 Initial igStatus updated: $oldStatus → $initialIgStatus")
+                            storeAccStateForFlutter(initialIgStatus)
+                        }
+                        
+                        isCarPowerInitialized = true
+                        Log.d(TAG, "✅ Service-owned CarPowerManager properly initialized. Final igStatus: $igStatus")
+                        
+                    } else {
+                        Log.w(TAG, "⚠️ CarPowerManager not properly initialized, using fallback")
+                        isCarPowerInitialized = false
+                        igStatus = 0  // Default to 0 (ACC OFF)
+                        storeAccStateForFlutter(igStatus)
+                        Log.w(TAG, "⚠️ Using fallback ACC state: $igStatus (ACC OFF)")
+                    }
                     
                 } catch (e: Exception) {
-                    Log.e(TAG, "❌ Error getting initial state", e)
+                    Log.e(TAG, "❌ Error checking CarPowerManager initialization status", e)
+                    isCarPowerInitialized = false
+                    igStatus = 0  // Default to 0 (ACC OFF)
+                    storeAccStateForFlutter(igStatus)
+                    Log.w(TAG, "⚠️ Using fallback ACC state after error: $igStatus (ACC OFF)")
                 }
-            }, 1000) // Wait 1 second for initialization
+            }, 3000) // Wait 3 seconds for initialization (increased from 1 second)
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to initialize service-owned CarPowerManager: ${e.message}")
+            Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
+            Log.e(TAG, "   - Exception message: ${e.message}")
             isCarPowerInitialized = false
             igStatus = 0  // Default to 0 (ACC OFF) instead of 1
             storeAccStateForFlutter(igStatus)
@@ -674,7 +705,7 @@ class BackgroundService : Service() {
         
         if (!isCarPowerInitialized) {
             Log.w(TAG, "CarPowerManager not initialized, retrying...")
-            initializeServiceOwnedCarPowerManager()
+            initializeCarPowerManager()
         }
         
         return START_STICKY
@@ -702,7 +733,7 @@ class BackgroundService : Service() {
             Log.d(TAG, "=== HANDLING SERVICE RESTART DURING SLEEP ===")
             
             if (!isCarPowerInitialized) {
-                initializeServiceOwnedCarPowerManager()
+                initializeCarPowerManager()
             }
             
             showSleepNotification()
@@ -1078,13 +1109,16 @@ class BackgroundService : Service() {
         }
     }
 
-    // NEW METHOD: Check and update power state periodically
+    // UPDATED METHOD: Check and update power state periodically
     private fun checkAndUpdatePowerState() {
         try {
             Log.d(TAG, "🔍 PERIODIC POWER STATE CHECK")
             
             // Test current power state
             carPowerManager?.testCurrentPowerState()
+            
+            // NEW: Use force update method for more reliable igStatus detection
+            carPowerManager?.forceUpdateIgStatus()
             
             // Get current power state from CarPowerManager
             val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
@@ -1093,6 +1127,7 @@ class BackgroundService : Service() {
             Log.d(TAG, "   - Current ACC state: $currentPowerState")
             Log.d(TAG, "   - Expected igStatus: $expectedIgStatus")
             Log.d(TAG, "   - Service igStatus: $igStatus")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
             
             // Check if igStatus needs to be updated
             if (igStatus != expectedIgStatus) {
@@ -1621,13 +1656,13 @@ class BackgroundService : Service() {
         }
     }
 
-    // NEW METHOD: Force update igStatus on service start
+    // UPDATED METHOD: Force update igStatus on service start
     private fun forceUpdateIgStatusOnStart() {
         try {
             Log.d(TAG, "🚀 FORCE UPDATE IG STATUS ON START")
             
-            // Test current power state
-            carPowerManager?.testCurrentPowerState()
+            // NEW: Use CarPowerManager's force update method
+            carPowerManager?.forceUpdateIgStatus()
             
             // Get current power state from CarPowerManager
             val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
@@ -1636,6 +1671,7 @@ class BackgroundService : Service() {
             Log.d(TAG, "   - Current ACC state: $currentPowerState")
             Log.d(TAG, "   - Expected igStatus: $expectedIgStatus")
             Log.d(TAG, "   - Current service igStatus: $igStatus")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
             
             // Always update igStatus on start to ensure consistency
             val oldStatus = igStatus

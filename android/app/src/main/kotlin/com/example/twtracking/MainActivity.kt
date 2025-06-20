@@ -159,12 +159,21 @@ class MainActivity : FlutterActivity() {
                     startTrackingService()
                     result.success(true)
                 }
+                "testMethodChannel" -> {
+                    try {
+                        Log.d(TAG, "🧪 TEST METHOD CHANNEL CALLED - SERVICE CHANNEL IS WORKING")
+                        result.success("Service channel is working!")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error in test method", e)
+                        result.error("TEST_ERROR", "Test method failed", e.message)
+                    }
+                }
                 "triggerPowerStateCheck" -> {
                     try {
                         Log.d(TAG, "🔄 Triggering power state check from Flutter service channel")
                         
-                        // Test current power state
-                        carPowerManager.testCurrentPowerState()
+                        // NEW: Use force update method for more reliable igStatus detection
+                        carPowerManager.forceUpdateIgStatus()
                         
                         // Trigger BackgroundService to check power state
                         val serviceIntent = Intent(this, BackgroundService::class.java).apply {
@@ -188,6 +197,38 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error getting current igStatus via service channel", e)
                         result.error("GET_IG_STATUS_ERROR", "Failed to get current igStatus", e.message)
+                    }
+                }
+                "getCarPowerManagerStatus" -> {
+                    try {
+                        Log.d(TAG, "🔍 Getting CarPowerManager status from service channel")
+                        val status = carPowerManager.getDetailedStatus()
+                        val isProperlyInitialized = carPowerManager.isProperlyInitialized()
+                        
+                        Log.d(TAG, "✅ CarPowerManager status:")
+                        status.forEach { (key, value) ->
+                            Log.d(TAG, "   - $key: $value")
+                        }
+                        Log.d(TAG, "   - isProperlyInitialized: $isProperlyInitialized")
+                        
+                        result.success(mapOf(
+                            "status" to status,
+                            "isProperlyInitialized" to isProperlyInitialized
+                        ))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting CarPowerManager status", e)
+                        result.error("STATUS_ERROR", "Failed to get CarPowerManager status", e.message)
+                    }
+                }
+                "setIgStatusManually" -> {
+                    try {
+                        val status = call.argument<Int>("status") ?: 0
+                        Log.d(TAG, "🔧 Setting igStatus manually to: $status")
+                        carPowerManager.setIgStatusManually(status)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error setting igStatus manually", e)
+                        result.error("SET_IG_STATUS_ERROR", "Failed to set igStatus manually", e.message)
                     }
                 }
                 else -> {
@@ -321,10 +362,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "triggerPowerStateCheck" -> {
                     try {
-                        Log.d(TAG, "🔄 Triggering power state check from Flutter")
+                        Log.d(TAG, "🔄 Triggering power state check from Flutter AVN sleep channel")
                         
-                        // Test current power state
-                        carPowerManager.testCurrentPowerState()
+                        // NEW: Use force update method for more reliable igStatus detection
+                        carPowerManager.forceUpdateIgStatus()
                         
                         // Trigger BackgroundService to check power state
                         val serviceIntent = Intent(this, BackgroundService::class.java).apply {
@@ -332,10 +373,10 @@ class MainActivity : FlutterActivity() {
                         }
                         startService(serviceIntent)
                         
-                        Log.d(TAG, "✅ Power state check triggered successfully")
+                        Log.d(TAG, "✅ Power state check triggered successfully via AVN sleep channel")
                         result.success(true)
                     } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error triggering power state check", e)
+                        Log.e(TAG, "❌ Error triggering power state check via AVN sleep channel", e)
                         result.error("POWER_STATE_CHECK_ERROR", "Failed to trigger power state check", e.message)
                     }
                 }
@@ -537,7 +578,7 @@ class MainActivity : FlutterActivity() {
             val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
             intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
             intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
-                "This app requires device admin privileges for security features and reliable background operation")
+                "This app requires device admin privileges for security features")
             startActivityForResult(intent, DEVICE_ADMIN_PERMISSION_REQUEST_CODE)
             
         } catch (e: Exception) {

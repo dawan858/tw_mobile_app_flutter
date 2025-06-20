@@ -27,7 +27,7 @@ class SyncService {
   int _batchSize = 50; // Sync in smaller batches
   
   // Method channel for power state check
-  static const MethodChannel _avnSleepChannel = MethodChannel('com.trackingWorld.tracking/avn_sleep');
+  static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
   static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
 
   factory SyncService() => _instance;
@@ -139,6 +139,20 @@ class SyncService {
     print('Starting sync process...');
 
     try {
+      // NEW: Test method channel connectivity first (for debugging)
+      try {
+        await testMethodChannel();
+      } catch (e) {
+        print('⚠️ Method channel test failed: $e');
+      }
+      
+      // NEW: Check CarPowerManager status for debugging
+      try {
+        await getCarPowerManagerStatus();
+      } catch (e) {
+        print('⚠️ CarPowerManager status check failed: $e');
+      }
+      
       // NEW: Try to trigger power state check, but don't fail if it doesn't work
       try {
         await triggerPowerStateCheck();
@@ -171,7 +185,7 @@ class SyncService {
 
       // NEW: Try to get igStatus from native side first
       try {
-        final nativeIgStatus = await getCurrentIgStatusFromNative();
+        final nativeIgStatus = await getIgStatusFromNative();
         if (nativeIgStatus != currentIgStatus) {
           print('🔄 Native igStatus ($nativeIgStatus) differs from SharedPreferences ($currentIgStatus)');
           print('   - Using native igStatus: $nativeIgStatus');
@@ -510,9 +524,9 @@ class SyncService {
   int get retryCount => _retryCount;
 
   // NEW METHOD: Get current igStatus from method channel
-  Future<int> getCurrentIgStatusFromNative() async {
+  Future<int> getIgStatusFromNative() async {
     try {
-      print('🔄 Getting current igStatus from native side');
+      print('🔄 Getting igStatus from native side...');
       
       // Try service channel first
       try {
@@ -560,6 +574,57 @@ class SyncService {
         print('   - Error type: ${e2.runtimeType}');
         print('   - Error details: $e2');
       }
+    }
+  }
+
+  // NEW METHOD: Test method channel connection
+  Future<void> testMethodChannel() async {
+    try {
+      print('🧪 Testing method channel connection...');
+      final result = await _serviceChannel.invokeMethod('testMethodChannel');
+      print('✅ Method channel test result: $result');
+    } catch (e) {
+      print('❌ Method channel test failed: $e');
+    }
+  }
+
+  // NEW METHOD: Manually set igStatus (for debugging)
+  Future<void> setIgStatusManually(int status) async {
+    try {
+      print('🔧 Setting igStatus manually to: $status');
+      await _serviceChannel.invokeMethod('setIgStatusManually', {'status': status});
+      print('✅ igStatus set manually to: $status');
+    } catch (e) {
+      print('❌ Error setting igStatus manually: $e');
+    }
+  }
+
+  // NEW METHOD: Check CarPowerManager status for debugging
+  static Future<Map<String, dynamic>?> getCarPowerManagerStatus() async {
+    try {
+      print('🔄 Getting CarPowerManager status from native side...');
+      
+      final result = await _serviceChannel.invokeMethod('getCarPowerManagerStatus');
+      
+      if (result != null) {
+        print('✅ CarPowerManager status received:');
+        final status = result['status'] as Map<String, dynamic>;
+        final isProperlyInitialized = result['isProperlyInitialized'] as bool;
+        
+        status.forEach((key, value) {
+          print('   - $key: $value');
+        });
+        print('   - isProperlyInitialized: $isProperlyInitialized');
+        
+        return result;
+      } else {
+        print('⚠️ CarPowerManager status result is null');
+        return null;
+      }
+    } catch (e) {
+      print('❌ Error getting CarPowerManager status: $e');
+      print('   - Error type: ${e.runtimeType}');
+      return null;
     }
   }
 }
