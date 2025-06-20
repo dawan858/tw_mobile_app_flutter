@@ -27,13 +27,10 @@ import android.app.AlertDialog
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.twtracking/service"
     private val DEVICE_INFO_CHANNEL = "com.trackingWorld.tracking/device_info"
-    private val DEVICE_ADMIN_CHANNEL = "device_admin_channel"
     private val SATELLITE_CHANNEL = "com.trackingWorld.tracking/satellite"
     private val AVN_SLEEP_CHANNEL = "com.example.twtracking/avn_sleep"
     private val TAG = "MainActivity"
     private var terminationReceiver: AppTerminationReceiver? = null
-    private lateinit var devicePolicyManager: DevicePolicyManager
-    private lateinit var adminComponent: ComponentName
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
     private lateinit var carPowerManager: CarPowerManager
@@ -43,26 +40,24 @@ class MainActivity : FlutterActivity() {
         private const val IMEI_PERMISSION_REQUEST_CODE = 1
         private const val LOCATION_PERMISSION_REQUEST_CODE = 2
         private const val STORAGE_PERMISSION_REQUEST_CODE = 3
-        private const val DEVICE_ADMIN_PERMISSION_REQUEST_CODE = 4
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(TAG, "MainActivity onCreate")
+        Log.d(TAG, "=== MainActivity onCreate ===")
         
         // CRITICAL: Start comprehensive permission flow immediately when app starts
         startComprehensivePermissionFlow()
         
-        // Initialize device admin components
-        devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
-        
         // Initialize location manager for satellite data
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        Log.d(TAG, "Location manager initialized: ${locationManager != null}")
         
         // Initialize car power manager for sleep monitoring
+        Log.d(TAG, "Initializing CarPowerManager...")
         carPowerManager = CarPowerManager(this)
         carPowerManager.initialize()
+        Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
         
         registerTerminationReceiver()
         // Don't start tracking service here - let permission flow control it
@@ -132,10 +127,16 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        
+        Log.d(TAG, "=== CONFIGURE FLUTTER ENGINE CALLED ===")
+        Log.d(TAG, "Flutter engine: ${flutterEngine.javaClass.simpleName}")
+        Log.d(TAG, "Binary messenger: ${flutterEngine.dartExecutor.binaryMessenger}")
+        Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
 
         // Service channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "SERVICE_CHANNEL method called: ${call.method}")
+            Log.d(TAG, "CarPowerManager available: ${::carPowerManager.isInitialized}")
             
             when (call.method) {
                 "startService" -> {
@@ -168,6 +169,15 @@ class MainActivity : FlutterActivity() {
                         result.error("TEST_ERROR", "Test method failed", e.message)
                     }
                 }
+                "testSimpleMethod" -> {
+                    try {
+                        Log.d(TAG, "🧪 SIMPLE METHOD TEST CALLED")
+                        result.success(42) // Return a simple number
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error in simple method test", e)
+                        result.error("SIMPLE_TEST_ERROR", "Simple method test failed", e.message)
+                    }
+                }
                 "triggerPowerStateCheck" -> {
                     try {
                         Log.d(TAG, "🔄 Triggering power state check from Flutter service channel")
@@ -191,12 +201,19 @@ class MainActivity : FlutterActivity() {
                 "getCurrentIgStatus" -> {
                     try {
                         Log.d(TAG, "🔄 Getting current igStatus from service channel")
-                        val currentIgStatus = carPowerManager.getCurrentIgStatus()
-                        Log.d(TAG, "✅ Current igStatus: $currentIgStatus")
-                        result.success(currentIgStatus)
+                        
+                        if (::carPowerManager.isInitialized) {
+                            val currentIgStatus = carPowerManager.getCurrentIgStatus()
+                            Log.d(TAG, "✅ Current igStatus from CarPowerManager: $currentIgStatus")
+                            result.success(currentIgStatus)
+                        } else {
+                            Log.w(TAG, "⚠️ CarPowerManager not initialized, returning default igStatus: 0")
+                            result.success(0) // Default to ACC OFF
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error getting current igStatus via service channel", e)
-                        result.error("GET_IG_STATUS_ERROR", "Failed to get current igStatus", e.message)
+                        Log.w(TAG, "⚠️ Returning default igStatus: 0 due to error")
+                        result.success(0) // Default to ACC OFF on error
                     }
                 }
                 "getCarPowerManagerStatus" -> {
@@ -231,6 +248,17 @@ class MainActivity : FlutterActivity() {
                         result.error("SET_IG_STATUS_ERROR", "Failed to set igStatus manually", e.message)
                     }
                 }
+                "simulateAccStateChange" -> {
+                    try {
+                        val isAccOn = call.argument<Boolean>("isAccOn") ?: false
+                        Log.d(TAG, "🧪 Simulating ACC state change to: $isAccOn")
+                        carPowerManager.simulateAccStateChange(isAccOn)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error simulating ACC state change", e)
+                        result.error("SIMULATE_ACC_ERROR", "Failed to simulate ACC state change", e.message)
+                    }
+                }
                 else -> {
                     Log.w(TAG, "Service method not implemented: ${call.method}")
                     result.notImplemented()
@@ -251,37 +279,6 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "Error getting IMEI", e)
                         result.error("IMEI_ERROR", "Failed to get IMEI", e.message)
-                    }
-                }
-                else -> {
-                    result.notImplemented()
-                }
-            }
-        }
-
-        // Device admin channel
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_ADMIN_CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "isDeviceAdminActive" -> {
-                    try {
-                        val isActive = devicePolicyManager.isAdminActive(adminComponent)
-                        result.success(isActive)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error checking device admin status", e)
-                        result.error("DEVICE_ADMIN_ERROR", "Failed to check device admin status", e.message)
-                    }
-                }
-                "requestDeviceAdmin" -> {
-                    try {
-                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-                        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-                        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
-                            "This app requires device admin privileges for security features")
-                        startActivity(intent)
-                        result.success(true)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error requesting device admin", e)
-                        result.error("DEVICE_ADMIN_ERROR", "Failed to request device admin", e.message)
                     }
                 }
                 else -> {
@@ -353,11 +350,20 @@ class MainActivity : FlutterActivity() {
                 }
                 "getCurrentIgStatus" -> {
                     try {
-                        val currentIgStatus = carPowerManager.getCurrentIgStatus()
-                        result.success(currentIgStatus)
+                        Log.d(TAG, "🔄 Getting current igStatus from AVN sleep channel")
+                        
+                        if (::carPowerManager.isInitialized) {
+                            val currentIgStatus = carPowerManager.getCurrentIgStatus()
+                            Log.d(TAG, "✅ Current igStatus from CarPowerManager (AVN): $currentIgStatus")
+                            result.success(currentIgStatus)
+                        } else {
+                            Log.w(TAG, "⚠️ CarPowerManager not initialized (AVN), returning default igStatus: 0")
+                            result.success(0) // Default to ACC OFF
+                        }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error getting current igStatus", e)
-                        result.error("GET_IG_STATUS_ERROR", "Failed to get current igStatus", e.message)
+                        Log.e(TAG, "❌ Error getting current igStatus from AVN sleep channel", e)
+                        Log.w(TAG, "⚠️ Returning default igStatus: 0 due to error (AVN)")
+                        result.success(0) // Default to ACC OFF on error
                     }
                 }
                 "triggerPowerStateCheck" -> {
@@ -388,6 +394,51 @@ class MainActivity : FlutterActivity() {
         }
         
         Log.d(TAG, "✅ AVN_SLEEP_CHANNEL method handler registered successfully")
+
+        // Device Admin channel (for Flutter to request device admin permissions)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "device_admin_channel").setMethodCallHandler { call, result ->
+            Log.d(TAG, "DEVICE_ADMIN_CHANNEL method called: ${call.method}")
+            
+            when (call.method) {
+                "isDeviceAdminActive" -> {
+                    try {
+                        val devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                        val adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
+                        val isActive = devicePolicyManager.isAdminActive(adminComponent)
+                        Log.d(TAG, "Device admin active: $isActive")
+                        result.success(isActive)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error checking device admin status", e)
+                        result.error("DEVICE_ADMIN_ERROR", "Failed to check device admin status", e.message)
+                    }
+                }
+                "requestDeviceAdmin" -> {
+                    try {
+                        Log.d(TAG, "🔄 Requesting device admin permission from Flutter")
+                        val devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                        val adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
+                        
+                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
+                            "This app requires device admin privileges for security features and reliable background operation")
+                        startActivity(intent)
+                        
+                        Log.d(TAG, "✅ Device admin permission request initiated")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error requesting device admin", e)
+                        result.error("DEVICE_ADMIN_ERROR", "Failed to request device admin", e.message)
+                    }
+                }
+                else -> {
+                    Log.w(TAG, "Device admin method not implemented: ${call.method}")
+                    result.notImplemented()
+                }
+            }
+        }
+        
+        Log.d(TAG, "✅ DEVICE_ADMIN_CHANNEL method handler registered successfully")
     }
 
     private fun getSatelliteData(): Map<String, Int> {
@@ -561,31 +612,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // NEW METHOD: Request device admin permission
-    private fun requestDeviceAdminPermission() {
-        try {
-            Log.d(TAG, "=== REQUESTING DEVICE ADMIN PERMISSION ===")
-            
-            // Check if device admin is already active
-            if (devicePolicyManager.isAdminActive(adminComponent)) {
-                Log.d(TAG, "✅ Device admin already active")
-                handleDeviceAdminPermissionGranted()
-                return
-            }
-            
-            // Request device admin permission
-            Log.d(TAG, "🔄 Requesting device admin permission...")
-            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-            intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-            intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
-                "This app requires device admin privileges for security features")
-            startActivityForResult(intent, DEVICE_ADMIN_PERMISSION_REQUEST_CODE)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error requesting device admin permission", e)
-        }
-    }
-
     // UPDATED METHOD: Handle permission results
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -623,23 +649,6 @@ class MainActivity : FlutterActivity() {
                 } else {
                     Log.w(TAG, "❌ Some storage permissions denied")
                     showStoragePermissionDialog()
-                }
-            }
-        }
-    }
-
-    // NEW METHOD: Handle activity result for device admin
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        
-        when (requestCode) {
-            DEVICE_ADMIN_PERMISSION_REQUEST_CODE -> {
-                if (resultCode == RESULT_OK) {
-                    Log.d(TAG, "✅ Device admin permission granted")
-                    handleDeviceAdminPermissionGranted()
-                } else {
-                    Log.w(TAG, "❌ Device admin permission denied")
-                    showDeviceAdminPermissionDialog()
                 }
             }
         }
@@ -715,55 +724,33 @@ class MainActivity : FlutterActivity() {
     private fun handleStoragePermissionsGranted() {
         try {
             Log.d(TAG, "=== STORAGE PERMISSIONS GRANTED ===")
+            Log.d(TAG, "✅ ALL NATIVE PERMISSIONS GRANTED - PERMISSION FLOW COMPLETE ===")
             
-            // Continue to next permission (Device Admin)
-            requestDeviceAdminPermission()
+            // All native permissions are now granted
+            // Device admin permission will be handled by Flutter
+            // Start background service with available permissions
+            startBackgroundServiceWithAvailablePermissions()
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error handling storage permissions granted", e)
         }
     }
 
-    // NEW METHOD: Handle when device admin permission is granted
-    private fun handleDeviceAdminPermissionGranted() {
+    // NEW METHOD: Start background service with available permissions
+    private fun startBackgroundServiceWithAvailablePermissions() {
         try {
-            Log.d(TAG, "=== DEVICE ADMIN PERMISSION GRANTED ===")
-            Log.d(TAG, "✅ ALL PERMISSIONS GRANTED - STARTING BACKGROUND SERVICE ===")
+            Log.d(TAG, "=== STARTING BACKGROUND SERVICE WITH AVAILABLE PERMISSIONS ===")
             
-            // Get IMEI again to ensure we have it
+            // Get IMEI if available
             val imeiManager = ImeiManager.getInstance(this)
             val imei = imeiManager.getDeviceIdentifier()
             
-            if (imei != null && imei.isNotEmpty() && imei != "unknown") {
-                Log.d(TAG, "✅ Final IMEI check: $imei")
-                
-                // Store IMEI in SharedPreferences
-                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                prefs.edit().putString("flutter.imei", imei).apply()
-                
-                // Start background service with all permissions granted
-                startBackgroundServiceWithAllPermissions(imei)
-                
-            } else {
-                Log.e(TAG, "❌ IMEI not available after all permissions granted")
-                showImeiPermissionDialog()
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error handling device admin permission granted", e)
-        }
-    }
-
-    // NEW METHOD: Start background service with all permissions
-    private fun startBackgroundServiceWithAllPermissions(imei: String) {
-        try {
-            Log.d(TAG, "=== STARTING BACKGROUND SERVICE WITH ALL PERMISSIONS ===")
             Log.d(TAG, "IMEI: $imei")
             
             val serviceIntent = Intent(this, BackgroundService::class.java).apply {
-                putExtra("imei_available", true)
-                putExtra("imei", imei)
-                putExtra("started_by", "main_activity_all_permissions")
+                putExtra("imei_available", imei != null && imei.isNotEmpty() && imei != "unknown")
+                putExtra("imei", imei ?: "")
+                putExtra("started_by", "main_activity_native_permissions")
                 putExtra("auto_started", true)
                 putExtra("background_only", false)
             }
@@ -774,10 +761,10 @@ class MainActivity : FlutterActivity() {
                 startService(serviceIntent)
             }
             
-            Log.d(TAG, "✅ Background service started with all permissions")
+            Log.d(TAG, "✅ Background service started with available permissions")
             
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error starting background service with all permissions", e)
+            Log.e(TAG, "❌ Error starting background service with available permissions", e)
         }
     }
 
@@ -824,29 +811,6 @@ class MainActivity : FlutterActivity() {
                 .show()
         } catch (e: Exception) {
             Log.e(TAG, "Error showing storage permission dialog", e)
-        }
-    }
-
-    // NEW METHOD: Show dialog explaining device admin permission importance
-    private fun showDeviceAdminPermissionDialog() {
-        try {
-            val builder = AlertDialog.Builder(this)
-            builder.setTitle("Device Admin Permission Required")
-                .setMessage("This app requires device admin privileges for security features and reliable background operation. Without this permission, the app may not work properly.")
-                .setPositiveButton("Grant Permission") { _, _ ->
-                    // Try requesting permission again
-                    requestDeviceAdminPermission()
-                }
-                .setNegativeButton("Open Settings") { _, _ ->
-                    // Open app settings
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    intent.data = Uri.fromParts("package", packageName, null)
-                    startActivity(intent)
-                }
-                .setCancelable(false)
-                .show()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing device admin permission dialog", e)
         }
     }
 } 

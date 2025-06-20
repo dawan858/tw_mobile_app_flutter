@@ -556,17 +556,59 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Step 3: Save IMEI
     await _saveImei();
     
-    // Step 4: Get satellite data
+    // Step 4: Check device admin permission
+    await _checkDeviceAdminPermission();
+    
+    // Step 5: Get satellite data
     await _getSatelliteData();
     
-    // Step 5: Signal to native side that app is ready
+    // Step 6: Signal to native side that app is ready
     await _signalAppReady();
     
-    // Step 6: Check service status and start tracking
+    // Step 7: Check service status and start tracking
     await _checkServiceStatus();
     _startTracking();
     
     print('✅ App initialization completed');
+  }
+
+  // Check and request device admin permission
+  Future<void> _checkDeviceAdminPermission() async {
+    try {
+      print('🔄 Checking device admin permission...');
+      
+      // Check if device admin is already active
+      final isActive = await DeviceAdminManager.isDeviceAdminActive();
+      if (mounted) {
+        setState(() {
+          _isDeviceAdminActive = isActive;
+        });
+      }
+      
+      if (isActive) {
+        print('✅ Device admin already active');
+        return;
+      }
+      
+      // Request device admin permission with dialog
+      print('🔄 Requesting device admin permission...');
+      final granted = await DeviceAdminManager.requestDeviceAdminWithDialog(context);
+      
+      if (mounted) {
+        setState(() {
+          _isDeviceAdminActive = granted;
+        });
+      }
+      
+      if (granted) {
+        print('✅ Device admin permission granted');
+      } else {
+        print('⚠️ Device admin permission not granted - app may not work optimally in background');
+      }
+      
+    } catch (e) {
+      print('❌ Error checking device admin permission: $e');
+    }
   }
 
   // Signal to native side that app is ready (IMEI obtained)
@@ -581,13 +623,14 @@ class _GPSTrackerState extends State<GPSTracker> {
 
   // Check if app is properly initialized
   bool get isAppInitialized {
-    return _permissionsGranted && _imei.isNotEmpty && _imei != 'unknown';
+    return _permissionsGranted && _imei.isNotEmpty && _imei != 'unknown' && _isDeviceAdminActive;
   }
 
   // Get initialization status message
   String get initializationStatus {
     if (!_permissionsGranted) return 'Waiting for permissions...';
     if (_imei.isEmpty || _imei == 'unknown') return 'Getting device ID...';
+    if (!_isDeviceAdminActive) return 'Device admin required';
     return 'Ready';
   }
 
@@ -680,13 +723,6 @@ class _GPSTrackerState extends State<GPSTracker> {
             ),
         ],
       ),
-      floatingActionButton: !isAppInitialized ? FloatingActionButton(
-        onPressed: () {
-          _startPermissionFlow();
-        },
-        backgroundColor: Colors.orange,
-        child: const Icon(Icons.security, color: Colors.white),
-      ) : null,
     );
   }
 }

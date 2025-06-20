@@ -47,10 +47,23 @@ class CarPowerManager(private val context: Context) {
             Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER ===")
             Log.d(TAG, "   - Context: ${context.javaClass.simpleName}")
             Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
+            Log.d(TAG, "   - Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            Log.d(TAG, "   - Android Version: ${android.os.Build.VERSION.SDK_INT}")
             
             // Reset state
             isInitialized = false
             isConnected = false
+            
+            // Check if car service is available
+            val packageManager = context.packageManager
+            val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
+            Log.d(TAG, "   - Car service available: $carServiceAvailable")
+            
+            if (!carServiceAvailable) {
+                Log.w(TAG, "⚠️ Car service not available on this device - using fallback mode")
+                tryFallbackInitialization()
+                return
+            }
             
             car = Car.createCar(context, object : android.content.ServiceConnection {
                 override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
@@ -72,12 +85,17 @@ class CarPowerManager(private val context: Context) {
                             }
                         } else {
                             Log.e(TAG, "❌ Failed to get car power manager - null returned")
+                            tryFallbackInitialization()
                         }
                         
                     } catch (e: CarNotConnectedException) {
                         Log.e(TAG, "❌ CarNotConnectedException getting car power manager", e)
+                        tryFallbackInitialization()
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Unexpected error getting car power manager", e)
+                        Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
+                        Log.e(TAG, "   - Exception message: ${e.message}")
+                        tryFallbackInitialization()
                     }
                 }
 
@@ -102,7 +120,7 @@ class CarPowerManager(private val context: Context) {
                     // Try to get initial state anyway
                     tryGetInitialState()
                 }
-            }, 5000) // 5 second timeout
+            }, 3000) // Reduced timeout to 3 seconds
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to initialize CarPowerManager", e)
@@ -500,6 +518,34 @@ class CarPowerManager(private val context: Context) {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error setting igStatus manually", e)
+        }
+    }
+
+    // NEW METHOD: Simulate ACC state change for testing
+    fun simulateAccStateChange(isAccOn: Boolean) {
+        try {
+            val newIgStatus = if (isAccOn) 1 else 0
+            val oldStatus = currentIgStatus
+            
+            Log.d(TAG, "🧪 SIMULATING ACC STATE CHANGE:")
+            Log.d(TAG, "   - Old igStatus: $oldStatus")
+            Log.d(TAG, "   - New igStatus: $newIgStatus")
+            Log.d(TAG, "   - ACC ON: $isAccOn")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+            
+            currentIgStatus = newIgStatus
+            currentAccState = isAccOn
+            
+            // Trigger callback on main thread
+            mainHandler.post {
+                accStateCallback?.invoke(isAccOn)
+                Log.d(TAG, "✅ Simulated ACC state callback invoked with: $isAccOn")
+            }
+            
+            Log.d(TAG, "✅ ACC state simulation completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error simulating ACC state change", e)
         }
     }
 }

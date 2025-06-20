@@ -26,9 +26,9 @@ class SyncService {
   static const Duration retryDelay = Duration(seconds: 30);
   int _batchSize = 50; // Sync in smaller batches
   
-  // Method channel for power state check
-  static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
-  static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
+  // REMOVED: Method channels since we're using SharedPreferences instead
+  // static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
+  // static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
 
   factory SyncService() => _instance;
 
@@ -139,39 +139,17 @@ class SyncService {
     print('Starting sync process...');
 
     try {
-      // NEW: Test method channel connectivity first (for debugging)
-      try {
-        await testMethodChannel();
-      } catch (e) {
-        print('⚠️ Method channel test failed: $e');
-      }
-      
-      // NEW: Check CarPowerManager status for debugging
-      try {
-        await getCarPowerManagerStatus();
-      } catch (e) {
-        print('⚠️ CarPowerManager status check failed: $e');
-      }
-      
-      // NEW: Try to trigger power state check, but don't fail if it doesn't work
-      try {
-        await triggerPowerStateCheck();
-      } catch (e) {
-        print('⚠️ Power state check failed, continuing with sync: $e');
-        // Don't fail the sync if power state check fails
-      }
-      
       // Check internet connectivity
       if (!await _hasInternetConnection()) {
         print('No internet connection available');
         return;
       }
 
-      // Get current ACC state from SharedPreferences (set by Kotlin BackgroundService)
+      // Get current ACC state from SharedPreferences (set by native BackgroundService)
       final prefs = await SharedPreferences.getInstance();
       int currentIgStatus = prefs.getInt('current_ig_status') ?? 0; // Default to ACC OFF
       
-      // Also check tracking_prefs for consistency
+      // Also check tracking_prefs for consistency (native service uses this)
       final trackingPrefs = await SharedPreferences.getInstance();
       final trackingIgStatus = trackingPrefs.getInt('current_ig_status');
       
@@ -181,24 +159,6 @@ class SyncService {
         print('Using igStatus from tracking_prefs: $currentIgStatus');
       } else {
         print('Using igStatus from FlutterSharedPreferences: $currentIgStatus');
-      }
-
-      // NEW: Try to get igStatus from native side first
-      try {
-        final nativeIgStatus = await getIgStatusFromNative();
-        if (nativeIgStatus != currentIgStatus) {
-          print('🔄 Native igStatus ($nativeIgStatus) differs from SharedPreferences ($currentIgStatus)');
-          print('   - Using native igStatus: $nativeIgStatus');
-          currentIgStatus = nativeIgStatus;
-          
-          // Update SharedPreferences with native value
-          await prefs.setInt('current_ig_status', currentIgStatus);
-          await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
-        } else {
-          print('✅ Native igStatus matches SharedPreferences: $currentIgStatus');
-        }
-      } catch (e) {
-        print('⚠️ Could not get native igStatus, using SharedPreferences: $e');
       }
 
       // Update any unsynced records with current igStatus
@@ -367,7 +327,7 @@ class SyncService {
       final prefs = await SharedPreferences.getInstance();
       int currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
       
-      // Also check tracking_prefs for consistency
+      // Also check tracking_prefs for consistency (native service uses this)
       final trackingPrefs = await SharedPreferences.getInstance();
       final trackingIgStatus = trackingPrefs.getInt('current_ig_status');
       
@@ -414,6 +374,11 @@ class SyncService {
     
     // First test server connectivity
     await testServerConnectivity();
+    
+    // Test igStatus functionality using SharedPreferences
+    print('=== TESTING IGSTATUS FUNCTIONALITY ===');
+    final igStatusTestResults = await testIgStatusFunctionality();
+    print('igStatus test results: $igStatusTestResults');
     
     // Then run normal sync
     await _startSync();
@@ -523,108 +488,51 @@ class SyncService {
   String? get lastError => _lastError;
   int get retryCount => _retryCount;
 
-  // NEW METHOD: Get current igStatus from method channel
-  Future<int> getIgStatusFromNative() async {
+  // NEW METHOD: Comprehensive test for igStatus functionality
+  Future<Map<String, dynamic>> testIgStatusFunctionality() async {
+    final results = <String, dynamic>{};
+    
     try {
-      print('🔄 Getting igStatus from native side...');
+      print('🧪 === STARTING IGSTATUS FUNCTIONALITY TEST ===');
       
-      // Try service channel first
-      try {
-        final result = await _serviceChannel.invokeMethod('getCurrentIgStatus');
-        print('✅ Got igStatus from service channel: $result');
-        return result ?? 0;
-      } catch (e) {
-        print('⚠️ Service channel failed, trying AVN sleep channel: $e');
-        
-        // Fallback to AVN sleep channel
-        final result = await _avnSleepChannel.invokeMethod('getCurrentIgStatus');
-        print('✅ Got igStatus from AVN sleep channel: $result');
-        return result ?? 0;
-      }
-    } catch (e) {
-      print('❌ Error getting igStatus from native side: $e');
-      return 0; // Default to ACC OFF
-    }
-  }
-
-  // NEW METHOD: Trigger power state check
-  Future<void> triggerPowerStateCheck() async {
-    try {
-      print('🔄 Triggering power state check from Flutter sync service');
-      print('   - Channel: com.example.twtracking/service');
-      print('   - Method: triggerPowerStateCheck');
+      // Test 1: Get current igStatus from SharedPreferences
+      print('🧪 Test 1: Getting current igStatus from SharedPreferences...');
+      final accState = await getAccState();
+      results['currentIgStatus'] = accState['igStatus'];
+      results['accState'] = accState;
+      print('✅ Current igStatus: ${accState['igStatus']}');
       
-      // Try using the service channel first (simpler approach)
-      final result = await _serviceChannel.invokeMethod('triggerPowerStateCheck');
-      print('✅ Power state check triggered successfully via service channel');
-      print('   - Result: $result');
-    } catch (e) {
-      print('❌ Error triggering power state check via service channel: $e');
-      print('   - Error type: ${e.runtimeType}');
-      print('   - Error details: $e');
+      // Test 2: Manually set igStatus to 1 (ACC ON)
+      print('🧪 Test 2: Manually setting igStatus to 1 (ACC ON)...');
+      await _updateIgStatus(1);
+      results['manualSetAccOn'] = true;
+      print('✅ igStatus set to 1 (ACC ON)');
       
-      // Fallback: try the AVN sleep channel
-      try {
-        print('🔄 Trying fallback via AVN sleep channel...');
-        final result = await _avnSleepChannel.invokeMethod('triggerPowerStateCheck');
-        print('✅ Power state check triggered successfully via AVN sleep channel');
-        print('   - Result: $result');
-      } catch (e2) {
-        print('❌ Error triggering power state check via AVN sleep channel: $e2');
-        print('   - Error type: ${e2.runtimeType}');
-        print('   - Error details: $e2');
-      }
-    }
-  }
-
-  // NEW METHOD: Test method channel connection
-  Future<void> testMethodChannel() async {
-    try {
-      print('🧪 Testing method channel connection...');
-      final result = await _serviceChannel.invokeMethod('testMethodChannel');
-      print('✅ Method channel test result: $result');
-    } catch (e) {
-      print('❌ Method channel test failed: $e');
-    }
-  }
-
-  // NEW METHOD: Manually set igStatus (for debugging)
-  Future<void> setIgStatusManually(int status) async {
-    try {
-      print('🔧 Setting igStatus manually to: $status');
-      await _serviceChannel.invokeMethod('setIgStatusManually', {'status': status});
-      print('✅ igStatus set manually to: $status');
-    } catch (e) {
-      print('❌ Error setting igStatus manually: $e');
-    }
-  }
-
-  // NEW METHOD: Check CarPowerManager status for debugging
-  static Future<Map<String, dynamic>?> getCarPowerManagerStatus() async {
-    try {
-      print('🔄 Getting CarPowerManager status from native side...');
+      // Test 3: Get igStatus after setting to ACC ON
+      await Future.delayed(const Duration(seconds: 1));
+      final accStateAfterOn = await getAccState();
+      results['igStatusAfterAccOn'] = accStateAfterOn['igStatus'];
+      print('✅ igStatus after ACC ON: ${accStateAfterOn['igStatus']}');
       
-      final result = await _serviceChannel.invokeMethod('getCarPowerManagerStatus');
+      // Test 4: Manually set igStatus to 0 (ACC OFF)
+      print('🧪 Test 4: Manually setting igStatus to 0 (ACC OFF)...');
+      await _updateIgStatus(0);
+      results['manualSetAccOff'] = true;
+      print('✅ igStatus set to 0 (ACC OFF)');
       
-      if (result != null) {
-        print('✅ CarPowerManager status received:');
-        final status = result['status'] as Map<String, dynamic>;
-        final isProperlyInitialized = result['isProperlyInitialized'] as bool;
-        
-        status.forEach((key, value) {
-          print('   - $key: $value');
-        });
-        print('   - isProperlyInitialized: $isProperlyInitialized');
-        
-        return result;
-      } else {
-        print('⚠️ CarPowerManager status result is null');
-        return null;
-      }
+      // Test 5: Get igStatus after setting to ACC OFF
+      await Future.delayed(const Duration(seconds: 1));
+      final accStateAfterOff = await getAccState();
+      results['igStatusAfterAccOff'] = accStateAfterOff['igStatus'];
+      print('✅ igStatus after ACC OFF: ${accStateAfterOff['igStatus']}');
+      
+      print('✅ === IGSTATUS FUNCTIONALITY TEST COMPLETED ===');
+      
     } catch (e) {
-      print('❌ Error getting CarPowerManager status: $e');
-      print('   - Error type: ${e.runtimeType}');
-      return null;
+      print('❌ Error during igStatus functionality test: $e');
+      results['error'] = e.toString();
     }
+    
+    return results;
   }
 }

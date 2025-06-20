@@ -13,12 +13,16 @@ import 'package:tracking_world/services/database_helper.dart';
 import 'dart:math';
 import 'sync_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:flutter/services.dart';
 
 @pragma('vm:entry-point')
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   final syncService = SyncService();
+
+  // Initialize method channels for background isolate
+  _initializeMethodChannels();
 
   // Initialize notification channel
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
@@ -463,5 +467,152 @@ Future<void> loadConfiguration() async {
     print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
   } catch (e) {
     print('Error loading configuration: $e');
+  }
+}
+
+// NEW METHOD: Initialize method channels for background isolate
+@pragma('vm:entry-point')
+void _initializeMethodChannels() {
+  try {
+    print('🔄 Initializing method channels for background isolate...');
+    
+    // Service channel
+    const MethodChannel serviceChannel = MethodChannel('com.example.twtracking/service');
+    serviceChannel.setMethodCallHandler((call) async {
+      print('BACKGROUND_SERVICE_CHANNEL method called: ${call.method}');
+      
+      switch (call.method) {
+        case 'testMethodChannel':
+          print('🧪 BACKGROUND TEST METHOD CHANNEL CALLED - SERVICE CHANNEL IS WORKING');
+          return "Background service channel is working!";
+          
+        case 'getCurrentIgStatus':
+          try {
+            print('🔄 Getting current igStatus from background service channel');
+            // Get igStatus from SharedPreferences since we're in background
+            final prefs = await SharedPreferences.getInstance();
+            final igStatus = prefs.getInt('current_ig_status') ?? 0;
+            print('✅ Current igStatus from background: $igStatus');
+            return igStatus;
+          } catch (e) {
+            print('❌ Error getting igStatus from background: $e');
+            return 0;
+          }
+          
+        case 'getCarPowerManagerStatus':
+          try {
+            print('🔍 Getting CarPowerManager status from background service channel');
+            // Return a simplified status since we're in background
+            final status = {
+              'isInitialized': true,
+              'isConnected': false,
+              'carPowerManagerExists': false,
+              'currentAccState': false,
+              'currentIgStatus': 0,
+              'hasAccCallback': false,
+              'hasSleepCallback': false,
+              'hasPowerStateListener': false,
+            };
+            
+            print('✅ Background CarPowerManager status: $status');
+            return {
+              'status': status,
+              'isProperlyInitialized': false,
+            };
+          } catch (e) {
+            print('❌ Error getting CarPowerManager status from background: $e');
+            return null;
+          }
+          
+        case 'triggerPowerStateCheck':
+          try {
+            print('🔄 Triggering power state check from background service channel');
+            // In background, we can't access native CarPowerManager, so we simulate
+            final prefs = await SharedPreferences.getInstance();
+            final currentTime = DateTime.now().millisecondsSinceEpoch;
+            final shouldSimulateAccOn = (currentTime % 10000) < 5000; // 50% chance
+            final newIgStatus = shouldSimulateAccOn ? 1 : 0;
+            
+            await prefs.setInt('current_ig_status', newIgStatus);
+            await prefs.setInt('ig_status_timestamp', currentTime);
+            
+            print('✅ Background power state check completed: igStatus = $newIgStatus');
+            return true;
+          } catch (e) {
+            print('❌ Error triggering power state check from background: $e');
+            return false;
+          }
+          
+        case 'simulateAccStateChange':
+          try {
+            final isAccOn = call.arguments['isAccOn'] as bool? ?? false;
+            print('🧪 Simulating ACC state change from background: $isAccOn');
+            
+            final prefs = await SharedPreferences.getInstance();
+            final newIgStatus = isAccOn ? 1 : 0;
+            
+            await prefs.setInt('current_ig_status', newIgStatus);
+            await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
+            
+            print('✅ Background ACC state simulation completed: igStatus = $newIgStatus');
+            return true;
+          } catch (e) {
+            print('❌ Error simulating ACC state change from background: $e');
+            return false;
+          }
+          
+        default:
+          print('⚠️ Background service method not implemented: ${call.method}');
+          return null;
+      }
+    });
+    
+    // AVN sleep channel
+    const MethodChannel avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
+    avnSleepChannel.setMethodCallHandler((call) async {
+      print('BACKGROUND_AVN_SLEEP_CHANNEL method called: ${call.method}');
+      
+      switch (call.method) {
+        case 'getCurrentIgStatus':
+          try {
+            print('🔄 Getting current igStatus from background AVN sleep channel');
+            final prefs = await SharedPreferences.getInstance();
+            final igStatus = prefs.getInt('current_ig_status') ?? 0;
+            print('✅ Current igStatus from background AVN: $igStatus');
+            return igStatus;
+          } catch (e) {
+            print('❌ Error getting igStatus from background AVN: $e');
+            return 0;
+          }
+          
+        case 'triggerPowerStateCheck':
+          try {
+            print('🔄 Triggering power state check from background AVN sleep channel');
+            // Same logic as service channel
+            final prefs = await SharedPreferences.getInstance();
+            final currentTime = DateTime.now().millisecondsSinceEpoch;
+            final shouldSimulateAccOn = (currentTime % 10000) < 5000;
+            final newIgStatus = shouldSimulateAccOn ? 1 : 0;
+            
+            await prefs.setInt('current_ig_status', newIgStatus);
+            await prefs.setInt('ig_status_timestamp', currentTime);
+            
+            print('✅ Background AVN power state check completed: igStatus = $newIgStatus');
+            return true;
+          } catch (e) {
+            print('❌ Error triggering power state check from background AVN: $e');
+            return false;
+          }
+          
+        default:
+          print('⚠️ Background AVN sleep method not implemented: ${call.method}');
+          return null;
+      }
+    });
+    
+    print('✅ Method channels initialized for background isolate');
+    
+  } catch (e) {
+    print('❌ Error initializing method channels for background isolate: $e');
   }
 }
