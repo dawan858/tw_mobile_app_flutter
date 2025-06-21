@@ -414,9 +414,9 @@ class BackgroundService : Service() {
             val updateCount = db.update(
                 "location_data",
                 android.content.ContentValues().apply {
-                    put("ig_status", newIgStatus)
+                    put("igStatus", newIgStatus)
                 },
-                "synced = 0",
+                "sync_status = 0",
                 null
             )
             

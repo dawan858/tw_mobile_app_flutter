@@ -146,23 +146,17 @@ class SyncService {
       }
 
       // Get current ACC state from SharedPreferences (set by native BackgroundService)
-      final prefs = await SharedPreferences.getInstance();
-      int currentIgStatus = prefs.getInt('current_ig_status') ?? 0; // Default to ACC OFF
-      
-      // Also check tracking_prefs for consistency (native service uses this)
       final trackingPrefs = await SharedPreferences.getInstance();
-      final trackingIgStatus = trackingPrefs.getInt('current_ig_status');
-      
-      // Use the most recent igStatus (prefer tracking_prefs if available)
-      if (trackingIgStatus != null) {
-        currentIgStatus = trackingIgStatus;
-        print('Using igStatus from tracking_prefs: $currentIgStatus');
-      } else {
-        print('Using igStatus from FlutterSharedPreferences: $currentIgStatus');
-      }
+      final int? igStatusFromNative = trackingPrefs.getInt('current_ig_status');
 
-      // Update any unsynced records with current igStatus
-      await _updateUnsyncedRecordsIgStatus(currentIgStatus);
+      print('Read igStatus from native (tracking_prefs): $igStatusFromNative');
+
+      if (igStatusFromNative != null) {
+        // Update any unsynced records with the definitive igStatus from native code
+        await _updateUnsyncedRecordsIgStatus(igStatusFromNative);
+      } else {
+        print('⚠️ igStatus not yet available from native code. Syncing without updating igStatus for old records.');
+      }
 
       final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
       if (unsyncedData.isEmpty) {
@@ -323,30 +317,21 @@ class SyncService {
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
     try {
-      // Get current ACC state from SharedPreferences for new location data
-      final prefs = await SharedPreferences.getInstance();
-      int currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
-      
-      // Also check tracking_prefs for consistency (native service uses this)
+      // Get the most up-to-date igStatus from the native service
       final trackingPrefs = await SharedPreferences.getInstance();
-      final trackingIgStatus = trackingPrefs.getInt('current_ig_status');
+      final int? igStatusFromNative = trackingPrefs.getInt('current_ig_status');
+
+      // Default to 0 ONLY if the native value is not available yet.
+      // This is for new records, so a default is acceptable, but we prefer the native value.
+      data['igStatus'] = igStatusFromNative ?? 0;
       
-      // Use the most recent igStatus (prefer tracking_prefs if available)
-      if (trackingIgStatus != null) {
-        currentIgStatus = trackingIgStatus;
-        print('Using igStatus from tracking_prefs for new location: $currentIgStatus');
-      } else {
-        print('Using igStatus from FlutterSharedPreferences for new location: $currentIgStatus');
-      }
-      
-      // Ensure the data has the current igStatus
-      data['igStatus'] = currentIgStatus;
-      
+      print('Queueing new location with igStatus: ${data['igStatus']} (from native: $igStatusFromNative)');
+
       // Check if entry already exists to prevent duplicates
       final exists = await _dbHelper.locationEntryExists(data);
       if (!exists) {
         await _dbHelper.insertLocationData(data);
-        print('Location data queued successfully with igStatus: $currentIgStatus');
+        print('Location data queued successfully with igStatus: ${data['igStatus']}');
         
         // Try to sync immediately if we have connection
         if (await _hasInternetConnection()) {
