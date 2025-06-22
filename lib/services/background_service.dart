@@ -201,115 +201,78 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
-  // Initialize location settings
-  const LocationSettings locationSettings = LocationSettings(
-    accuracy: LocationAccuracy.bestForNavigation,
-  );
-
-  // Enhanced position tracking variables
   Position? lastPosition;
-  DateTime? lastUpdateTime;
-  bool _isMoving = false;
-  int _lastMovementTime = 0;
-  int _lastStopTime = 0;
-  
-  // Enhanced stationary detection
-  List<Position> recentPositions = [];
-  final int positionBufferSize = 5;
-  int consecutiveStationaryCount = 0;
 
-  StreamSubscription<Position>? positionStream;
-
-  // Listen to position updates
-  try {
-    positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
+  // Switched back to Timer.periodic for reliable, time-based updates.
+  Timer.periodic(Duration(seconds: gpsTimer), (timer) async {
+    try {
+      // 1. Check igStatus from native to ensure ignition is ON
+      int currentIgStatus = 0;
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final now = DateTime.now();
-        final imei = prefs.getString('flutter.imei') ?? 'unknown';
-
-        if (imei == 'unknown') {
-            print('⚠️ IMEI is unknown, cannot process location.');
-            return;
-        }
-
-        // CRITICAL FIX: Ensure igStatus is confirmed from native side before saving any data.
-        int currentIgStatus = 0;
-        try {
-            const serviceChannel = MethodChannel('com.example.twtracking/service');
-            currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
-        } catch (e) {
-            print('⚠️ Could not get igStatus from native, will retry: $e');
-        }
-
-        // If ignition is off, we don't need to check for movement or save location.
-        // This also prevents saving "Initial Position" with igStatus 0.
-        if (currentIgStatus == 0) {
-            print('ℹ️ Ignition is off (igStatus: 0). Skipping location save.');
-            lastPosition = position; // Still update last position for distance calculations
-            return;
-        }
-
-        String reason = 'Idle'; // Default reason
-        bool shouldSave = false;
-
-        if (lastPosition == null) {
-          shouldSave = true;
-          reason = 'Initial Position';
-          print('📍 Initial Position. Saving with confirmed igStatus: $currentIgStatus');
-        } else {
-          // ... existing movement detection logic ...
-          final distance = Geolocator.distanceBetween(
-              lastPosition!.latitude, lastPosition!.longitude,
-              position.latitude, position.longitude);
-
-          if (distance > (prefs.getDouble('distanceThreshold') ?? 200.0)) {
-            shouldSave = true;
-            reason = 'Distance';
-          }
-        }
-
-        if (shouldSave) {
-          final data = {
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-            'accuracy': position.accuracy,
-            'altitude': position.altitude,
-            'speed': position.speed,
-            'bearing': position.heading,
-            'imei': imei,
-            'timestamp': position.timestamp?.toIso8601String() ?? now.toIso8601String(),
-            'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
-            'gmtSettings': "GMT+${now.timeZoneOffset.inHours}:00",
-            'igStatus': currentIgStatus, // Use the confirmed igStatus
-            'localPrimaryId': now.millisecondsSinceEpoch % 100000,
-            'name': 'A100',
-            'phoneNo': 'unknown',
-            'provider': 'fused',
-            'reason': reason,
-            'versionNo': 'v1.0.0', // Replace with dynamic version
-            'sync_status': 0,
-            'created_at': now.millisecondsSinceEpoch,
-          };
-
-          await SyncService().queueLocationData(data);
-          print('✅ Location data saved with reason: $reason, igStatus: $currentIgStatus');
-        }
-
-        lastPosition = position;
-        lastUpdateTime = now;
+        const serviceChannel = MethodChannel('com.example.twtracking/service');
+        currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
       } catch (e) {
-        print('❌ Error in position stream listener: $e');
+        print('⚠️ Could not get igStatus from native, assuming OFF. Error: $e');
+        return; // Don't proceed if we can't get a reliable status
       }
-    });
-  } catch (e) {
-    print('❌ Error setting up position stream: $e');
-  }
+      
+      // 2. If ignition is off, skip this cycle.
+      if (currentIgStatus == 0) {
+        print('ℹ️ Ignition is off (igStatus: 0). Skipping timer-based location save.');
+        return;
+      }
 
-  // Final check to ensure service keeps running
-  Timer.periodic(const Duration(minutes: 2), (timer) {
-      service.invoke('update', {});
-      print('Service invoked to keep alive.');
+      // 3. Get current position
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      );
+
+      // 4. Determine reason
+      String reason = "Timer";
+      if (lastPosition == null) {
+        reason = "Initial Position";
+      } else {
+        // Simple movement check
+        if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
+          reason = "Movement";
+        }
+      }
+
+      // 5. Queue data for sync
+      final prefs = await SharedPreferences.getInstance();
+      final imei = prefs.getString('flutter.imei') ?? 'unknown';
+      final now = DateTime.now();
+
+      final data = {
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'accuracy': position.accuracy,
+        'altitude': position.altitude,
+        'speed': position.speed,
+        'bearing': position.heading,
+        'imei': imei,
+        'timestamp': position.timestamp?.toIso8601String() ?? now.toIso8601String(),
+        'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
+        'gmtSettings': "GMT+${now.timeZoneOffset.inHours}:00",
+        'igStatus': currentIgStatus,
+        'localPrimaryId': now.millisecondsSinceEpoch % 100000,
+        'name': 'A100',
+        'phoneNo': 'unknown',
+        'provider': 'fused',
+        'reason': reason,
+        'versionNo': 'v1.0.0', // Placeholder
+        'sync_status': 0,
+        'created_at': now.millisecondsSinceEpoch,
+      };
+
+      await SyncService().queueLocationData(data);
+      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus');
+      
+      lastPosition = position;
+
+    } catch (e) {
+      print('❌ Error in periodic location timer: $e');
+    }
   });
 }
 
