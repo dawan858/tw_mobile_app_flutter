@@ -9,6 +9,7 @@ import android.util.Log
 import bw.car.Car
 import bw.car.CarNotConnectedException
 import bw.car.power.CarPowerManager
+import java.util.concurrent.Executor
 
 class CarPowerManager(private val context: Context) {
     private var car: Car? = null
@@ -21,6 +22,10 @@ class CarPowerManager(private val context: Context) {
     private var currentAccState = false
     private var currentIgStatus = 0 // Default to 0 (ACC OFF)
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // For debouncing ACC OFF events
+    private val accOffHandler = Handler(Looper.getMainLooper())
+    private var accOffRunnable: Runnable? = null
 
     companion object {
         private const val TAG = "CarPowerManager"
@@ -166,35 +171,48 @@ class CarPowerManager(private val context: Context) {
             
             powerStateListener = object : CarPowerManager.CarPowerStateListener {
                 override fun onPowerStateChanged(state: Int) {
-                    val oldIgStatus = currentIgStatus
-                    val isAccOn = isPowerStateAccOn(state)
-                    val newIgStatus = if (isAccOn) 1 else 0
-                    
-                    Log.e("CarPowerManager", "ERROR: 🚗 POWER STATE CHANGED:")
-                    Log.e("CarPowerManager", "ERROR:    - Raw State: $state")
-                    Log.e("CarPowerManager", "ERROR:    - State Name: ${getPowerStateName(state)}")
-                    Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
-                    Log.e("CarPowerManager", "ERROR:    - igStatus: $oldIgStatus → $newIgStatus")
-                    Log.e("CarPowerManager", "ERROR:    - Timestamp: ${System.currentTimeMillis()}")
-                    Log.e("CarPowerManager", "ERROR:    - Thread: ${Thread.currentThread().name}")
-                    
-                    // Only update if there's an actual change to prevent fluctuations
-                    if (newIgStatus != oldIgStatus) {
-                        currentIgStatus = newIgStatus
-                        currentAccState = isAccOn
-                        
-                        // Save to SharedPreferences for persistence
-                        saveIgStatusToPrefs(newIgStatus)
-                        
-                        Log.e("CarPowerManager", "ERROR: ✅ igStatus UPDATED: $oldIgStatus → $newIgStatus")
-                        
-                        // Trigger callback on main thread
-                        mainHandler.post {
-                            accStateCallback?.invoke(isAccOn)
-                            Log.e("CarPowerManager", "ERROR: ✅ ACC state callback invoked with: $isAccOn")
+                    try {
+                        val isAccOn = isPowerStateAccOn(state)
+                        val newIgStatus = if (isAccOn) 1 else 0
+                        val oldIgStatus = currentIgStatus
+
+                        Log.e("CarPowerManager", "ERROR: 🚗 POWER STATE CHANGED (State: $state, ACC: $isAccOn)")
+
+                        if (newIgStatus != oldIgStatus) {
+                            if (newIgStatus == 1) { // Transitioning to ON
+                                // Cancel any pending OFF event
+                                accOffRunnable?.let {
+                                    accOffHandler.removeCallbacks(it)
+                                    Log.e("CarPowerManager", "ERROR: ❌ Cancelled pending ACC OFF event.")
+                                }
+                                accOffRunnable = null
+                                
+                                // Update state immediately
+                                currentIgStatus = 1
+                                currentAccState = true
+                                saveIgStatusToPrefs(1)
+                                Log.e("CarPowerManager", "ERROR: ✅ igStatus changed to ON (1)")
+                                accStateCallback?.invoke(true)
+
+                            } else { // Transitioning to OFF
+                                Log.e("CarPowerManager", "ERROR: ⚠️ ACC OFF detected. Starting 5-second countdown.")
+                                
+                                // Schedule an update to OFF state after a delay
+                                accOffRunnable = Runnable {
+                                    Log.e("CarPowerManager", "ERROR: ✅ 5-second countdown complete. igStatus confirmed OFF (0).")
+                                    currentIgStatus = 0
+                                    currentAccState = false
+                                    saveIgStatusToPrefs(0)
+                                    accStateCallback?.invoke(false)
+                                    accOffRunnable = null
+                                }
+                                accOffHandler.postDelayed(accOffRunnable!!, 5000) // 5 second delay
+                            }
+                        } else {
+                             Log.e("CarPowerManager", "ERROR: ℹ️ igStatus state confirmed: $newIgStatus")
                         }
-                    } else {
-                        Log.e("CarPowerManager", "ERROR: ℹ️ igStatus unchanged: $oldIgStatus (no fluctuation)")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error in onPowerStateChanged", e)
                     }
                 }
             }
@@ -220,20 +238,12 @@ class CarPowerManager(private val context: Context) {
                 val isAccOn = isPowerStateAccOn(initialState)
                 val newIgStatus = if (isAccOn) 1 else 0
                 
-                // Load saved state from SharedPreferences
-                val savedIgStatus = loadIgStatusFromPrefs()
+                // Always use the detected state, not saved SharedPreferences
+                currentIgStatus = newIgStatus
+                currentAccState = isAccOn
                 
-                // Use the saved state if it's different from current detection
-                if (savedIgStatus != -1 && savedIgStatus != newIgStatus) {
-                    Log.e("CarPowerManager", "ERROR: 🔄 Using saved igStatus: $savedIgStatus (detected: $newIgStatus)")
-                    currentIgStatus = savedIgStatus
-                    currentAccState = (savedIgStatus == 1)
-                } else {
-                    currentIgStatus = newIgStatus
-                    currentAccState = isAccOn
-                    // Save the detected state
-                    saveIgStatusToPrefs(newIgStatus)
-                }
+                // Save the detected state for future reference
+                saveIgStatusToPrefs(newIgStatus)
                 
                 Log.e("CarPowerManager", "ERROR: 🚗 INITIAL STATE DETECTED:")
                 Log.e("CarPowerManager", "ERROR:    - Initial state: $initialState")
@@ -241,6 +251,7 @@ class CarPowerManager(private val context: Context) {
                 Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
                 Log.e("CarPowerManager", "ERROR:    - igStatus: $currentIgStatus")
                 Log.e("CarPowerManager", "ERROR:    - Timestamp: ${System.currentTimeMillis()}")
+                Log.e("CarPowerManager", "ERROR:    - Source: Direct detection (not SharedPreferences)")
                 
                 // Trigger initial callback on main thread
                 mainHandler.post {
@@ -249,14 +260,24 @@ class CarPowerManager(private val context: Context) {
                 }
                 
             } else {
-                Log.w(TAG, "⚠️ carPowerManager is null, using saved state")
-                val savedIgStatus = loadIgStatusFromPrefs()
-                currentIgStatus = savedIgStatus
-                currentAccState = (savedIgStatus == 1)
+                Log.w(TAG, "⚠️ carPowerManager is null, using detected state or default")
+                
+                // Try to detect current state using custom methods
+                val isAccOn = detectBwicA100Ignition()
+                currentIgStatus = if (isAccOn) 1 else 0
+                currentAccState = isAccOn
+                
+                // Save the detected state
+                saveIgStatusToPrefs(currentIgStatus)
+                
+                Log.e("CarPowerManager", "ERROR: 🚗 FALLBACK STATE DETECTED:")
+                Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
+                Log.e("CarPowerManager", "ERROR:    - igStatus: $currentIgStatus")
+                Log.e("CarPowerManager", "ERROR:    - Source: Custom detection (fallback)")
                 
                 mainHandler.post {
                     accStateCallback?.invoke(currentAccState)
-                    Log.e("CarPowerManager", "ERROR: ✅ Saved state callback invoked with: $currentAccState")
+                    Log.e("CarPowerManager", "ERROR: ✅ Fallback state callback invoked with: $currentAccState")
                 }
             }
             
@@ -266,18 +287,26 @@ class CarPowerManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to get initial power state", e)
             
-            // Use saved state as fallback
-            val savedIgStatus = loadIgStatusFromPrefs()
-            currentIgStatus = savedIgStatus
-            currentAccState = (savedIgStatus == 1)
+            // Use detected state or default, not saved SharedPreferences
+            val isAccOn = detectBwicA100Ignition()
+            currentIgStatus = if (isAccOn) 1 else 0
+            currentAccState = isAccOn
+            
+            // Save the detected state
+            saveIgStatusToPrefs(currentIgStatus)
+            
+            Log.e("CarPowerManager", "ERROR: 🚗 EXCEPTION FALLBACK STATE:")
+            Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
+            Log.e("CarPowerManager", "ERROR:    - igStatus: $currentIgStatus")
+            Log.e("CarPowerManager", "ERROR:    - Source: Custom detection (exception fallback)")
             
             mainHandler.post {
                 accStateCallback?.invoke(currentAccState)
-                Log.e("CarPowerManager", "ERROR: ✅ Fallback state callback invoked with: $currentAccState")
+                Log.e("CarPowerManager", "ERROR: ✅ Exception fallback state callback invoked with: $currentAccState")
             }
             
             isInitialized = true
-            Log.e("CarPowerManager", "ERROR: ✅ CarPowerManager initialization completed with fallback. Final igStatus: $currentIgStatus")
+            Log.e("CarPowerManager", "ERROR: ✅ CarPowerManager initialization completed with exception fallback. Final igStatus: $currentIgStatus")
         }
     }
 
@@ -383,13 +412,10 @@ class CarPowerManager(private val context: Context) {
 
     // UPDATED METHOD: Power state detection matching the working BWIC sample code
     private fun isPowerStateAccOn(state: Int): Boolean {
-        // Based on the working BWIC sample code: boolean acc_on = i == 1;
-        // Power state 1 means ACC ON, anything else means ACC OFF
-        val result = (state == POWER_STATE_ON)
+        // Power state 1 (ON) and 5 (ON_DISP_OFF) are both considered ACC ON.
+        val result = (state == POWER_STATE_ON || state == POWER_STATE_ON_DISP_OFF)
         
-        Log.e("CarPowerManager", "ERROR: Power state analysis: state=$state, isAccOn=$result")
-        Log.e("CarPowerManager", "ERROR: Using BWIC sample logic: state == 1 (POWER_STATE_ON)")
-        Log.e("CarPowerManager", "ERROR: Result: $result")
+        Log.e("CarPowerManager", "ERROR: Power state analysis: state=$state (${getPowerStateName(state)}), isAccOn=$result")
         
         return result
     }
@@ -541,6 +567,9 @@ class CarPowerManager(private val context: Context) {
             car = null
             carPowerManager = null
             powerStateListener = null
+            
+            // Clean up handler
+            accOffRunnable?.let { accOffHandler.removeCallbacks(it) }
             
             Log.d(TAG, "CarPowerManager disconnected")
         } catch (e: Exception) {

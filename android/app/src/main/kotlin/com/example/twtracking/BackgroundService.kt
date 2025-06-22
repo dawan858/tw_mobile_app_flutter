@@ -55,6 +55,8 @@ class BackgroundService : Service() {
     private var carPowerManager: CarPowerManager? = null
     private var isCarPowerInitialized = false // ADD THIS MISSING VARIABLE
 
+    private var isIgStatusReady = false // NEW: Flag to check if igStatus is reliable
+
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private val CHANNEL_ID = "tracking_service"
@@ -109,6 +111,46 @@ class BackgroundService : Service() {
     private var isCarPowerAvailable = false
     private var serviceStartAttempts = 0
     private val MAX_START_ATTEMPTS = 3
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val accStateListener: (Boolean) -> Unit = { isAccOn ->
+        mainHandler.post {
+            try {
+                val newIgStatus = if (isAccOn) 1 else 0
+                val oldStatus = igStatus
+
+                if (!isIgStatusReady) {
+                    Log.d(TAG, "✅ igStatus is now ready. Initial igStatus: $newIgStatus")
+                    isIgStatusReady = true
+                }
+                
+                Log.d(TAG, "🚗 ACC Callback Received. isAccOn: $isAccOn, newIgStatus: $newIgStatus, oldStatus: $oldStatus")
+
+                igStatus = newIgStatus // Always update to the latest from the source of truth
+
+                if (newIgStatus != oldStatus) {
+                    Log.d(TAG, "🔄 igStatus updated: $oldStatus -> $newIgStatus")
+                    updateNotificationWithAccState(isAccOn)
+
+                    // Save a new location point with the changed igStatus and sync
+                    if (lastLocation != null) {
+                        saveLocationData(lastLocation!!)
+                        // Trigger immediate sync
+                        syncExecutor.execute {
+                            performSyncToServer()
+                        }
+                    } else {
+                        Log.w(TAG, "⚠️ No location available, igStatus changed but not synced yet")
+                    }
+                } else {
+                    Log.d(TAG, "ℹ️ igStatus value confirmed: $newIgStatus")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error in accStateListener", e)
+            }
+        }
+    }
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 3) {
         override fun onCreate(db: SQLiteDatabase) {
@@ -294,33 +336,7 @@ class BackgroundService : Service() {
             
             // Initialize CarPowerManager with simple callback
             carPowerManager = CarPowerManager(this)
-            carPowerManager?.setAccStateCallback { isAccOn ->
-                val newIgStatus = if (isAccOn) 1 else 0
-                val oldStatus = igStatus
-                
-                Log.d(TAG, "🚗 ACC STATE CALLBACK RECEIVED:")
-                Log.d(TAG, "   - ACC ON: $isAccOn")
-                Log.d(TAG, "   - Old igStatus: $oldStatus")
-                Log.d(TAG, "   - New igStatus: $newIgStatus")
-                Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
-                
-                if (newIgStatus != oldStatus) {
-                    igStatus = newIgStatus
-                    Log.d(TAG, "🔄 igStatus CHANGED: $oldStatus → $newIgStatus")
-                    
-                    // Store ACC state for Flutter
-                    storeAccStateForFlutter(newIgStatus)
-                    
-                    // Trigger immediate sync with new igStatus
-                    triggerImmediateSync(newIgStatus)
-                    
-                    // Update notification
-                    updateNotificationWithAccState(isAccOn)
-                    
-                } else {
-                    Log.d(TAG, "ℹ️ igStatus unchanged: $oldStatus")
-                }
-            }
+            carPowerManager?.setAccStateCallback(accStateListener)
             
             // Initialize CarPowerManager
             carPowerManager?.initialize()
@@ -679,6 +695,12 @@ class BackgroundService : Service() {
                 Log.d(TAG, "🔍 HANDLING MANUAL POWER STATE CHECK")
                 checkAndUpdatePowerState()
             }
+            intent?.action == "GET_CURRENT_IG_STATUS" -> {
+                Log.d(TAG, "📊 HANDLING GET CURRENT IG STATUS")
+                // Update SharedPreferences with current igStatus for Flutter to read
+                storeAccStateForFlutter(igStatus)
+                Log.d(TAG, "✅ Current igStatus stored for Flutter: $igStatus")
+            }
             intent?.action == "TEST_ACC_STATE_DETECTION" -> {
                 Log.d(TAG, "🧪 HANDLING ACC STATE DETECTION TEST")
                 testAccStateDetection()
@@ -687,6 +709,14 @@ class BackgroundService : Service() {
                 Log.d(TAG, "🧪 HANDLING SPECIFIC POWER STATE TEST")
                 val testState = intent.getIntExtra("test_state", 0)
                 testSpecificPowerState(testState)
+            }
+            intent?.action == "TEST_SERVER_SYNC" -> {
+                Log.d(TAG, "🧪 HANDLING TEST SERVER SYNC")
+                testServerSyncWithIgStatus()
+            }
+            intent?.action == "SEND_IGSTATUS_DIRECTLY" -> {
+                Log.d(TAG, "🚀 HANDLING DIRECT IGSTATUS SEND")
+                sendIgStatusDirectlyToServer()
             }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
@@ -1147,16 +1177,28 @@ class BackgroundService : Service() {
                 
                 Log.d(TAG, "🔄 PERIODIC CHECK: igStatus updated: $oldStatus → $expectedIgStatus")
                 
-                // Store ACC state for Flutter
-                storeAccStateForFlutter(igStatus)
-                
-                // Update any pending records with new igStatus
-                updatePendingRecordsWithIgStatus(igStatus)
+                // Save location data with new igStatus and sync to server
+                if (lastLocation != null) {
+                    saveLocationData(lastLocation!!)
+                    
+                    // Trigger immediate sync
+                    syncExecutor.execute {
+                        try {
+                            Log.d(TAG, "🔄 Syncing location data with updated igStatus: $expectedIgStatus")
+                            performSyncToServer()
+                            Log.d(TAG, "✅ Location data synced with updated igStatus: $expectedIgStatus")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error syncing location data", e)
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "⚠️ No location available, igStatus updated but not synced yet")
+                }
                 
                 // Update notification
                 updateNotificationWithAccState(currentPowerState)
                 
-                Log.d(TAG, "✅ Periodic power state check completed - igStatus updated")
+                Log.d(TAG, "✅ Periodic power state check completed - igStatus updated and location synced")
             } else {
                 Log.d(TAG, "ℹ️ Periodic check: igStatus unchanged ($igStatus)")
             }
@@ -1204,6 +1246,11 @@ class BackgroundService : Service() {
 
     private fun saveLocationData(location: Location) {
         try {
+            if (!isIgStatusReady) {
+                Log.w(TAG, "⚠️ Discarding location point because igStatus is not ready yet.")
+                return
+            }
+
             val currentTime = System.currentTimeMillis()
             val imei = getImei()
             val reason = calculateEnhancedReason(location)
@@ -1216,6 +1263,9 @@ class BackgroundService : Service() {
                 return
             }
             
+            // Get current igStatus directly from service (no SharedPreferences dependency)
+            val currentIgStatus = this.igStatus
+            
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
@@ -1227,7 +1277,7 @@ class BackgroundService : Service() {
                 put("timestamp", java.time.Instant.now().toString())
                 put("deviceRDT", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
                 put("gmtSettings", "GMT+${java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 3600}:00")
-                put("igStatus", igStatus)
+                put("igStatus", currentIgStatus) // Use service igStatus directly
                 put("localPrimaryId", currentTime % 100000)
                 put("name", Build.MODEL)
                 put("phoneNo", "unknown")
@@ -1240,6 +1290,15 @@ class BackgroundService : Service() {
 
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
+            
+            // Log the igStatus being saved (direct from service)
+            Log.d(TAG, "💾 SAVED LOCATION DATA - ID: $id")
+            Log.d(TAG, "   - igStatus saved (direct): $currentIgStatus")
+            Log.d(TAG, "   - ACC state: ${if (currentIgStatus == 1) "ON" else "OFF"}")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+            Log.d(TAG, "   - IMEI: $imei")
+            Log.d(TAG, "   - Source: BackgroundService igStatus (no SharedPreferences)")
+            
             Log.d(TAG, "Saved location data with ID: $id")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving location data: ${e.message}")
@@ -1531,6 +1590,14 @@ class BackgroundService : Service() {
                     dataToSend.remove("sync_status")
                     dataToSend.remove("created_at")
 
+                    // Log the igStatus being sent to server
+                    val igStatusBeingSent = dataToSend["igStatus"] as? Int ?: 0
+                    Log.d(TAG, "🔄 SYNC TO SERVER - Record ID: ${data["id"]}")
+                    Log.d(TAG, "   - igStatus being sent: $igStatusBeingSent")
+                    Log.d(TAG, "   - Current service igStatus: $igStatus")
+                    Log.d(TAG, "   - ACC state: ${if (igStatusBeingSent == 1) "ON" else "OFF"}")
+                    Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+
                     Log.d(TAG, "Sending data: ${dataToSend}")
 
                     val request = okhttp3.Request.Builder()
@@ -1544,7 +1611,7 @@ class BackgroundService : Service() {
 
                     if (response.isSuccessful) {
                         syncedIds.add(data["id"] as Long)
-                        Log.d(TAG, "✅ Successfully synced record ID: ${data["id"]}")
+                        Log.d(TAG, "✅ Successfully synced record ID: ${data["id"]} with igStatus: $igStatusBeingSent")
                     } else {
                         Log.e(TAG, "❌ Server error: ${response.code} - ${response.body?.string()}")
                     }
@@ -1693,16 +1760,28 @@ class BackgroundService : Service() {
             
             Log.d(TAG, "🔄 FORCE UPDATE: igStatus set to: $oldStatus → $expectedIgStatus")
             
-            // Store ACC state for Flutter
-            storeAccStateForFlutter(igStatus)
-            
-            // Update any pending records with new igStatus
-            updatePendingRecordsWithIgStatus(igStatus)
+            // Save location data with new igStatus and sync to server
+            if (lastLocation != null) {
+                saveLocationData(lastLocation!!)
+                
+                // Trigger immediate sync
+                syncExecutor.execute {
+                    try {
+                        Log.d(TAG, "🔄 Syncing location data with force updated igStatus: $expectedIgStatus")
+                        performSyncToServer()
+                        Log.d(TAG, "✅ Location data synced with force updated igStatus: $expectedIgStatus")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error syncing location data", e)
+                    }
+                }
+            } else {
+                Log.w(TAG, "⚠️ No location available, igStatus force updated but not synced yet")
+            }
             
             // Update notification
             updateNotificationWithAccState(currentPowerState)
             
-            Log.d(TAG, "✅ Force update igStatus on start completed")
+            Log.d(TAG, "✅ Force update igStatus on start completed - location synced")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error in force update igStatus on start", e)
@@ -1775,6 +1854,110 @@ class BackgroundService : Service() {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error testing specific power state from service", e)
+        }
+    }
+
+    // NEW METHOD: Test server sync with current igStatus
+    fun testServerSyncWithIgStatus() {
+        try {
+            Log.d(TAG, "🧪 TESTING SERVER SYNC WITH CURRENT IGSTATUS")
+            Log.d(TAG, "   - Current service igStatus: $igStatus")
+            Log.d(TAG, "   - ACC state: ${if (igStatus == 1) "ON" else "OFF"}")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+            
+            // Update all unsynced records with current igStatus
+            updateUnsyncedRecordsIgStatus(igStatus)
+            
+            // Trigger immediate sync
+            syncExecutor.execute {
+                try {
+                    Log.d(TAG, "🔄 Starting test sync to server with igStatus: $igStatus")
+                    performSyncToServer()
+                    Log.d(TAG, "✅ Test sync completed")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in test sync", e)
+                }
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error testing server sync", e)
+        }
+    }
+
+    // NEW METHOD: Send igStatus directly to server (no SharedPreferences)
+    fun sendIgStatusDirectlyToServer() {
+        try {
+            Log.d(TAG, "🚀 SENDING IGSTATUS DIRECTLY TO SERVER")
+            Log.d(TAG, "   - Current service igStatus: $igStatus")
+            Log.d(TAG, "   - ACC state: ${if (igStatus == 1) "ON" else "OFF"}")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+            Log.d(TAG, "   - Source: BackgroundService (no SharedPreferences)")
+            
+            // Instead of sending test data, save a location record with current igStatus and sync it
+            if (lastLocation != null) {
+                // Save current location with updated igStatus
+                saveLocationData(lastLocation!!)
+                
+                // Trigger immediate sync of the saved data
+                syncExecutor.execute {
+                    try {
+                        Log.d(TAG, "🔄 Syncing location data with igStatus: $igStatus")
+                        performSyncToServer()
+                        Log.d(TAG, "✅ Location data synced with igStatus: $igStatus")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error syncing location data", e)
+                    }
+                }
+            } else {
+                Log.w(TAG, "⚠️ No location available, cannot send igStatus to server")
+                Log.w(TAG, "   - Will send igStatus when location becomes available")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in sendIgStatusDirectlyToServer", e)
+        }
+    }
+
+    // NEW METHOD: Request location update for valid coordinates
+    private fun requestLocationUpdate() {
+        try {
+            Log.d(TAG, "📍 REQUESTING LOCATION UPDATE FOR VALID COORDINATES")
+            
+            if (::fusedLocationClient.isInitialized) {
+                // Request a single location update
+                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
+                    .setMinUpdateIntervalMillis(5000L)
+                    .setMaxUpdateDelayMillis(10000L)
+                    .build()
+
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    object : LocationCallback() {
+                        override fun onLocationResult(locationResult: LocationResult) {
+                            locationResult.lastLocation?.let { location ->
+                                Log.d(TAG, "✅ Got location update for valid coordinates")
+                                Log.d(TAG, "   - Latitude: ${location.latitude}")
+                                Log.d(TAG, "   - Longitude: ${location.longitude}")
+                                Log.d(TAG, "   - Accuracy: ${location.accuracy}")
+                                
+                                // Now try sending igStatus again with valid coordinates
+                                sendIgStatusDirectlyToServer()
+                                
+                                // Remove this callback after getting location
+                                fusedLocationClient.removeLocationUpdates(this)
+                            }
+                        }
+                    },
+                    Looper.getMainLooper()
+                )
+                
+                Log.d(TAG, "📍 Location update requested")
+            } else {
+                Log.w(TAG, "⚠️ Location client not initialized, cannot request location update")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error requesting location update", e)
         }
     }
 }

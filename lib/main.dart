@@ -703,21 +703,6 @@ class _GPSTrackerState extends State<GPSTracker> {
     }
   }
 
-  // Save igStatus to SharedPreferences for persistence
-  static Future<void> saveIgStatus(int igStatus) async {
-    try {
-      print('💾 Saving igStatus to SharedPreferences: $igStatus');
-      
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('current_ig_status', igStatus);
-      await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
-      
-      print('✅ igStatus saved successfully');
-    } catch (e) {
-      print('❌ Error saving igStatus: $e');
-    }
-  }
-
   // Load current igStatus from SharedPreferences
   Future<void> _loadCurrentIgStatus() async {
     try {

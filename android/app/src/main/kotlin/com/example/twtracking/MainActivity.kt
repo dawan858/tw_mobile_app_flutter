@@ -221,6 +221,27 @@ class MainActivity : FlutterActivity() {
                     try {
                         Log.d(TAG, "🔄 Getting current igStatus from service channel")
                         
+                        // Try to get igStatus from BackgroundService first (more accurate)
+                        try {
+                            val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                                action = "GET_CURRENT_IG_STATUS"
+                            }
+                            startService(serviceIntent)
+                            
+                            // Get igStatus from SharedPreferences (set by BackgroundService)
+                            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                            val currentIgStatus = prefs.getInt("current_ig_status", -1)
+                            
+                            if (currentIgStatus != -1) {
+                                Log.d(TAG, "✅ Current igStatus from BackgroundService: $currentIgStatus")
+                                result.success(currentIgStatus)
+                                return@setMethodCallHandler
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "⚠️ Could not get igStatus from BackgroundService: ${e.message}")
+                        }
+                        
+                        // Fallback to MainActivity's CarPowerManager
                         if (::carPowerManager.isInitialized) {
                             val currentIgStatus = carPowerManager.getCurrentIgStatus()
                             Log.d(TAG, "✅ Current igStatus from CarPowerManager: $currentIgStatus")
@@ -362,6 +383,40 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e("MainActivity", "ERROR: Exception in BWIC ignition test: ${e.message}")
                         result.error("BWIC_TEST_ERROR", "Failed to test BWIC ignition", e.message)
+                    }
+                }
+                "testServerSync" -> {
+                    try {
+                        Log.d(TAG, "🧪 Testing server sync from Flutter")
+                        
+                        // Trigger BackgroundService to test server sync
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "TEST_SERVER_SYNC"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Server sync test triggered successfully")
+                        result.success("Server sync test triggered")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error testing server sync", e)
+                        result.error("SERVER_SYNC_TEST_ERROR", "Failed to test server sync", e.message)
+                    }
+                }
+                "sendIgStatusDirectly" -> {
+                    try {
+                        Log.d(TAG, "🚀 Sending igStatus directly to server from Flutter")
+                        
+                        // Trigger BackgroundService to send igStatus directly
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "SEND_IGSTATUS_DIRECTLY"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Direct igStatus send triggered successfully")
+                        result.success("Direct igStatus send triggered")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error sending igStatus directly", e)
+                        result.error("DIRECT_IGSTATUS_ERROR", "Failed to send igStatus directly", e.message)
                     }
                 }
                 else -> {

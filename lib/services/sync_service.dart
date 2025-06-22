@@ -145,18 +145,9 @@ class SyncService {
         return;
       }
 
-      // Get current ACC state from FlutterSharedPreferences (set by native BackgroundService)
-      final prefs = await SharedPreferences.getInstance();
-      final int? igStatusFromNative = prefs.getInt('current_ig_status');
-
-      print('Read igStatus from native (FlutterSharedPreferences): $igStatusFromNative');
-
-      if (igStatusFromNative != null) {
-        // Update any unsynced records with the definitive igStatus from native code
-        await _updateUnsyncedRecordsIgStatus(igStatusFromNative);
-      } else {
-        print('⚠️ igStatus not yet available from native code. Syncing without updating igStatus for old records.');
-      }
+      // No longer updating unsynced records with current igStatus.
+      // Each record will be sent with the igStatus it was created with.
+      print('ℹ️ Syncing records with their original igStatus.');
 
       final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
       if (unsyncedData.isEmpty) {
@@ -317,13 +308,22 @@ class SyncService {
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
     try {
-      // Get the most up-to-date igStatus from FlutterSharedPreferences (set by native service)
-      final prefs = await SharedPreferences.getInstance();
-      final int? igStatusFromNative = prefs.getInt('current_ig_status');
+      // Get the most up-to-date igStatus directly from native BackgroundService (no SharedPreferences)
+      int igStatusFromNative = 0;
+      try {
+        const serviceChannel = MethodChannel('com.example.twtracking/service');
+        igStatusFromNative = await serviceChannel.invokeMethod('getCurrentIgStatus');
+        print('Read igStatus directly from native BackgroundService for new location: $igStatusFromNative');
+      } catch (e) {
+        print('❌ Error getting igStatus from native service for new location: $e');
+        // Fallback to SharedPreferences if method channel fails
+        final prefs = await SharedPreferences.getInstance();
+        igStatusFromNative = prefs.getInt('current_ig_status') ?? 0;
+        print('Fallback to SharedPreferences igStatus for new location: $igStatusFromNative');
+      }
 
-      // Default to 0 ONLY if the native value is not available yet.
-      // This is for new records, so a default is acceptable, but we prefer the native value.
-      data['igStatus'] = igStatusFromNative ?? 0;
+      // Use the igStatus from native service (no default fallback to 0)
+      data['igStatus'] = igStatusFromNative;
       
       print('Queueing new location with igStatus: ${data['igStatus']} (from native: $igStatusFromNative)');
 
@@ -372,10 +372,25 @@ class SyncService {
   Future<Map<String, dynamic>> getSyncStats() async {
     final dbStats = await _dbHelper.getDatabaseStats();
     
-    // Get current ACC state from SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
-    int currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
-    int igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+    // Get current ACC state directly from native BackgroundService (no SharedPreferences)
+    int currentIgStatus = 0;
+    int igStatusTimestamp = 0;
+    try {
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
+      print('Read igStatus directly from native BackgroundService for stats: $currentIgStatus');
+      
+      // Get timestamp from SharedPreferences as fallback
+      final prefs = await SharedPreferences.getInstance();
+      igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+    } catch (e) {
+      print('❌ Error getting igStatus from native service for stats: $e');
+      // Fallback to SharedPreferences if method channel fails
+      final prefs = await SharedPreferences.getInstance();
+      currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+      igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+      print('Fallback to SharedPreferences for stats - igStatus: $currentIgStatus');
+    }
     
     return {
       ...dbStats,
@@ -384,6 +399,7 @@ class SyncService {
       'hasInternet': await _hasInternetConnection(),
       'currentIgStatus': currentIgStatus,
       'igStatusLastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
+      'igStatusSource': 'BackgroundService (direct)',
     };
   }
 
