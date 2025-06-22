@@ -23,6 +23,7 @@ import android.content.pm.PackageManager
 import android.app.ActivityManager
 import android.content.Context
 import android.app.AlertDialog
+import io.flutter.plugins.GeneratedPluginRegistrant
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.twtracking/service"
@@ -44,7 +45,22 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(TAG, "=== MainActivity onCreate ===")
+        
+        // ADD BASIC LOGGING FOR AVN DEBUGGING
+        Log.d("MainActivity", "=== MAIN ACTIVITY CREATED ===")
+        Log.d("MainActivity", "Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+        Log.d("MainActivity", "Android Version: ${Build.VERSION.SDK_INT}")
+        Log.d("MainActivity", "Package: ${packageName}")
+        
+        // Check if car service is available
+        val packageManager = packageManager
+        val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
+        Log.d("MainActivity", "Car service available: $carServiceAvailable")
+        
+        // Force some basic logs
+        Log.i("MainActivity", "INFO: MainActivity onCreate started")
+        Log.w("MainActivity", "WARNING: This is a test warning log")
+        Log.e("MainActivity", "ERROR: This is a test error log")
         
         // CRITICAL: Start comprehensive permission flow immediately when app starts
         startComprehensivePermissionFlow()
@@ -132,6 +148,9 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "Flutter engine: ${flutterEngine.javaClass.simpleName}")
         Log.d(TAG, "Binary messenger: ${flutterEngine.dartExecutor.binaryMessenger}")
         Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
+
+        // Register plugins
+        GeneratedPluginRegistrant.registerWith(flutterEngine)
 
         // Service channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
@@ -257,6 +276,92 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error simulating ACC state change", e)
                         result.error("SIMULATE_ACC_ERROR", "Failed to simulate ACC state change", e.message)
+                    }
+                }
+                "testAccStateDetection" -> {
+                    try {
+                        Log.d(TAG, "🧪 Testing ACC state detection from Flutter")
+                        
+                        // Test CarPowerManager
+                        carPowerManager.debugPowerStates()
+                        
+                        // Trigger BackgroundService test
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "TEST_ACC_STATE_DETECTION"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ ACC state detection test triggered successfully")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error testing ACC state detection", e)
+                        result.error("ACC_TEST_ERROR", "Failed to test ACC state detection", e.message)
+                    }
+                }
+                "testSpecificPowerState" -> {
+                    try {
+                        val testState = call.arguments as Int? ?: 0
+                        Log.d(TAG, "🧪 Testing specific power state from Flutter: $testState")
+                        
+                        // Send intent to service to test power state
+                        val intent = Intent(this, BackgroundService::class.java).apply {
+                            action = "TEST_SPECIFIC_POWER_STATE"
+                            putExtra("test_state", testState)
+                        }
+                        startService(intent)
+                        
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error testing specific power state from Flutter", e)
+                        result.error("TEST_POWER_STATE_ERROR", "Failed to test power state", e.message)
+                    }
+                }
+                "forceLogs" -> {
+                    try {
+                        Log.i("MainActivity", "INFO: forceLogs method called from Flutter")
+                        Log.w("MainActivity", "WARNING: This is a test warning from forceLogs")
+                        Log.e("MainActivity", "ERROR: This is a test error from forceLogs")
+                        Log.d("MainActivity", "DEBUG: This is a test debug from forceLogs")
+                        
+                        // Add ERROR level logs for device info since only ERROR logs show
+                        Log.e("MainActivity", "ERROR: Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+                        Log.e("MainActivity", "ERROR: Android Version: ${Build.VERSION.SDK_INT}")
+                        Log.e("MainActivity", "ERROR: Package: ${packageName}")
+                        
+                        // Check if car service is available
+                        val packageManager = packageManager
+                        val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
+                        Log.e("MainActivity", "ERROR: Car service available: $carServiceAvailable")
+                        
+                        // Also try to initialize CarPowerManager
+                        if (::carPowerManager.isInitialized) {
+                            Log.e("MainActivity", "ERROR: CarPowerManager is initialized, calling test methods")
+                            carPowerManager.testCurrentPowerState()
+                            carPowerManager.debugPowerStates()
+                        } else {
+                            Log.e("MainActivity", "ERROR: CarPowerManager is not initialized")
+                        }
+                        
+                        result.success("Logs forced successfully")
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "ERROR: Exception in forceLogs: ${e.message}")
+                        result.error("FORCE_LOGS_ERROR", "Failed to force logs", e.message)
+                    }
+                }
+                "testBwicIgnition" -> {
+                    try {
+                        Log.e("MainActivity", "ERROR: Testing BWIC A100 ignition detection from Flutter")
+                        
+                        if (::carPowerManager.isInitialized) {
+                            carPowerManager.testBwicA100IgnitionDetection()
+                            result.success("BWIC ignition test completed")
+                        } else {
+                            Log.e("MainActivity", "ERROR: CarPowerManager not initialized for BWIC test")
+                            result.error("BWIC_TEST_ERROR", "CarPowerManager not initialized", null)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "ERROR: Exception in BWIC ignition test: ${e.message}")
+                        result.error("BWIC_TEST_ERROR", "Failed to test BWIC ignition", e.message)
                     }
                 }
                 else -> {

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'verification_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class WelcomeScreen extends StatefulWidget {
   final String imei;
@@ -170,12 +172,172 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                         alignment: Alignment.bottomRight,
                         child: Padding(
                           padding: const EdgeInsets.only(right: 60, bottom: 25),
-                          child: GestureDetector(
-                            onTap: _handleVersionTap,
-                            child: Text(
-                              widget.version,
-                              style: TextStyle(color: const Color(0xFF3e4095), fontSize: fontSize * 0.8),
-                            ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Test button for power state debugging
+                              GestureDetector(
+                                onTap: () async {
+                                  print('🔍 Testing power state detection...');
+                                  try {
+                                    // Get stable igStatus from SharedPreferences
+                                    final prefs = await SharedPreferences.getInstance();
+                                    final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+                                    
+                                    // Trigger power state check (but don't change the state)
+                                    const serviceChannel = MethodChannel('com.example.twtracking/service');
+                                    final checkResult = await serviceChannel.invokeMethod('triggerPowerStateCheck');
+                                    
+                                    // Get updated igStatus (should be the same if no real change)
+                                    final updatedIgStatus = prefs.getInt('current_ig_status') ?? 0;
+                                    
+                                    print('Power state test results:');
+                                    print('   - Current igStatus: $currentIgStatus');
+                                    print('   - Check result: $checkResult');
+                                    print('   - Updated igStatus: $updatedIgStatus');
+                                    
+                                    // Show result in a snackbar
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Power State: $currentIgStatus → $updatedIgStatus'),
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    print('❌ Error in power state test: $e');
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Error: $e'),
+                                          backgroundColor: Colors.red,
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange.withOpacity(0.8),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'TEST',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              // Force logs button for AVN debugging
+                              GestureDetector(
+                                onTap: () async {
+                                  print('📝 Forcing logs for AVN debugging...');
+                                  try {
+                                    const serviceChannel = MethodChannel('com.example.twtracking/service');
+                                    final result = await serviceChannel.invokeMethod('forceLogs');
+                                    print('Force logs result: $result');
+                                    
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Logs forced: $result'),
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    print('❌ Error forcing logs: $e');
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Error: $e'),
+                                          backgroundColor: Colors.red,
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.withOpacity(0.8),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'LOGS',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              // BWIC ignition test button
+                              GestureDetector(
+                                onTap: () async {
+                                  print('🚗 Testing BWIC A100 ignition detection...');
+                                  try {
+                                    const serviceChannel = MethodChannel('com.example.twtracking/service');
+                                    final result = await serviceChannel.invokeMethod('testBwicIgnition');
+                                    print('BWIC ignition test result: $result');
+                                    
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('BWIC Test: $result'),
+                                          backgroundColor: Colors.green,
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    print('❌ Error testing BWIC ignition: $e');
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Error: $e'),
+                                          backgroundColor: Colors.red,
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withOpacity(0.8),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'BWIC',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              GestureDetector(
+                                onTap: _handleVersionTap,
+                                child: Text(
+                                  widget.version,
+                                  style: TextStyle(color: const Color(0xFF3e4095), fontSize: fontSize * 0.8),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),

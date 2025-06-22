@@ -527,17 +527,21 @@ void _initializeMethodChannels() {
         case 'triggerPowerStateCheck':
           try {
             print('🔄 Triggering power state check from background service channel');
-            // In background, we can't access native CarPowerManager, so we simulate
+            // Read the current igStatus from SharedPreferences (set by native side)
             final prefs = await SharedPreferences.getInstance();
-            final currentTime = DateTime.now().millisecondsSinceEpoch;
-            final shouldSimulateAccOn = (currentTime % 10000) < 5000; // 50% chance
-            final newIgStatus = shouldSimulateAccOn ? 1 : 0;
+            final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+            final timestamp = prefs.getInt('ig_status_timestamp') ?? 0;
             
-            await prefs.setInt('current_ig_status', newIgStatus);
-            await prefs.setInt('ig_status_timestamp', currentTime);
+            print('✅ Background power state check - current igStatus: $currentIgStatus');
+            print('   - Timestamp: $timestamp');
+            print('   - Last updated: ${DateTime.fromMillisecondsSinceEpoch(timestamp)}');
             
-            print('✅ Background power state check completed: igStatus = $newIgStatus');
-            return true;
+            // Don't change the igStatus, just return the current state
+            return {
+              'currentIgStatus': currentIgStatus,
+              'timestamp': timestamp,
+              'lastUpdated': DateTime.fromMillisecondsSinceEpoch(timestamp).toString(),
+            };
           } catch (e) {
             print('❌ Error triggering power state check from background: $e');
             return false;
@@ -558,6 +562,57 @@ void _initializeMethodChannels() {
             return true;
           } catch (e) {
             print('❌ Error simulating ACC state change from background: $e');
+            return false;
+          }
+          
+        case 'testAccStateDetection':
+          try {
+            print('🧪 Testing ACC state detection from background service channel');
+            
+            // Get current status from SharedPreferences
+            final prefs = await SharedPreferences.getInstance();
+            final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+            final timestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+            
+            print('✅ Background ACC state detection test:');
+            print('   - Current igStatus: $currentIgStatus');
+            print('   - Timestamp: $timestamp');
+            print('   - Last updated: ${DateTime.fromMillisecondsSinceEpoch(timestamp)}');
+            
+            return {
+              'currentIgStatus': currentIgStatus,
+              'timestamp': timestamp,
+              'lastUpdated': DateTime.fromMillisecondsSinceEpoch(timestamp).toString(),
+            };
+          } catch (e) {
+            print('❌ Error testing ACC state detection from background: $e');
+            return null;
+          }
+          
+        case 'testSpecificPowerState':
+          try {
+            final testState = call.arguments as int? ?? 0;
+            print('🧪 Testing specific power state from background: $testState');
+            
+            // Read the current igStatus from SharedPreferences (set by native side)
+            final prefs = await SharedPreferences.getInstance();
+            final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+            final timestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+            
+            print('✅ Background power state test - current state:');
+            print('   - Test state: $testState');
+            print('   - Current igStatus: $currentIgStatus');
+            print('   - Timestamp: $timestamp');
+            print('   - Last updated: ${DateTime.fromMillisecondsSinceEpoch(timestamp)}');
+            
+            return {
+              'testState': testState,
+              'currentIgStatus': currentIgStatus,
+              'timestamp': timestamp,
+              'lastUpdated': DateTime.fromMillisecondsSinceEpoch(timestamp).toString(),
+            };
+          } catch (e) {
+            print('❌ Error testing specific power state from background: $e');
             return false;
           }
           
@@ -588,17 +643,21 @@ void _initializeMethodChannels() {
         case 'triggerPowerStateCheck':
           try {
             print('🔄 Triggering power state check from background AVN sleep channel');
-            // Same logic as service channel
+            // Read the current igStatus from SharedPreferences (set by native side)
             final prefs = await SharedPreferences.getInstance();
-            final currentTime = DateTime.now().millisecondsSinceEpoch;
-            final shouldSimulateAccOn = (currentTime % 10000) < 5000;
-            final newIgStatus = shouldSimulateAccOn ? 1 : 0;
+            final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+            final timestamp = prefs.getInt('ig_status_timestamp') ?? 0;
             
-            await prefs.setInt('current_ig_status', newIgStatus);
-            await prefs.setInt('ig_status_timestamp', currentTime);
+            print('✅ Background AVN power state check - current igStatus: $currentIgStatus');
+            print('   - Timestamp: $timestamp');
+            print('   - Last updated: ${DateTime.fromMillisecondsSinceEpoch(timestamp)}');
             
-            print('✅ Background AVN power state check completed: igStatus = $newIgStatus');
-            return true;
+            // Don't change the igStatus, just return the current state
+            return {
+              'currentIgStatus': currentIgStatus,
+              'timestamp': timestamp,
+              'lastUpdated': DateTime.fromMillisecondsSinceEpoch(timestamp).toString(),
+            };
           } catch (e) {
             print('❌ Error triggering power state check from background AVN: $e');
             return false;

@@ -149,7 +149,16 @@ class GpsTrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        igStatus = 0 // Ensure igStatus is 0 when service starts (ACC OFF)
+        // Load current igStatus from SharedPreferences instead of resetting to 0
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val currentIgStatus = prefs.getInt("current_ig_status", 0)
+            igStatus = currentIgStatus
+            Log.d("GpsTrackingService", "Loaded current igStatus from SharedPreferences: $igStatus")
+        } catch (e: Exception) {
+            Log.e("GpsTrackingService", "Error loading igStatus from SharedPreferences: ${e.message}")
+            igStatus = 0 // Fallback only if there's an error
+        }
         return START_STICKY
     }
 

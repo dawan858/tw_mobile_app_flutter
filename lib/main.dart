@@ -148,10 +148,8 @@ class _GPSTrackerState extends State<GPSTracker> {
     _setupPermissionFlow();
     _loadConfiguration();
     
-    // Set igStatus to 0 when app starts (ACC OFF)
-    setState(() {
-      _igStatus = 0;
-    });
+    // Load current igStatus from SharedPreferences (set by native side)
+    _loadCurrentIgStatus();
     
     // Listen for permission events from native side
     const MethodChannel('com.trackingWorld.tracking/device_info').setMethodCallHandler((call) async {
@@ -176,8 +174,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   @override
   void dispose() {
-    // Set igStatus to 0 when app is closed
-    _igStatus = 0;
+    // Don't reset igStatus - preserve the actual state from native side
     _positionStreamSubscription?.cancel();
     // Don't stop the service on dispose, let it run in background
     super.dispose();
@@ -324,6 +321,15 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Service is now started by native side after IMEI is obtained
     // No need to call _startTrackingService() here
     
+    // Start periodic igStatus refresh timer
+    Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (mounted) {
+        _refreshIgStatus();
+      } else {
+        timer.cancel();
+      }
+    });
+    
     // Only use Flutter Geolocator for UI updates when app is in foreground
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.bestForNavigation,
@@ -364,6 +370,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     prefs.then((prefs) {
       final angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
       final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
+      final distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
       
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";
@@ -396,6 +403,10 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   // Send location data to server
   Future<void> _sendLocationData() async {
+    // Get current igStatus from SharedPreferences (set by native side)
+    final prefs = await SharedPreferences.getInstance();
+    final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+    
     // Create a map of all tracked data
     final Map<String, dynamic> locationData = {
       'accuracy': _accuracy,
@@ -404,7 +415,7 @@ class _GPSTrackerState extends State<GPSTracker> {
       'deviceRDT': _deviceRDT,
       'emailAddress': _emailAddress,
       'gmtSettings': _gmtSettings,
-      'igStatus': _igStatus,
+      'igStatus': currentIgStatus, // Use the actual igStatus from SharedPreferences
       'imei': _imei,
       'latitude': _latitude,
       'localPrimaryId': _localPrimaryId,
@@ -432,6 +443,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     
     // For debugging purposes
     print('Location data: $locationData');
+    print('Current igStatus sent to server: $currentIgStatus');
   }
 
   // Check service status
@@ -632,6 +644,115 @@ class _GPSTrackerState extends State<GPSTracker> {
     if (_imei.isEmpty || _imei == 'unknown') return 'Getting device ID...';
     if (!_isDeviceAdminActive) return 'Device admin required';
     return 'Ready';
+  }
+
+  // Test power state detection
+  static Future<Map<String, dynamic>?> testPowerState(int testState) async {
+    try {
+      print('🧪 Testing power state from main app: $testState');
+      
+      // Try service channel first
+      final result = await serviceChannel.invokeMethod('testSpecificPowerState', testState);
+      print('✅ Power state test result: $result');
+      return result;
+    } catch (e) {
+      print('❌ Error testing power state: $e');
+      return null;
+    }
+  }
+
+  // Manual power state check
+  static Future<void> manualPowerStateCheck() async {
+    try {
+      print('🔍 MANUAL POWER STATE CHECK');
+      
+      // Get current igStatus
+      final currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
+      print('Current igStatus: $currentIgStatus');
+      
+      // Trigger power state check
+      final checkResult = await serviceChannel.invokeMethod('triggerPowerStateCheck');
+      print('Power state check result: $checkResult');
+      
+      // Get updated igStatus
+      final updatedIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
+      print('Updated igStatus: $updatedIgStatus');
+      
+    } catch (e) {
+      print('❌ Error in manual power state check: $e');
+    }
+  }
+
+  // Get stable igStatus from SharedPreferences
+  static Future<int> getStableIgStatus() async {
+    try {
+      print('🔍 Getting stable igStatus from SharedPreferences');
+      
+      final prefs = await SharedPreferences.getInstance();
+      final igStatus = prefs.getInt('current_ig_status') ?? 0;
+      final timestamp = prefs.getInt('ig_status_timestamp') ?? 0;
+      
+      print('✅ Stable igStatus: $igStatus');
+      print('   - Timestamp: $timestamp');
+      print('   - Last updated: ${DateTime.fromMillisecondsSinceEpoch(timestamp)}');
+      
+      return igStatus;
+    } catch (e) {
+      print('❌ Error getting stable igStatus: $e');
+      return 0;
+    }
+  }
+
+  // Save igStatus to SharedPreferences for persistence
+  static Future<void> saveIgStatus(int igStatus) async {
+    try {
+      print('💾 Saving igStatus to SharedPreferences: $igStatus');
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('current_ig_status', igStatus);
+      await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
+      
+      print('✅ igStatus saved successfully');
+    } catch (e) {
+      print('❌ Error saving igStatus: $e');
+    }
+  }
+
+  // Load current igStatus from SharedPreferences
+  Future<void> _loadCurrentIgStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+      
+      if (mounted) {
+        setState(() {
+          _igStatus = currentIgStatus;
+        });
+      }
+      
+      print('📥 Loaded current igStatus from SharedPreferences: $currentIgStatus');
+    } catch (e) {
+      print('❌ Error loading current igStatus: $e');
+    }
+  }
+
+  // Refresh igStatus from SharedPreferences
+  Future<void> _refreshIgStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+      
+      if (_igStatus != currentIgStatus) {
+        if (mounted) {
+          setState(() {
+            _igStatus = currentIgStatus;
+          });
+        }
+        print('🔄 igStatus updated from SharedPreferences: $_igStatus → $currentIgStatus');
+      }
+    } catch (e) {
+      print('❌ Error refreshing igStatus: $e');
+    }
   }
 
   @override

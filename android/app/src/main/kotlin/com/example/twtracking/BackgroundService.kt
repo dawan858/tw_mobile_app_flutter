@@ -359,17 +359,15 @@ class BackgroundService : Service() {
                     } else {
                         Log.w(TAG, "⚠️ CarPowerManager not properly initialized, using fallback")
                         isCarPowerInitialized = false
-                        igStatus = 0  // Default to 0 (ACC OFF)
-                        storeAccStateForFlutter(igStatus)
-                        Log.w(TAG, "⚠️ Using fallback ACC state: $igStatus (ACC OFF)")
+                        // Don't override igStatus - preserve the actual detected state
+                        Log.w(TAG, "⚠️ CarPowerManager not initialized, but preserving current igStatus: $igStatus")
                     }
                     
                 } catch (e: Exception) {
                     Log.e(TAG, "❌ Error checking CarPowerManager initialization status", e)
                     isCarPowerInitialized = false
-                    igStatus = 0  // Default to 0 (ACC OFF)
-                    storeAccStateForFlutter(igStatus)
-                    Log.w(TAG, "⚠️ Using fallback ACC state after error: $igStatus (ACC OFF)")
+                    // Don't override igStatus - preserve the actual detected state
+                    Log.w(TAG, "⚠️ Error checking CarPowerManager, but preserving current igStatus: $igStatus")
                 }
             }, 3000) // Wait 3 seconds for initialization (increased from 1 second)
             
@@ -378,9 +376,8 @@ class BackgroundService : Service() {
             Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
             Log.e(TAG, "   - Exception message: ${e.message}")
             isCarPowerInitialized = false
-            igStatus = 0  // Default to 0 (ACC OFF) instead of 1
-            storeAccStateForFlutter(igStatus)
-            Log.w(TAG, "⚠️ Using default ACC state: $igStatus (ACC OFF)")
+            // Don't override igStatus - preserve the actual detected state
+            Log.w(TAG, "⚠️ Failed to initialize CarPowerManager, but preserving current igStatus: $igStatus")
         }
     }
 
@@ -561,9 +558,14 @@ class BackgroundService : Service() {
         }
     }
 
-    // NEW METHOD: Store ACC state for Flutter
+    // NEW METHOD: Store ACC state for Flutter with detailed logging
     private fun storeAccStateForFlutter(igStatus: Int) {
         try {
+            Log.d(TAG, "🔄 STORING ACC STATE FOR FLUTTER:")
+            Log.d(TAG, "   - New igStatus: $igStatus")
+            Log.d(TAG, "   - Service igStatus: ${this.igStatus}")
+            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+            
             // Store in FlutterSharedPreferences (for Flutter sync service)
             val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             flutterPrefs.edit().apply {
@@ -676,6 +678,15 @@ class BackgroundService : Service() {
             intent?.action == "CHECK_POWER_STATE" -> {
                 Log.d(TAG, "🔍 HANDLING MANUAL POWER STATE CHECK")
                 checkAndUpdatePowerState()
+            }
+            intent?.action == "TEST_ACC_STATE_DETECTION" -> {
+                Log.d(TAG, "🧪 HANDLING ACC STATE DETECTION TEST")
+                testAccStateDetection()
+            }
+            intent?.action == "TEST_SPECIFIC_POWER_STATE" -> {
+                Log.d(TAG, "🧪 HANDLING SPECIFIC POWER STATE TEST")
+                val testState = intent.getIntExtra("test_state", 0)
+                testSpecificPowerState(testState)
             }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
@@ -1661,6 +1672,9 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "🚀 FORCE UPDATE IG STATUS ON START")
             
+            // NEW: Debug power states to understand AVN behavior
+            carPowerManager?.debugPowerStates()
+            
             // NEW: Use CarPowerManager's force update method
             carPowerManager?.forceUpdateIgStatus()
             
@@ -1692,6 +1706,75 @@ class BackgroundService : Service() {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error in force update igStatus on start", e)
+        }
+    }
+
+    // NEW METHOD: Test ACC state detection manually
+    fun testAccStateDetection() {
+        try {
+            Log.d(TAG, "🧪 MANUAL ACC STATE DETECTION TEST")
+            
+            // Test CarPowerManager status
+            carPowerManager?.let { manager ->
+                Log.d(TAG, "   - CarPowerManager initialized: ${manager.isProperlyInitialized()}")
+                Log.d(TAG, "   - Detailed status: ${manager.getDetailedStatus()}")
+                
+                // Debug power states
+                manager.debugPowerStates()
+                
+                // Test current state
+                val currentAccState = manager.getCurrentAccState()
+                val currentIgStatus = manager.getCurrentIgStatus()
+                
+                Log.d(TAG, "   - Current ACC state: $currentAccState")
+                Log.d(TAG, "   - Current igStatus: $currentIgStatus")
+                
+                // Test service state
+                Log.d(TAG, "   - Service igStatus: $igStatus")
+                Log.d(TAG, "   - States match: ${currentIgStatus == igStatus}")
+                
+            } ?: run {
+                Log.w(TAG, "   - CarPowerManager is null")
+            }
+            
+            // Test SharedPreferences
+            val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val storedIgStatus = flutterPrefs.getInt("current_ig_status", -1)
+            val timestamp = flutterPrefs.getLong("ig_status_timestamp", 0)
+            
+            Log.d(TAG, "   - Stored igStatus: $storedIgStatus")
+            Log.d(TAG, "   - Timestamp: $timestamp")
+            
+            // Test tracking_prefs
+            val trackingPrefs = getSharedPreferences("tracking_prefs", Context.MODE_PRIVATE)
+            val trackingIgStatus = trackingPrefs.getInt("current_ig_status", -1)
+            val trackingTimestamp = trackingPrefs.getLong("ig_status_timestamp", 0)
+            
+            Log.d(TAG, "   - Tracking igStatus: $trackingIgStatus")
+            Log.d(TAG, "   - Tracking timestamp: $trackingTimestamp")
+            
+            Log.d(TAG, "✅ ACC state detection test completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in ACC state detection test", e)
+        }
+    }
+
+    // NEW METHOD: Test specific power state from service
+    fun testSpecificPowerState(testState: Int) {
+        try {
+            Log.d(TAG, "🧪 TESTING SPECIFIC POWER STATE FROM SERVICE: $testState")
+            
+            carPowerManager?.testSpecificPowerState(testState)
+            
+            // Get all power states info for reference
+            val allStatesInfo = carPowerManager?.getAllPowerStatesInfo()
+            Log.d(TAG, "📋 All power states info: $allStatesInfo")
+            
+            Log.d(TAG, "✅ Specific power state test from service completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error testing specific power state from service", e)
         }
     }
 }

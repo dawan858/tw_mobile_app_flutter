@@ -44,6 +44,16 @@ class CarPowerManager(private val context: Context) {
 
     fun initialize() {
         try {
+            // FORCE BASIC LOGS FOR AVN DEBUGGING
+            Log.i("CarPowerManager", "INFO: CarPowerManager.initialize() called")
+            Log.w("CarPowerManager", "WARNING: CarPowerManager initialization starting")
+            Log.e("CarPowerManager", "ERROR: This is a test error log from CarPowerManager")
+            
+            // Add ERROR level logs for device info since only ERROR logs show
+            Log.e("CarPowerManager", "ERROR: Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            Log.e("CarPowerManager", "ERROR: Android Version: ${android.os.Build.VERSION.SDK_INT}")
+            Log.e("CarPowerManager", "ERROR: Context: ${context.javaClass.simpleName}")
+            
             Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER ===")
             Log.d(TAG, "   - Context: ${context.javaClass.simpleName}")
             Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
@@ -58,16 +68,27 @@ class CarPowerManager(private val context: Context) {
             val packageManager = context.packageManager
             val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
             Log.d(TAG, "   - Car service available: $carServiceAvailable")
+            Log.e("CarPowerManager", "ERROR: Car service available: $carServiceAvailable")
             
-            // NEW: Check device type
-            val isAutomotiveDevice = carServiceAvailable
+            // NEW: Check if this is a BWIC A100 device
+            val isBwicA100 = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true) && 
+                            android.os.Build.MODEL.contains("A100", ignoreCase = true)
+            Log.e("CarPowerManager", "ERROR: Is BWIC A100 device: $isBwicA100")
+            
+            // NEW: Check device type - BWIC A100 should be treated as automotive even if not detected
+            val isAutomotiveDevice = carServiceAvailable || isBwicA100
             Log.d(TAG, "   - Is Automotive Device: $isAutomotiveDevice")
+            Log.e("CarPowerManager", "ERROR: Is Automotive Device: $isAutomotiveDevice")
             Log.d(TAG, "   - Expected igStatus on this device: ${if (isAutomotiveDevice) "0 or 1 (depending on ACC)" else "0 (no car ignition)"}")
+            Log.e("CarPowerManager", "ERROR: Expected igStatus on this device: ${if (isAutomotiveDevice) "0 or 1 (depending on ACC)" else "0 (no car ignition)"}")
             
-            if (!carServiceAvailable) {
+            if (!isAutomotiveDevice) {
                 Log.w(TAG, "⚠️ Car service not available on this device - using fallback mode")
+                Log.e("CarPowerManager", "ERROR: Car service not available - using fallback mode")
                 Log.w(TAG, "   - This is expected for non-automotive devices like Infinix phones")
+                Log.e("CarPowerManager", "ERROR: This is expected for non-automotive devices")
                 Log.w(TAG, "   - igStatus will be 0 (ACC OFF) on this device")
+                Log.e("CarPowerManager", "ERROR: igStatus will be 0 (ACC OFF) on this device")
                 tryFallbackInitialization()
                 return
             }
@@ -147,22 +168,33 @@ class CarPowerManager(private val context: Context) {
                 override fun onPowerStateChanged(state: Int) {
                     val oldIgStatus = currentIgStatus
                     val isAccOn = isPowerStateAccOn(state)
-                    currentIgStatus = if (isAccOn) 1 else 0
+                    val newIgStatus = if (isAccOn) 1 else 0
                     
-                    Log.d(TAG, "🚗 POWER STATE CHANGED:")
-                    Log.d(TAG, "   - Raw State: $state")
-                    Log.d(TAG, "   - State Name: ${getPowerStateName(state)}")
-                    Log.d(TAG, "   - ACC ON: $isAccOn")
-                    Log.d(TAG, "   - igStatus: $oldIgStatus → $currentIgStatus")
-                    Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
-                    Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
+                    Log.e("CarPowerManager", "ERROR: 🚗 POWER STATE CHANGED:")
+                    Log.e("CarPowerManager", "ERROR:    - Raw State: $state")
+                    Log.e("CarPowerManager", "ERROR:    - State Name: ${getPowerStateName(state)}")
+                    Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
+                    Log.e("CarPowerManager", "ERROR:    - igStatus: $oldIgStatus → $newIgStatus")
+                    Log.e("CarPowerManager", "ERROR:    - Timestamp: ${System.currentTimeMillis()}")
+                    Log.e("CarPowerManager", "ERROR:    - Thread: ${Thread.currentThread().name}")
                     
-                    currentAccState = isAccOn
-                    
-                    // Trigger callback on main thread
-                    mainHandler.post {
-                        accStateCallback?.invoke(isAccOn)
-                        Log.d(TAG, "✅ ACC state callback invoked with: $isAccOn")
+                    // Only update if there's an actual change to prevent fluctuations
+                    if (newIgStatus != oldIgStatus) {
+                        currentIgStatus = newIgStatus
+                        currentAccState = isAccOn
+                        
+                        // Save to SharedPreferences for persistence
+                        saveIgStatusToPrefs(newIgStatus)
+                        
+                        Log.e("CarPowerManager", "ERROR: ✅ igStatus UPDATED: $oldIgStatus → $newIgStatus")
+                        
+                        // Trigger callback on main thread
+                        mainHandler.post {
+                            accStateCallback?.invoke(isAccOn)
+                            Log.e("CarPowerManager", "ERROR: ✅ ACC state callback invoked with: $isAccOn")
+                        }
+                    } else {
+                        Log.e("CarPowerManager", "ERROR: ℹ️ igStatus unchanged: $oldIgStatus (no fluctuation)")
                     }
                 }
             }
@@ -186,101 +218,179 @@ class CarPowerManager(private val context: Context) {
             if (carPowerManager != null) {
                 val initialState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
                 val isAccOn = isPowerStateAccOn(initialState)
-                currentAccState = isAccOn
-                currentIgStatus = if (isAccOn) 1 else 0
+                val newIgStatus = if (isAccOn) 1 else 0
                 
-                Log.d(TAG, "🚗 INITIAL STATE DETECTED:")
-                Log.d(TAG, "   - Initial state: $initialState")
-                Log.d(TAG, "   - State Name: ${getPowerStateName(initialState)}")
-                Log.d(TAG, "   - ACC ON: $isAccOn")
-                Log.d(TAG, "   - igStatus: $currentIgStatus")
-                Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+                // Load saved state from SharedPreferences
+                val savedIgStatus = loadIgStatusFromPrefs()
+                
+                // Use the saved state if it's different from current detection
+                if (savedIgStatus != -1 && savedIgStatus != newIgStatus) {
+                    Log.e("CarPowerManager", "ERROR: 🔄 Using saved igStatus: $savedIgStatus (detected: $newIgStatus)")
+                    currentIgStatus = savedIgStatus
+                    currentAccState = (savedIgStatus == 1)
+                } else {
+                    currentIgStatus = newIgStatus
+                    currentAccState = isAccOn
+                    // Save the detected state
+                    saveIgStatusToPrefs(newIgStatus)
+                }
+                
+                Log.e("CarPowerManager", "ERROR: 🚗 INITIAL STATE DETECTED:")
+                Log.e("CarPowerManager", "ERROR:    - Initial state: $initialState")
+                Log.e("CarPowerManager", "ERROR:    - State Name: ${getPowerStateName(initialState)}")
+                Log.e("CarPowerManager", "ERROR:    - ACC ON: $isAccOn")
+                Log.e("CarPowerManager", "ERROR:    - igStatus: $currentIgStatus")
+                Log.e("CarPowerManager", "ERROR:    - Timestamp: ${System.currentTimeMillis()}")
                 
                 // Trigger initial callback on main thread
                 mainHandler.post {
-                    accStateCallback?.invoke(isAccOn)
-                    Log.d(TAG, "✅ Initial ACC state callback invoked with: $isAccOn")
+                    accStateCallback?.invoke(currentAccState)
+                    Log.e("CarPowerManager", "ERROR: ✅ Initial ACC state callback invoked with: $currentAccState")
                 }
                 
             } else {
-                Log.w(TAG, "⚠️ carPowerManager is null, using default state")
-                currentAccState = false
-                currentIgStatus = 0  // Default to 0 (ACC OFF)
+                Log.w(TAG, "⚠️ carPowerManager is null, using saved state")
+                val savedIgStatus = loadIgStatusFromPrefs()
+                currentIgStatus = savedIgStatus
+                currentAccState = (savedIgStatus == 1)
                 
                 mainHandler.post {
-                    accStateCallback?.invoke(false)
-                    Log.d(TAG, "✅ Default ACC state callback invoked with: false")
+                    accStateCallback?.invoke(currentAccState)
+                    Log.e("CarPowerManager", "ERROR: ✅ Saved state callback invoked with: $currentAccState")
                 }
             }
             
             isInitialized = true
-            Log.d(TAG, "✅ CarPowerManager initialization completed. Final igStatus: $currentIgStatus")
+            Log.e("CarPowerManager", "ERROR: ✅ CarPowerManager initialization completed. Final igStatus: $currentIgStatus")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to get initial power state", e)
             
-            // Use default state
-            currentAccState = false
-            currentIgStatus = 0  // Default to 0 (ACC OFF)
+            // Use saved state as fallback
+            val savedIgStatus = loadIgStatusFromPrefs()
+            currentIgStatus = savedIgStatus
+            currentAccState = (savedIgStatus == 1)
             
             mainHandler.post {
-                accStateCallback?.invoke(false)
-                Log.d(TAG, "✅ Fallback ACC state callback invoked with: false")
+                accStateCallback?.invoke(currentAccState)
+                Log.e("CarPowerManager", "ERROR: ✅ Fallback state callback invoked with: $currentAccState")
             }
             
             isInitialized = true
-            Log.d(TAG, "✅ CarPowerManager initialization completed with fallback. Final igStatus: $currentIgStatus")
+            Log.e("CarPowerManager", "ERROR: ✅ CarPowerManager initialization completed with fallback. Final igStatus: $currentIgStatus")
         }
     }
 
     private fun tryFallbackInitialization() {
         try {
             Log.d(TAG, "🔄 Trying fallback initialization...")
+            Log.e("CarPowerManager", "ERROR: Starting fallback initialization for BWIC A100")
             
-            // Set default state
-            currentAccState = false
-            currentIgStatus = 0  // Default to 0 (ACC OFF)
+            // Check if this is a BWIC A100 device
+            val isBwicA100 = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true) && 
+                            android.os.Build.MODEL.contains("A100", ignoreCase = true)
             
-            mainHandler.post {
-                accStateCallback?.invoke(false)
-                Log.d(TAG, "✅ Fallback ACC state callback invoked with: false")
+            Log.e("CarPowerManager", "ERROR: Is BWIC A100 device: $isBwicA100")
+            
+            if (isBwicA100) {
+                Log.e("CarPowerManager", "ERROR: Using BWIC car framework for BWIC A100")
+                
+                // Try to use BWIC car framework directly
+                try {
+                    car = Car.createCar(context, object : android.content.ServiceConnection {
+                        override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
+                            try {
+                                Log.e("CarPowerManager", "ERROR: BWIC car service connected in fallback")
+                                
+                                // Get car power manager using BWIC framework
+                                carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as bw.car.power.CarPowerManager
+                                
+                                if (carPowerManager != null) {
+                                    Log.e("CarPowerManager", "ERROR: BWIC car power manager obtained successfully")
+                                    isConnected = true
+                                    
+                                    // Get current power state from BWIC car framework
+                                    val powerState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
+                                    val isAccOn = isPowerStateAccOn(powerState)
+                                    currentAccState = isAccOn
+                                    currentIgStatus = if (isAccOn) 1 else 0
+                                    
+                                    Log.e("CarPowerManager", "ERROR: BWIC fallback - power state: $powerState, ACC ON: $isAccOn, igStatus: $currentIgStatus")
+                                    
+                                    // Setup power state listener
+                                    setupPowerStateListener()
+                                    
+                                } else {
+                                    Log.e("CarPowerManager", "ERROR: BWIC car power manager is null")
+                                    useCustomBwicDetection()
+                                }
+                                
+                            } catch (e: Exception) {
+                                Log.e("CarPowerManager", "ERROR: Exception in BWIC fallback: ${e.message}")
+                                useCustomBwicDetection()
+                            }
+                        }
+
+                        override fun onServiceDisconnected(name: android.content.ComponentName?) {
+                            Log.e("CarPowerManager", "ERROR: BWIC car service disconnected")
+                        }
+                    })
+                    
+                    car?.connect()
+                    
+                } catch (e: Exception) {
+                    Log.e("CarPowerManager", "ERROR: Failed to use BWIC car framework: ${e.message}")
+                    useCustomBwicDetection()
+                }
+                
+            } else {
+                // Use default fallback for other devices
+                Log.e("CarPowerManager", "ERROR: Using default fallback for non-BWIC device")
+                currentAccState = false
+                // Don't override currentIgStatus - preserve the actual detected state
+                Log.e("CarPowerManager", "ERROR: Non-BWIC device fallback, but preserving current igStatus: $currentIgStatus")
+                
+                mainHandler.post {
+                    accStateCallback?.invoke(false)
+                    Log.e("CarPowerManager", "ERROR: Default fallback callback invoked with: false")
+                }
             }
             
             isInitialized = true
-            Log.d(TAG, "✅ CarPowerManager fallback initialization completed. Final igStatus: $currentIgStatus")
+            Log.e("CarPowerManager", "ERROR: Fallback initialization completed. Final igStatus: $currentIgStatus")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Fallback initialization also failed", e)
+            Log.e("CarPowerManager", "ERROR: Fallback initialization failed: ${e.message}")
             isInitialized = true
         }
     }
 
-    // UPDATED METHOD: More permissive power state detection
-    private fun isPowerStateAccOn(state: Int): Boolean {
-        val result = when (state) {
-            POWER_STATE_ON -> true
-            POWER_STATE_ON_DISP_OFF -> true
-            POWER_STATE_SUSPEND_EXIT -> true
-            POWER_STATE_HIBERNATION_EXIT -> true
-            POWER_STATE_WAIT_FOR_VHAL -> true
-            POWER_STATE_OFF -> false
-            POWER_STATE_SUSPEND -> false
-            POWER_STATE_SUSPEND_ENTER -> false
-            POWER_STATE_SHUTDOWN_PREPARE -> false
-            POWER_STATE_SHUTDOWN_POSTPONE -> false
-            POWER_STATE_SHUTDOWN_START -> false
-            POWER_STATE_SHUTDOWN_ENTER -> false
-            POWER_STATE_SHUTDOWN_PREPARE_UPDATE -> false
-            POWER_STATE_HIBERNATION_ENTER -> false
-            else -> {
-                // NEW: More permissive approach - treat any unknown state as potentially ACC ON
-                // This is because different car manufacturers might use different state values
-                Log.w(TAG, "⚠️ Unknown power state: $state, treating as ACC ON (permissive mode)")
-                true
-            }
-        }
+    // NEW METHOD: Use custom BWIC detection as last resort
+    private fun useCustomBwicDetection() {
+        Log.e("CarPowerManager", "ERROR: Using custom BWIC detection as fallback")
+        val isIgnitionOn = detectBwicA100Ignition()
+        currentAccState = isIgnitionOn
+        currentIgStatus = if (isIgnitionOn) 1 else 0
         
-        Log.d(TAG, "🔍 Power state analysis: state=$state, name=${getPowerStateName(state)}, isAccOn=$result")
+        Log.e("CarPowerManager", "ERROR: Custom BWIC detection - ACC ON: $isIgnitionOn, igStatus: $currentIgStatus")
+        
+        mainHandler.post {
+            accStateCallback?.invoke(isIgnitionOn)
+            Log.e("CarPowerManager", "ERROR: Custom BWIC detection callback invoked with: $isIgnitionOn")
+        }
+    }
+
+    // UPDATED METHOD: Power state detection matching the working BWIC sample code
+    private fun isPowerStateAccOn(state: Int): Boolean {
+        // Based on the working BWIC sample code: boolean acc_on = i == 1;
+        // Power state 1 means ACC ON, anything else means ACC OFF
+        val result = (state == POWER_STATE_ON)
+        
+        Log.e("CarPowerManager", "ERROR: Power state analysis: state=$state, isAccOn=$result")
+        Log.e("CarPowerManager", "ERROR: Using BWIC sample logic: state == 1 (POWER_STATE_ON)")
+        Log.e("CarPowerManager", "ERROR: Result: $result")
+        
         return result
     }
 
@@ -360,6 +470,43 @@ class CarPowerManager(private val context: Context) {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error testing power state", e)
+        }
+    }
+
+    // NEW METHOD: Debug power states to understand AVN behavior
+    fun debugPowerStates() {
+        try {
+            Log.d(TAG, "🧪 DEBUGGING POWER STATES:")
+            Log.d(TAG, "   - Testing all possible power states...")
+            
+            val testStates = listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+            
+            for (state in testStates) {
+                val isAccOn = isPowerStateAccOn(state)
+                val stateName = getPowerStateName(state)
+                Log.d(TAG, "   - State $state ($stateName): ACC ON = $isAccOn")
+            }
+            
+            Log.d(TAG, "   - Current actual state from carPowerManager:")
+            if (carPowerManager != null) {
+                try {
+                    val actualState = carPowerManager?.getPowerState() ?: -1
+                    val actualStateName = getPowerStateName(actualState)
+                    val actualIsAccOn = isPowerStateAccOn(actualState)
+                    
+                    Log.d(TAG, "   - Actual state: $actualState ($actualStateName)")
+                    Log.d(TAG, "   - Actual ACC ON: $actualIsAccOn")
+                    Log.d(TAG, "   - Current igStatus: $currentIgStatus")
+                    Log.d(TAG, "   - Current ACC state: $currentAccState")
+                } catch (e: Exception) {
+                    Log.e(TAG, "   - Error getting actual state: ${e.message}")
+                }
+            } else {
+                Log.w(TAG, "   - carPowerManager is null")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error debugging power states", e)
         }
     }
 
@@ -553,6 +700,218 @@ class CarPowerManager(private val context: Context) {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error simulating ACC state change", e)
+        }
+    }
+
+    // NEW METHOD: Test specific power state for debugging
+    fun testSpecificPowerState(testState: Int) {
+        try {
+            Log.d(TAG, "🧪 TESTING SPECIFIC POWER STATE: $testState")
+            
+            val stateName = getPowerStateName(testState)
+            val isAccOn = isPowerStateAccOn(testState)
+            
+            Log.d(TAG, "   - Test state: $testState")
+            Log.d(TAG, "   - State name: $stateName")
+            Log.d(TAG, "   - ACC ON: $isAccOn")
+            Log.d(TAG, "   - Would set igStatus to: ${if (isAccOn) 1 else 0}")
+            
+            // Simulate this state change
+            val oldIgStatus = currentIgStatus
+            currentIgStatus = if (isAccOn) 1 else 0
+            currentAccState = isAccOn
+            
+            Log.d(TAG, "   - Simulated igStatus change: $oldIgStatus → $currentIgStatus")
+            
+            // Trigger callback on main thread
+            mainHandler.post {
+                accStateCallback?.invoke(isAccOn)
+                Log.d(TAG, "✅ Test power state callback invoked with: $isAccOn")
+            }
+            
+            Log.d(TAG, "✅ Specific power state test completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error testing specific power state", e)
+        }
+    }
+
+    // NEW METHOD: Get all possible power states for AVN debugging
+    fun getAllPowerStatesInfo(): Map<String, Any> {
+        val statesInfo = mutableMapOf<String, Any>()
+        
+        for (state in 0..13) {
+            val stateName = getPowerStateName(state)
+            val isAccOn = isPowerStateAccOn(state)
+            statesInfo["state_$state"] = mapOf(
+                "name" to stateName,
+                "isAccOn" to isAccOn,
+                "igStatus" to if (isAccOn) 1 else 0
+            )
+        }
+        
+        Log.d(TAG, "📋 ALL POWER STATES INFO:")
+        statesInfo.forEach { (key, value) ->
+            Log.d(TAG, "   - $key: $value")
+        }
+        
+        return statesInfo
+    }
+
+    // NEW METHOD: Custom ignition detection for BWIC A100 AVN
+    private fun detectBwicA100Ignition(): Boolean {
+        try {
+            Log.e("CarPowerManager", "ERROR: Detecting BWIC A100 ignition state...")
+            
+            // Method 1: Check if device is connected to power (USB/charging)
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+            val isPlugged = batteryManager.isCharging
+            Log.e("CarPowerManager", "ERROR: Battery charging: $isPlugged")
+            
+            // Method 2: Check if screen is on (indicates ACC ON)
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            val isScreenOn = powerManager.isInteractive
+            Log.e("CarPowerManager", "ERROR: Screen interactive: $isScreenOn")
+            
+            // Method 3: Check if we're in a vehicle context (GPS accuracy, movement patterns)
+            // This would require location data, but we can use a simple heuristic
+            
+            // Method 4: Check for specific BWIC A100 system properties
+            val systemProperties = try {
+                val c = Class.forName("android.os.SystemProperties")
+                val get = c.getMethod("get", String::class.java, String::class.java)
+                val ignitionProperty = get.invoke(c, "ro.bwic.ignition", "0") as String
+                Log.e("CarPowerManager", "ERROR: BWIC ignition property: $ignitionProperty")
+                ignitionProperty == "1"
+            } catch (e: Exception) {
+                Log.e("CarPowerManager", "ERROR: Could not read BWIC system property: ${e.message}")
+                false
+            }
+            
+            // Method 5: Check for USB connection (often indicates ACC ON in vehicles)
+            val usbManager = context.getSystemService(Context.USB_SERVICE) as android.hardware.usb.UsbManager
+            val deviceList = usbManager.deviceList
+            val hasUsbDevices = deviceList.isNotEmpty()
+            Log.e("CarPowerManager", "ERROR: USB devices connected: $hasUsbDevices")
+            
+            // Combine multiple indicators for better accuracy
+            val ignitionIndicators = mutableListOf<Boolean>()
+            
+            // Screen on is a strong indicator of ACC ON
+            if (isScreenOn) {
+                ignitionIndicators.add(true)
+                Log.e("CarPowerManager", "ERROR: Screen on - likely ACC ON")
+            }
+            
+            // USB connection is another indicator
+            if (hasUsbDevices) {
+                ignitionIndicators.add(true)
+                Log.e("CarPowerManager", "ERROR: USB connected - likely ACC ON")
+            }
+            
+            // System property if available
+            if (systemProperties) {
+                ignitionIndicators.add(true)
+                Log.e("CarPowerManager", "ERROR: System property indicates ACC ON")
+            }
+            
+            // Determine final ignition state
+            val isIgnitionOn = ignitionIndicators.isNotEmpty() && ignitionIndicators.count { it } >= ignitionIndicators.size / 2
+            
+            Log.e("CarPowerManager", "ERROR: BWIC A100 ignition detection result: $isIgnitionOn")
+            Log.e("CarPowerManager", "ERROR: Indicators: screen=$isScreenOn, usb=$hasUsbDevices, system=$systemProperties")
+            
+            return isIgnitionOn
+            
+        } catch (e: Exception) {
+            Log.e("CarPowerManager", "ERROR: Exception in BWIC A100 ignition detection: ${e.message}")
+            return false
+        }
+    }
+
+    // NEW METHOD: Test BWIC A100 ignition detection using BWIC car framework
+    fun testBwicA100IgnitionDetection() {
+        try {
+            Log.e("CarPowerManager", "ERROR: === TESTING BWIC A100 IGNITION DETECTION ===")
+            
+            if (carPowerManager != null && isConnected) {
+                Log.e("CarPowerManager", "ERROR: Using BWIC car framework for testing")
+                
+                // Get current power state from BWIC car framework
+                val powerState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
+                val isAccOn = isPowerStateAccOn(powerState)
+                val oldIgStatus = currentIgStatus
+                currentIgStatus = if (isAccOn) 1 else 0
+                currentAccState = isAccOn
+                
+                Log.e("CarPowerManager", "ERROR: BWIC framework test - power state: $powerState")
+                Log.e("CarPowerManager", "ERROR: BWIC framework test - ACC ON: $isAccOn")
+                Log.e("CarPowerManager", "ERROR: BWIC framework test - igStatus: $oldIgStatus → $currentIgStatus")
+                
+                // Trigger callback on main thread
+                mainHandler.post {
+                    accStateCallback?.invoke(isAccOn)
+                    Log.e("CarPowerManager", "ERROR: BWIC framework test callback invoked with: $isAccOn")
+                }
+                
+            } else {
+                Log.e("CarPowerManager", "ERROR: BWIC car framework not available, using custom detection")
+                
+                // Fall back to custom detection
+                val isIgnitionOn = detectBwicA100Ignition()
+                val oldIgStatus = currentIgStatus
+                currentIgStatus = if (isIgnitionOn) 1 else 0
+                currentAccState = isIgnitionOn
+                
+                Log.e("CarPowerManager", "ERROR: Custom detection test - ACC ON: $isIgnitionOn")
+                Log.e("CarPowerManager", "ERROR: Custom detection test - igStatus: $oldIgStatus → $currentIgStatus")
+                
+                // Trigger callback on main thread
+                mainHandler.post {
+                    accStateCallback?.invoke(isIgnitionOn)
+                    Log.e("CarPowerManager", "ERROR: Custom detection test callback invoked with: $isIgnitionOn")
+                }
+            }
+            
+            Log.e("CarPowerManager", "ERROR: BWIC A100 ignition detection test completed")
+            
+        } catch (e: Exception) {
+            Log.e("CarPowerManager", "ERROR: Exception in BWIC A100 ignition detection test: ${e.message}")
+        }
+    }
+
+    // NEW METHOD: Save igStatus to SharedPreferences for persistence
+    private fun saveIgStatusToPrefs(igStatus: Int) {
+        try {
+            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putInt("current_ig_status", igStatus)
+                putLong("ig_status_timestamp", System.currentTimeMillis())
+                apply()
+            }
+            Log.e("CarPowerManager", "ERROR: ✅ igStatus saved to prefs: $igStatus")
+        } catch (e: Exception) {
+            Log.e("CarPowerManager", "ERROR: ❌ Failed to save igStatus to prefs: ${e.message}")
+        }
+    }
+
+    // NEW METHOD: Load igStatus from SharedPreferences
+    private fun loadIgStatusFromPrefs(): Int {
+        try {
+            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val savedIgStatus = prefs.getInt("current_ig_status", -1)
+            val timestamp = prefs.getLong("ig_status_timestamp", 0)
+            
+            if (savedIgStatus != -1) {
+                Log.e("CarPowerManager", "ERROR: 📥 Loaded igStatus from prefs: $savedIgStatus (timestamp: $timestamp)")
+                return savedIgStatus
+            } else {
+                Log.e("CarPowerManager", "ERROR: 📥 No saved igStatus found in prefs")
+                return 0 // Default to ACC OFF
+            }
+        } catch (e: Exception) {
+            Log.e("CarPowerManager", "ERROR: ❌ Failed to load igStatus from prefs: ${e.message}")
+            return 0 // Default to ACC OFF
         }
     }
 }

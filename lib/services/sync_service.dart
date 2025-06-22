@@ -145,11 +145,11 @@ class SyncService {
         return;
       }
 
-      // Get current ACC state from SharedPreferences (set by native BackgroundService)
-      final trackingPrefs = await SharedPreferences.getInstance();
-      final int? igStatusFromNative = trackingPrefs.getInt('current_ig_status');
+      // Get current ACC state from FlutterSharedPreferences (set by native BackgroundService)
+      final prefs = await SharedPreferences.getInstance();
+      final int? igStatusFromNative = prefs.getInt('current_ig_status');
 
-      print('Read igStatus from native (tracking_prefs): $igStatusFromNative');
+      print('Read igStatus from native (FlutterSharedPreferences): $igStatusFromNative');
 
       if (igStatusFromNative != null) {
         // Update any unsynced records with the definitive igStatus from native code
@@ -317,9 +317,9 @@ class SyncService {
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
     try {
-      // Get the most up-to-date igStatus from the native service
-      final trackingPrefs = await SharedPreferences.getInstance();
-      final int? igStatusFromNative = trackingPrefs.getInt('current_ig_status');
+      // Get the most up-to-date igStatus from FlutterSharedPreferences (set by native service)
+      final prefs = await SharedPreferences.getInstance();
+      final int? igStatusFromNative = prefs.getInt('current_ig_status');
 
       // Default to 0 ONLY if the native value is not available yet.
       // This is for new records, so a default is acceptable, but we prefer the native value.
@@ -411,23 +411,6 @@ class SyncService {
     await _dbHelper.forceMaintainRecordLimit();
   }
 
-  // UPDATED METHOD: Now reads from SharedPreferences instead of calling CarPowerService
-  Future<void> _updateIgStatus(int status) async {
-    try {
-      // Store in SharedPreferences (this will be set by Kotlin BackgroundService)
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('current_ig_status', status);
-      await prefs.setInt('ig_status_timestamp', DateTime.now().millisecondsSinceEpoch);
-      
-      // Update unsynced records
-      await _updateUnsyncedRecordsIgStatus(status);
-      
-      print('Updated igStatus to: $status');
-    } catch (e) {
-      print('Error updating igStatus: $e');
-    }
-  }
-
   // NEW METHOD: Get current ACC state (for debugging/monitoring)
   Future<Map<String, dynamic>> getAccState() async {
     try {
@@ -435,28 +418,13 @@ class SyncService {
       int currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
       int igStatusTimestamp = prefs.getInt('ig_status_timestamp') ?? 0;
       
-      // Also check tracking_prefs for consistency
-      final trackingPrefs = await SharedPreferences.getInstance();
-      final trackingIgStatus = trackingPrefs.getInt('current_ig_status');
-      final trackingTimestamp = trackingPrefs.getInt('ig_status_timestamp') ?? 0;
-      
-      // Use the most recent igStatus
-      String source = 'FlutterSharedPreferences';
-      if (trackingIgStatus != null && trackingTimestamp > igStatusTimestamp) {
-        currentIgStatus = trackingIgStatus;
-        igStatusTimestamp = trackingTimestamp;
-        source = 'tracking_prefs';
-      }
-      
       return {
         'igStatus': currentIgStatus,
         'isAccOn': currentIgStatus == 1,
         'lastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
-        'source': source,
-        'flutterSharedPrefs': prefs.getInt('current_ig_status'),
-        'trackingPrefs': trackingIgStatus,
-        'flutterTimestamp': prefs.getInt('ig_status_timestamp'),
-        'trackingTimestamp': trackingTimestamp,
+        'source': 'FlutterSharedPreferences',
+        'flutterSharedPrefs': currentIgStatus,
+        'flutterTimestamp': igStatusTimestamp,
       };
     } catch (e) {
       print('Error getting ACC state: $e');
@@ -489,7 +457,7 @@ class SyncService {
       
       // Test 2: Manually set igStatus to 1 (ACC ON)
       print('🧪 Test 2: Manually setting igStatus to 1 (ACC ON)...');
-      await _updateIgStatus(1);
+      await _updateUnsyncedRecordsIgStatus(1);
       results['manualSetAccOn'] = true;
       print('✅ igStatus set to 1 (ACC ON)');
       
@@ -501,7 +469,7 @@ class SyncService {
       
       // Test 4: Manually set igStatus to 0 (ACC OFF)
       print('🧪 Test 4: Manually setting igStatus to 0 (ACC OFF)...');
-      await _updateIgStatus(0);
+      await _updateUnsyncedRecordsIgStatus(0);
       results['manualSetAccOff'] = true;
       print('✅ igStatus set to 0 (ACC OFF)');
       
