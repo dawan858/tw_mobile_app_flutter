@@ -19,7 +19,7 @@ class SyncService {
   bool _isSyncing = false;
   String? _lastError;
   int _retryCount = 0;
-  static const String serverUrl = 'http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api/location';
+  static const String serverUrl = 'http://121.91.56.50:3000/api/location';
   int _syncIntervalSeconds = 30; // Default sync interval
   static const int maxRetries = 3;
   static const Duration defaultSyncInterval = Duration(minutes: 1);
@@ -166,7 +166,13 @@ class SyncService {
           final dataToSend = Map<String, dynamic>.from(data);
           dataToSend.remove('id');
           dataToSend.remove('sync_status');
-          dataToSend.remove('created_at');
+          
+          // Convert createdAt from milliseconds to the same format as deviceRDT
+          if (dataToSend.containsKey('created_at')) {
+            final createdAtMillis = dataToSend['created_at'] as int;
+            final createdAtDateTime = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
+            dataToSend['created_at'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(createdAtDateTime);
+          }
 
           print('=== SENDING DATA TO SERVER ===');
           print('Server URL: $serverUrl');

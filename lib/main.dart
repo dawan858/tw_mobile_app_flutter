@@ -375,15 +375,27 @@ class _GPSTrackerState extends State<GPSTracker> {
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";
       } else if (_currentPosition != null) {
-        final bearingChange = (_bearing - _currentPosition!.heading).abs();
-        final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
+        // Check for distance-based reason first
+        final distance = Geolocator.distanceBetween(
+          _currentPosition!.latitude, 
+          _currentPosition!.longitude, 
+          position.latitude, 
+          position.longitude
+        );
         
-        if (position.speed * 3.6 >= 5 && normalizedBearingChange > angleThreshold) {
-          _reason = "Turn";
-        } else if (position.speed * 3.6 > 1) {
-          _reason = "Move";
+        if (distance >= distanceThreshold) {
+          _reason = "Distance";
         } else {
-          _reason = "Idle";
+          final bearingChange = (_bearing - _currentPosition!.heading).abs();
+          final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
+          
+          if (position.speed * 3.6 >= 5 && normalizedBearingChange > angleThreshold) {
+            _reason = "Turn";
+          } else if (position.speed * 3.6 > 1) {
+            _reason = "Move";
+          } else {
+            _reason = "Idle";
+          }
         }
       }
     });

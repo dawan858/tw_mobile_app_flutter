@@ -71,7 +71,7 @@ class BackgroundService : Service() {
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
-    private val serverUrl = "http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api/location"
+    private val serverUrl = "http://121.91.56.50:3000/api/location"
     private lateinit var dbHelper: LocationDatabaseHelper
     private var syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -1224,6 +1224,25 @@ class BackgroundService : Service() {
 
     private fun calculateEnhancedReason(location: Location): String {
         val speed = getEnhancedAccurateSpeed(location)
+        
+        // Check for distance-based reason if we have a previous location
+        if (lastLocation != null) {
+            val distance = lastLocation!!.distanceTo(location)
+            if (distance >= distanceThreshold) {
+                return "Distance"
+            }
+        }
+        
+        // Check for turn detection if we have a previous location
+        if (lastLocation != null && speed >= 5f) {
+            val bearingChange = kotlin.math.abs(location.bearing - lastLocation!!.bearing)
+            val normalizedBearingChange = if (bearingChange > 180f) 360f - bearingChange else bearingChange
+            
+            if (normalizedBearingChange >= angleThreshold) {
+                return "Turn"
+            }
+        }
+        
         return when {
             speed > overSpeedingThreshold -> "Over Speeding"
             speed < 3f -> "Idle"
@@ -1285,7 +1304,7 @@ class BackgroundService : Service() {
                 put("reason", reason)
                 put("versionNo", "v ${getAppVersion()}")
                 put("sync_status", 0)
-                put("created_at", currentTime)
+                put("created_at", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
             }
 
             val db = dbHelper.writableDatabase
@@ -1588,11 +1607,30 @@ class BackgroundService : Service() {
                     val dataToSend = data.toMutableMap()
                     dataToSend.remove("id")
                     dataToSend.remove("sync_status")
-                    dataToSend.remove("created_at")
+                    
+                    // Convert createdAt from milliseconds to the same format as deviceRDT
+                    if (dataToSend.containsKey("created_at")) {
+                        val createdAtMillis = when (val createdAt = dataToSend["created_at"]) {
+                            is Long -> createdAt
+                            is Int -> createdAt.toLong()
+                            is String -> createdAt.toLongOrNull() ?: System.currentTimeMillis()
+                            else -> System.currentTimeMillis()
+                        }
+                        val createdAtDateTime = java.time.Instant.ofEpochMilli(createdAtMillis)
+                        val formattedCreatedAt = createdAtDateTime.atZone(java.time.ZoneId.systemDefault())
+                            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS"))
+                        dataToSend["created_at"] = formattedCreatedAt
+                    }
 
                     // Log the igStatus being sent to server
                     val igStatusBeingSent = dataToSend["igStatus"] as? Int ?: 0
-                    Log.d(TAG, "🔄 SYNC TO SERVER - Record ID: ${data["id"]}")
+                    val recordId = when (val id = data["id"]) {
+                        is Long -> id.toString()
+                        is Int -> id.toString()
+                        is String -> id
+                        else -> "unknown"
+                    }
+                    Log.d(TAG, "🔄 SYNC TO SERVER - Record ID: $recordId")
                     Log.d(TAG, "   - igStatus being sent: $igStatusBeingSent")
                     Log.d(TAG, "   - Current service igStatus: $igStatus")
                     Log.d(TAG, "   - ACC state: ${if (igStatusBeingSent == 1) "ON" else "OFF"}")
@@ -1610,8 +1648,14 @@ class BackgroundService : Service() {
                     val response = client.newCall(request).execute()
 
                     if (response.isSuccessful) {
-                        syncedIds.add(data["id"] as Long)
-                        Log.d(TAG, "✅ Successfully synced record ID: ${data["id"]} with igStatus: $igStatusBeingSent")
+                        val recordId = when (val id = data["id"]) {
+                            is Long -> id
+                            is Int -> id.toLong()
+                            is String -> id.toLongOrNull() ?: 0L
+                            else -> 0L
+                        }
+                        syncedIds.add(recordId)
+                        Log.d(TAG, "✅ Successfully synced record ID: $recordId with igStatus: $igStatusBeingSent")
                     } else {
                         Log.e(TAG, "❌ Server error: ${response.code} - ${response.body?.string()}")
                     }
@@ -1619,7 +1663,13 @@ class BackgroundService : Service() {
                     response.close()
 
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error syncing record ${data["id"]}: $e")
+                    val recordId = when (val id = data["id"]) {
+                        is Long -> id.toString()
+                        is Int -> id.toString()
+                        is String -> id
+                        else -> "unknown"
+                    }
+                    Log.e(TAG, "Error syncing record $recordId: $e")
                 }
             }
 

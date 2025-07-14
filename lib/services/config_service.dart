@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ConfigService {
   static final ConfigService _instance = ConfigService._internal();
-  static const String baseUrl = 'http://ec2-52-66-236-101.ap-south-1.compute.amazonaws.com:3000/api';
+  static const String baseUrl = 'http://121.91.56.50:3000/api';
   
   // Default values
   static const Map<String, dynamic> defaultConfig = {

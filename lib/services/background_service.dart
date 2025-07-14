@@ -232,9 +232,30 @@ void onStart(ServiceInstance service) async {
       if (lastPosition == null) {
         reason = "Initial Position";
       } else {
-        // Simple movement check
-        if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
-          reason = "Movement";
+        // Check for distance-based reason first
+        final distance = Geolocator.distanceBetween(
+          lastPosition!.latitude, 
+          lastPosition!.longitude, 
+          position.latitude, 
+          position.longitude
+        );
+        
+        if (distance >= distanceThreshold) {
+          reason = "Distance";
+        } else {
+          // Check for turn detection if vehicle is moving
+          if (position.speed * 3.6 >= 5) { // speed >= 5 km/h
+            final bearingChange = (position.heading ?? 0) - (lastPosition!.heading ?? 0);
+            final normalizedBearingChange = bearingChange.abs() > 180 ? 360 - bearingChange.abs() : bearingChange.abs();
+            
+            if (normalizedBearingChange >= angleThreshold) {
+              reason = "Turn";
+            } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
+              reason = "Movement";
+            }
+          } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
+            reason = "Movement";
+          }
         }
       }
 
@@ -262,7 +283,7 @@ void onStart(ServiceInstance service) async {
         'reason': reason,
         'versionNo': 'v1.0.0', // Placeholder
         'sync_status': 0,
-        'created_at': now.millisecondsSinceEpoch,
+        'created_at':  DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
       };
 
       await SyncService().queueLocationData(data);

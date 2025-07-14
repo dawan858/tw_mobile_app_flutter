@@ -1,6 +1,7 @@
 package com.example.tracking_world
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.location.Location
 import android.os.*
@@ -14,6 +15,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.fixedRateTimer
+import kotlin.math.abs
 
 class GpsTrackingService : Service() {
     private var fusedLocationClient: FusedLocationProviderClient? = null
@@ -29,10 +31,13 @@ class GpsTrackingService : Service() {
     private val TAG = "GpsTrackingService"
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceRunning = false
+    private var angleThreshold: Float = 45f // Default 45 degrees
+    private var distanceThreshold: Float = 1000f // Default 1000 meters
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
+        loadConfiguration()
         acquireWakeLock()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
@@ -138,12 +143,48 @@ class GpsTrackingService : Service() {
         return shouldUpdate
     }
 
+    private fun loadConfiguration() {
+        try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            angleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
+            distanceThreshold = prefs.getFloat("flutter.distanceThreshold", 1000f)
+            Log.d(TAG, "Configuration loaded - angleThreshold: $angleThreshold, distanceThreshold: $distanceThreshold")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading configuration: ${e.message}")
+        }
+    }
+
+    private fun calculateReason(location: Location): String {
+        val speed = location.speed * 3.6f // Convert to km/h
+        
+        // Check for distance-based reason if we have a previous location
+        if (lastLocation != null) {
+            val distance = lastLocation!!.distanceTo(location)
+            if (distance >= distanceThreshold) {
+                return "Distance"
+            }
+        }
+        
+        // Check for turn detection if we have a previous location
+        if (lastLocation != null && speed >= 5f) {
+            val bearingChange = abs(location.bearing - lastLocation!!.bearing)
+            val normalizedBearingChange = if (bearingChange > 180f) 360f - bearingChange else bearingChange
+            
+            if (normalizedBearingChange >= angleThreshold) {
+                return "Turn"
+            }
+        }
+        
+        return "Background"
+    }
+
     private fun sendLocationToServer(location: Location) {
         Log.d(TAG, "Sending location to server")
         serviceScope.launch {
             try {
                 val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm:ss.SSS", Locale.getDefault())
                 val currentTime = dateFormat.format(Date())
+                val reason = calculateReason(location)
                 
                 val locationData = JSONObject().apply {
                     put("latitude", location.latitude)
@@ -156,7 +197,7 @@ class GpsTrackingService : Service() {
                     put("gmtSettings", "GMT+${TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 3600000}:00 ${Calendar.getInstance().get(Calendar.YEAR)}")
                     put("time", System.currentTimeMillis())
                     put("provider", location.provider)
-                    put("reason", "Background")
+                    put("reason", reason)
                 }
 
                 Log.d(TAG, "Sending data: ${locationData.toString()}")
