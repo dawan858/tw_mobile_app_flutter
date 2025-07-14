@@ -760,48 +760,13 @@ class _GPSTrackerState extends State<GPSTracker> {
           WelcomeScreen(
             imei: _imei,
             version: _appVersion,
-            trackingData: {
-              'totalSatellites': _totalSatellites.toString(),
-              'connectedSatellites': _connectedSatellites.toString(),
-              'status': _isTracking ? 'Location Found' : 'Not Tracking',
-              'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
-              'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
-              'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
-              'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
-              'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
-              'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
-              'lastPollTime': _deviceRDT,
-              'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-              'gmt': _gmtSettings,
-              'pendingData': '0', // This would require sync service info
-              'server': 'Connected', // This would require network status check
-              'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-            },
             onInfoTap: () async {
               await _getSatelliteData();
               setState(() {}); // Ensure UI is updated with latest satellite data
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => LiveStatusScreen(
-                    trackingData: {
-                      'totalSatellites': _totalSatellites.toString(),
-                      'connectedSatellites': _connectedSatellites.toString(),
-                      'status': _isTracking ? 'Location Found' : 'Not Tracking',
-                      'latitude': _currentPosition?.latitude.toStringAsFixed(6) ?? _latitude.toStringAsFixed(6),
-                      'longitude': _currentPosition?.longitude.toStringAsFixed(6) ?? _longitude.toStringAsFixed(6),
-                      'altitude': _currentPosition?.altitude.toStringAsFixed(3) ?? _altitude.toStringAsFixed(3),
-                      'angle': _currentPosition?.heading.toStringAsFixed(3) ?? _bearing.toStringAsFixed(3),
-                      'speed': _currentPosition?.speed.toStringAsFixed(3) ?? _speed.toStringAsFixed(3),
-                      'accuracy': _currentPosition?.accuracy.toStringAsFixed(3) ?? _accuracy.toStringAsFixed(3),
-                      'lastPollTime': _deviceRDT,
-                      'localTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-                      'gmt': _gmtSettings,
-                      'pendingData': '0',
-                      'server': 'Connected',
-                      'refreshTime': DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-                    },
-                  ),
+                  builder: (context) => const LiveStatusScreen(),
                 ),
               );
             },

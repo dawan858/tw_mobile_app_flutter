@@ -9,8 +9,7 @@ class WelcomeScreen extends StatefulWidget {
   final String imei;
   final String version;
   final VoidCallback onInfoTap;
-  final Map<String, String> trackingData;
-  const WelcomeScreen({Key? key, required this.imei, required this.version, required this.onInfoTap, required this.trackingData}) : super(key: key);
+  const WelcomeScreen({Key? key, required this.imei, required this.version, required this.onInfoTap}) : super(key: key);
 
   @override
   State<WelcomeScreen> createState() => _WelcomeScreenState();
@@ -30,7 +29,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         _versionTapCount = 0;
         Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => VerificationScreen(trackingData: widget.trackingData),
+            builder: (_) => const VerificationScreen(),
           ),
         );
         return;

@@ -6,8 +6,7 @@ import 'exception_logs_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 class SettingsScreen extends StatefulWidget {
-  final Map<String, String> trackingData;
-  const SettingsScreen({Key? key, required this.trackingData}) : super(key: key);
+  const SettingsScreen({Key? key}) : super(key: key);
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -61,7 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       {'label': 'LIVE STATUS', 'onTap': (BuildContext ctx) {
         Navigator.of(ctx).push(
           MaterialPageRoute(
-            builder: (_) => LiveStatusScreen(trackingData: widget.trackingData),
+            builder: (_) => const LiveStatusScreen(),
           ),
         );
       }},

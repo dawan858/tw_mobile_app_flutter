@@ -170,8 +170,14 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "isServiceRunning" -> {
-                    // Check if service is running
+                    // Check if GpsTrackingService is running (legacy)
                     val isRunning = isServiceRunning(GpsTrackingService::class.java)
+                    result.success(isRunning)
+                }
+                "isBackgroundServiceRunning" -> {
+                    // Check if BackgroundService is running (primary service)
+                    val isRunning = isServiceRunning(BackgroundService::class.java)
+                    Log.d(TAG, "BackgroundService running status: $isRunning")
                     result.success(isRunning)
                 }
                 "appReady" -> {

@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'settings_screen.dart';
 
 class VerificationScreen extends StatefulWidget {
-  final Map<String, String> trackingData;
-  const VerificationScreen({Key? key, required this.trackingData}) : super(key: key);
+  const VerificationScreen({Key? key}) : super(key: key);
 
   @override
   State<VerificationScreen> createState() => _VerificationScreenState();
@@ -106,9 +105,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
                       onPressed: () {
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
-                            builder: (_) => SettingsScreen(
-                              trackingData: widget.trackingData,
-                            ),
+                            builder: (_) => const SettingsScreen(),
                           ),
                         );
                       },
