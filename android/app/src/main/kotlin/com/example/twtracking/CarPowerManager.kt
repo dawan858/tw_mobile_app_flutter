@@ -76,13 +76,13 @@ class CarPowerManager(private val context: Context) {
             Log.d(TAG, "   - Car service available: $carServiceAvailable")
             Log.e("CarPowerManager", "ERROR: Car service available: $carServiceAvailable")
             
-            // NEW: Check if this is a BWIC A100 device
-            val isBwicA100 = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true) && 
-                            android.os.Build.MODEL.contains("A100", ignoreCase = true)
-            Log.e("CarPowerManager", "ERROR: Is BWIC A100 device: $isBwicA100")
+            // Check if this is a BWIC device (any model in the BWIC lineup)
+            val isBwicDevice = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true)
+            Log.e("CarPowerManager", "ERROR: Is BWIC device: $isBwicDevice")
+            Log.e("CarPowerManager", "ERROR: Device model: ${android.os.Build.MODEL}")
             
-            // NEW: Check device type - BWIC A100 should be treated as automotive even if not detected
-            val isAutomotiveDevice = carServiceAvailable || isBwicA100
+            // Check device type - BWIC devices should be treated as automotive even if not detected
+            val isAutomotiveDevice = carServiceAvailable || isBwicDevice
             Log.d(TAG, "   - Is Automotive Device: $isAutomotiveDevice")
             Log.e("CarPowerManager", "ERROR: Is Automotive Device: $isAutomotiveDevice")
             Log.d(TAG, "   - Expected igStatus on this device: ${if (isAutomotiveDevice) "0 or 1 (depending on ACC)" else "0 (no car ignition)"}")
@@ -264,7 +264,7 @@ class CarPowerManager(private val context: Context) {
                 Log.w(TAG, "⚠️ carPowerManager is null, using detected state or default")
                 
                 // Try to detect current state using custom methods
-                val isAccOn = detectBwicA100Ignition()
+                val isAccOn = detectBwicIgnition()
                 currentIgStatus = if (isAccOn) 1 else 0
                 currentAccState = isAccOn
                 
@@ -289,7 +289,7 @@ class CarPowerManager(private val context: Context) {
             Log.e(TAG, "❌ Failed to get initial power state", e)
             
             // Use detected state or default, not saved SharedPreferences
-            val isAccOn = detectBwicA100Ignition()
+            val isAccOn = detectBwicIgnition()
             currentIgStatus = if (isAccOn) 1 else 0
             currentAccState = isAccOn
             
@@ -314,16 +314,15 @@ class CarPowerManager(private val context: Context) {
     private fun tryFallbackInitialization() {
         try {
             Log.d(TAG, "🔄 Trying fallback initialization...")
-            Log.e("CarPowerManager", "ERROR: Starting fallback initialization for BWIC A100")
+            Log.e("CarPowerManager", "ERROR: Starting fallback initialization for BWIC devices")
             
-            // Check if this is a BWIC A100 device
-            val isBwicA100 = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true) && 
-                            android.os.Build.MODEL.contains("A100", ignoreCase = true)
+            // Check if this is a BWIC device (any model in the BWIC lineup)
+            val isBwicDevice = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true)
             
-            Log.e("CarPowerManager", "ERROR: Is BWIC A100 device: $isBwicA100")
+            Log.e("CarPowerManager", "ERROR: Is BWIC device: $isBwicDevice")
             
-            if (isBwicA100) {
-                Log.e("CarPowerManager", "ERROR: Using BWIC car framework for BWIC A100")
+            if (isBwicDevice) {
+                Log.e("CarPowerManager", "ERROR: Using BWIC car framework for BWIC device")
                 
                 // Try to use BWIC car framework directly
                 try {
@@ -396,10 +395,10 @@ class CarPowerManager(private val context: Context) {
         }
     }
 
-    // NEW METHOD: Use custom BWIC detection as last resort
+    // Use custom BWIC detection as last resort
     private fun useCustomBwicDetection() {
         Log.e("CarPowerManager", "ERROR: Using custom BWIC detection as fallback")
-        val isIgnitionOn = detectBwicA100Ignition()
+        val isIgnitionOn = detectBwicIgnition()
         currentAccState = isIgnitionOn
         currentIgStatus = if (isIgnitionOn) 1 else 0
         
@@ -815,10 +814,10 @@ class CarPowerManager(private val context: Context) {
         return statesInfo
     }
 
-    // NEW METHOD: Custom ignition detection for BWIC A100 AVN
-    private fun detectBwicA100Ignition(): Boolean {
+    // Custom ignition detection for BWIC devices
+    private fun detectBwicIgnition(): Boolean {
         try {
-            Log.e("CarPowerManager", "ERROR: Detecting BWIC A100 ignition state...")
+            Log.e("CarPowerManager", "ERROR: Detecting BWIC ignition state...")
             
             // Method 1: Check if device is connected to power (USB/charging)
             val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
@@ -833,7 +832,7 @@ class CarPowerManager(private val context: Context) {
             // Method 3: Check if we're in a vehicle context (GPS accuracy, movement patterns)
             // This would require location data, but we can use a simple heuristic
             
-            // Method 4: Check for specific BWIC A100 system properties
+            // Method 4: Check for specific BWIC system properties
             val systemProperties = try {
                 val c = Class.forName("android.os.SystemProperties")
                 val get = c.getMethod("get", String::class.java, String::class.java)
@@ -875,21 +874,21 @@ class CarPowerManager(private val context: Context) {
             // Determine final ignition state
             val isIgnitionOn = ignitionIndicators.isNotEmpty() && ignitionIndicators.count { it } >= ignitionIndicators.size / 2
             
-            Log.e("CarPowerManager", "ERROR: BWIC A100 ignition detection result: $isIgnitionOn")
+            Log.e("CarPowerManager", "ERROR: BWIC ignition detection result: $isIgnitionOn")
             Log.e("CarPowerManager", "ERROR: Indicators: screen=$isScreenOn, usb=$hasUsbDevices, system=$systemProperties")
             
             return isIgnitionOn
             
         } catch (e: Exception) {
-            Log.e("CarPowerManager", "ERROR: Exception in BWIC A100 ignition detection: ${e.message}")
+            Log.e("CarPowerManager", "ERROR: Exception in BWIC ignition detection: ${e.message}")
             return false
         }
     }
 
-    // NEW METHOD: Test BWIC A100 ignition detection using BWIC car framework
-    fun testBwicA100IgnitionDetection() {
+    // Test BWIC ignition detection using BWIC car framework
+    fun testBwicIgnitionDetection() {
         try {
-            Log.e("CarPowerManager", "ERROR: === TESTING BWIC A100 IGNITION DETECTION ===")
+            Log.e("CarPowerManager", "ERROR: === TESTING BWIC IGNITION DETECTION ===")
             
             if (carPowerManager != null && isConnected) {
                 Log.e("CarPowerManager", "ERROR: Using BWIC car framework for testing")
@@ -915,7 +914,7 @@ class CarPowerManager(private val context: Context) {
                 Log.e("CarPowerManager", "ERROR: BWIC car framework not available, using custom detection")
                 
                 // Fall back to custom detection
-                val isIgnitionOn = detectBwicA100Ignition()
+                val isIgnitionOn = detectBwicIgnition()
                 val oldIgStatus = currentIgStatus
                 currentIgStatus = if (isIgnitionOn) 1 else 0
                 currentAccState = isIgnitionOn
@@ -930,10 +929,10 @@ class CarPowerManager(private val context: Context) {
                 }
             }
             
-            Log.e("CarPowerManager", "ERROR: BWIC A100 ignition detection test completed")
+            Log.e("CarPowerManager", "ERROR: BWIC ignition detection test completed")
             
         } catch (e: Exception) {
-            Log.e("CarPowerManager", "ERROR: Exception in BWIC A100 ignition detection test: ${e.message}")
+            Log.e("CarPowerManager", "ERROR: Exception in BWIC ignition detection test: ${e.message}")
         }
     }
 

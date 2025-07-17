@@ -377,10 +377,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "testBwicIgnition" -> {
                     try {
-                        Log.e("MainActivity", "ERROR: Testing BWIC A100 ignition detection from Flutter")
+                        Log.e("MainActivity", "ERROR: Testing BWIC ignition detection from Flutter")
                         
                         if (::carPowerManager.isInitialized) {
-                            carPowerManager.testBwicA100IgnitionDetection()
+                            carPowerManager.testBwicIgnitionDetection()
                             result.success("BWIC ignition test completed")
                         } else {
                             Log.e("MainActivity", "ERROR: CarPowerManager not initialized for BWIC test")
