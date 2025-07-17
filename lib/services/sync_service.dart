@@ -16,6 +16,7 @@ class SyncService {
   // REMOVED: final CarPowerService _carPowerService = CarPowerService();
   final _connectivity = Connectivity();
   Timer? _syncTimer;
+  Timer? _serverMonitoringTimer; // NEW: Timer for continuous server monitoring
   bool _isSyncing = false;
   String? _lastError;
   int _retryCount = 0;
@@ -26,15 +27,21 @@ class SyncService {
   static const Duration retryDelay = Duration(seconds: 30);
   int _batchSize = 50; // Sync in smaller batches
   
-  // NEW: Phase-based retry logic for server downtime
+  // NEW: Improved server downtime logic
   int _consecutiveFailures = 0;
   int _currentPhase = 0;
   DateTime? _lastServerDownTime;
   bool _isServerDown = false;
+  bool _isMonitoringServer = false; // NEW: Track if we're actively monitoring server
+  DateTime? _lastServerRecoveryTime; // NEW: Track when server came back online
   
-  // Phase intervals in minutes
+  // Phase intervals in minutes (for fallback only)
   static const List<int> _retryPhases = [5, 15, 30, 45, 60, 240, 480]; // 5min, 15min, 30min, 45min, 1hr, 4hr, 8hr
   static const int _maxPhases = 7;
+  
+  // NEW: Continuous monitoring intervals
+  static const Duration _serverMonitoringInterval = Duration(seconds: 30); // Ping every 30 seconds when server is down
+  static const Duration _normalSyncInterval = Duration(minutes: 1); // Normal sync interval when server is up
   
   // REMOVED: Method channels since we're using SharedPreferences instead
   // static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
@@ -67,7 +74,7 @@ class SyncService {
     }
   }
 
-  // NEW: Server health check
+  // NEW: Enhanced server health check with better logging
   Future<bool> _isServerHealthy() async {
     try {
       print('🔍 Testing server health at: ${serverUrl.replaceAll('/api/location', '/health')}');
@@ -125,7 +132,7 @@ class SyncService {
     }
   }
 
-  // NEW: Get current retry interval based on phase
+  // NEW: Get current retry interval based on phase (fallback only)
   Duration _getCurrentRetryInterval() {
     if (_currentPhase >= _retryPhases.length) {
       return Duration(minutes: _retryPhases.last); // Use last phase (8 hours)
@@ -133,7 +140,7 @@ class SyncService {
     return Duration(minutes: _retryPhases[_currentPhase]);
   }
 
-  // NEW: Advance to next phase
+  // NEW: Advance to next phase (fallback only)
   void _advancePhase() {
     if (_currentPhase < _maxPhases - 1) {
       _currentPhase++;
@@ -151,23 +158,27 @@ class SyncService {
       _consecutiveFailures = 0;
       _isServerDown = false;
       _lastServerDownTime = null;
+      _lastServerRecoveryTime = DateTime.now();
       print('✅ Phase reset complete - new state: phase $_currentPhase, isServerDown: $_isServerDown');
     } else {
       print('ℹ️ Server already in normal state, no reset needed');
     }
   }
 
-  // NEW: Handle server down scenario
+  // NEW: Enhanced server down handling with continuous monitoring
   Future<void> _handleServerDown() async {
     if (!_isServerDown) {
       _isServerDown = true;
       _lastServerDownTime = DateTime.now();
-      print('🚨 SERVER DOWN DETECTED - Switching to phase-based retry mode');
+      print('🚨 SERVER DOWN DETECTED - Starting continuous monitoring');
       
       await _dbHelper.insertExceptionLog(
         main: 'Server Down',
-        details: 'Server unavailable, switching to phase $_currentPhase (${_retryPhases[_currentPhase]} min intervals)',
+        details: 'Server unavailable, starting continuous monitoring every ${_serverMonitoringInterval.inSeconds} seconds',
       );
+      
+      // Start continuous server monitoring
+      _startContinuousServerMonitoring();
     }
     
     _consecutiveFailures++;
@@ -181,6 +192,181 @@ class SyncService {
       main: 'Retry Phase Change',
       details: 'Phase $_currentPhase: ${nextInterval.inMinutes} min intervals, consecutive failures: $_consecutiveFailures',
     );
+  }
+
+  // NEW: Start continuous server monitoring when server is down
+  void _startContinuousServerMonitoring() {
+    if (_isMonitoringServer) {
+      print('⚠️ Server monitoring already active, skipping...');
+      return;
+    }
+    
+    _isMonitoringServer = true;
+    print('🔄 Starting continuous server monitoring every ${_serverMonitoringInterval.inSeconds} seconds');
+    
+    _serverMonitoringTimer = Timer.periodic(_serverMonitoringInterval, (timer) async {
+      if (!_isServerDown) {
+        // Server is back up, stop monitoring
+        print('✅ Server is back up, stopping continuous monitoring');
+        _stopContinuousServerMonitoring();
+        return;
+      }
+      
+      // Check if we have internet connection
+      if (!await _hasInternetConnection()) {
+        print('⚠️ No internet connection, skipping server check');
+        return;
+      }
+      
+      print('🔍 Continuous monitoring: Checking server health...');
+      final isHealthy = await _isServerHealthy();
+      
+      if (isHealthy) {
+        print('🎉 SERVER IS BACK ONLINE! Starting immediate sync...');
+        _stopContinuousServerMonitoring();
+        _resetPhases();
+        
+        await _dbHelper.insertExceptionLog(
+          main: 'Server Recovery',
+          details: 'Server is back online after ${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes of downtime',
+        );
+        
+        // Immediately sync all pending data
+        await _syncAllPendingData();
+      } else {
+        print('❌ Server still down, continuing monitoring...');
+        _consecutiveFailures++;
+      }
+    });
+  }
+
+  // NEW: Stop continuous server monitoring
+  void _stopContinuousServerMonitoring() {
+    _serverMonitoringTimer?.cancel();
+    _serverMonitoringTimer = null;
+    _isMonitoringServer = false;
+    print('🛑 Continuous server monitoring stopped');
+  }
+
+  // NEW: Sync all pending data when server comes back online
+  Future<void> _syncAllPendingData() async {
+    print('🔄 Starting full sync of all pending data...');
+    
+    try {
+      // Get all unsynced data
+      final allUnsyncedData = await _dbHelper.getUnsyncedData(limit: 1000); // Get all data
+      
+      if (allUnsyncedData.isEmpty) {
+        print('ℹ️ No pending data to sync');
+        return;
+      }
+      
+      print('📊 Found ${allUnsyncedData.length} records to sync after server recovery');
+      
+      // Sync in batches
+      const batchSize = 50;
+      int totalSynced = 0;
+      int totalFailed = 0;
+      
+      for (int i = 0; i < allUnsyncedData.length; i += batchSize) {
+        final batch = allUnsyncedData.skip(i).take(batchSize).toList();
+        print('🔄 Syncing batch ${(i ~/ batchSize) + 1}/${(allUnsyncedData.length / batchSize).ceil()} (${batch.length} records)');
+        
+        final batchResult = await _syncBatch(batch);
+        totalSynced += batchResult['success'] ?? 0;
+        totalFailed += batchResult['failed'] ?? 0;
+        
+        // Small delay between batches to avoid overwhelming server
+        if (i + batchSize < allUnsyncedData.length) {
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+      
+      print('✅ Full sync completed: $totalSynced successful, $totalFailed failed');
+      
+      await _dbHelper.insertExceptionLog(
+        main: 'Full Sync After Recovery',
+        details: 'Synced $totalSynced records, $totalFailed failed after server recovery',
+      );
+      
+    } catch (e) {
+      print('❌ Error during full sync: $e');
+      await _dbHelper.insertExceptionLog(
+        main: 'Full Sync Error',
+        details: 'Error during full sync after server recovery: $e',
+      );
+    }
+  }
+
+  // NEW: Sync a batch of records
+  Future<Map<String, int>> _syncBatch(List<Map<String, dynamic>> batch) async {
+    int successCount = 0;
+    int failureCount = 0;
+    final List<int> syncedIds = [];
+    
+    for (var data in batch) {
+      try {
+        // Remove the id field from data before sending
+        final dataToSend = Map<String, dynamic>.from(data);
+        dataToSend.remove('id');
+        dataToSend.remove('sync_status');
+        
+        // Convert createdAt to createAt (camelCase) and format properly
+        if (dataToSend.containsKey('created_at')) {
+          DateTime createdAtDateTime;
+          
+          // Handle both int (milliseconds) and String (formatted) cases
+          if (dataToSend['created_at'] is int) {
+            final createdAtMillis = dataToSend['created_at'] as int;
+            createdAtDateTime = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
+          } else if (dataToSend['created_at'] is String) {
+            // If it's already a formatted string, try to parse it
+            try {
+              createdAtDateTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(dataToSend['created_at'] as String);
+            } catch (e) {
+              // If parsing fails, use current time as fallback
+              print('Warning: Could not parse created_at string: ${dataToSend['created_at']}, using current time');
+              createdAtDateTime = DateTime.now();
+            }
+          } else {
+            // Fallback to current time
+            print('Warning: created_at is neither int nor String, using current time');
+            createdAtDateTime = DateTime.now();
+          }
+          
+          // Remove the snake_case key and add camelCase key
+          dataToSend.remove('created_at');
+          dataToSend['createAt'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(createdAtDateTime);
+        }
+
+        final response = await http.post(
+          Uri.parse(serverUrl),
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'TrackingWorld-Mobile-App',
+          },
+          body: jsonEncode(dataToSend),
+        ).timeout(const Duration(seconds: 30));
+
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          syncedIds.add(data['id']);
+          successCount++;
+        } else {
+          failureCount++;
+          print('❌ Failed to sync record ${data['id']}: ${response.statusCode}');
+        }
+      } catch (e) {
+        failureCount++;
+        print('❌ Error syncing record ${data['id']}: $e');
+      }
+    }
+    
+    // Mark successfully synced records
+    if (syncedIds.isNotEmpty) {
+      await _dbHelper.markAsSynced(syncedIds);
+    }
+    
+    return {'success': successCount, 'failed': failureCount};
   }
 
   // NEW: Get prioritized unsynced data (critical data first)
@@ -337,15 +523,29 @@ class SyncService {
         return;
       }
 
-      // NEW: Check server health before attempting sync
+      // NEW: Enhanced server health check before attempting sync
       if (_isServerDown) {
         print('🔍 Checking server health before retry...');
         final isHealthy = await _isServerHealthy();
         if (isHealthy) {
           print('✅ Server is back online!');
           _resetPhases();
+          // Server is back up, but don't start continuous monitoring here
+          // Let the continuous monitoring handle the recovery
         } else {
           print('❌ Server still down, continuing with phase $_currentPhase');
+          // Ensure continuous monitoring is active
+          if (!_isMonitoringServer) {
+            _startContinuousServerMonitoring();
+          }
+        }
+      } else {
+        // Server is not marked as down, but let's verify it's actually healthy
+        final isHealthy = await _isServerHealthy();
+        if (!isHealthy) {
+          print('🚨 Server appears to be down, starting continuous monitoring...');
+          await _handleServerDown();
+          return; // Exit sync process, let continuous monitoring handle it
         }
       }
 
@@ -546,28 +746,24 @@ class SyncService {
     // Initial sync
     _startSync();
     
-    // NEW: Adaptive periodic sync based on server status
-    _syncTimer = Timer.periodic(Duration(seconds: _syncIntervalSeconds), (timer) async {
-      // Check if we need to adjust interval based on phase
-      if (_isServerDown) {
-        final phaseInterval = _getCurrentRetryInterval();
-        if (phaseInterval.inSeconds != _syncIntervalSeconds) {
-          print('🔄 Adjusting sync interval to ${phaseInterval.inMinutes} minutes (phase $_currentPhase)');
-          _syncIntervalSeconds = phaseInterval.inSeconds;
-          timer.cancel();
-          _syncTimer = Timer.periodic(phaseInterval, (newTimer) {
-            _startSync();
-          });
-        }
+    // NEW: Improved periodic sync with continuous monitoring integration
+    _syncTimer = Timer.periodic(_normalSyncInterval, (timer) async {
+      // If server is down, continuous monitoring handles the retries
+      // Only do periodic sync when server is healthy
+      if (!_isServerDown) {
+        print('🔄 Periodic sync triggered (server healthy)');
+        _startSync();
+      } else {
+        print('⏸️ Periodic sync skipped - server is down, continuous monitoring active');
       }
-      _startSync();
     });
   }
 
   Future<void> stopPeriodicSync() async {
     _syncTimer?.cancel();
     _syncTimer = null;
-    print('Periodic sync stopped');
+    _stopContinuousServerMonitoring(); // Also stop continuous monitoring
+    print('Periodic sync and continuous monitoring stopped');
   }
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
@@ -656,7 +852,7 @@ class SyncService {
       print('Fallback to SharedPreferences for stats - igStatus: $currentIgStatus');
     }
     
-    // NEW: Add phase-based retry information
+    // NEW: Add enhanced server monitoring information
     final currentPhaseInterval = _getCurrentRetryInterval();
     final nextPhaseInterval = _currentPhase < _retryPhases.length - 1 
         ? Duration(minutes: _retryPhases[_currentPhase + 1])
@@ -670,16 +866,20 @@ class SyncService {
       'currentIgStatus': currentIgStatus,
       'igStatusLastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
       'igStatusSource': 'BackgroundService (direct)',
-      // NEW: Phase-based retry stats
+      // NEW: Enhanced server monitoring stats
       'isServerDown': _isServerDown,
+      'isMonitoringServer': _isMonitoringServer,
       'currentPhase': _currentPhase,
       'consecutiveFailures': _consecutiveFailures,
       'currentPhaseInterval': '${currentPhaseInterval.inMinutes} minutes',
       'nextPhaseInterval': '${nextPhaseInterval.inMinutes} minutes',
       'lastServerDownTime': _lastServerDownTime?.toIso8601String(),
+      'lastServerRecoveryTime': _lastServerRecoveryTime?.toIso8601String(),
       'serverDownDuration': _lastServerDownTime != null 
           ? '${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes'
           : null,
+      'monitoringInterval': '${_serverMonitoringInterval.inSeconds} seconds',
+      'normalSyncInterval': '${_normalSyncInterval.inMinutes} minutes',
     };
   }
 
@@ -714,10 +914,14 @@ class SyncService {
     _consecutiveFailures = 0;
     _isServerDown = false;
     _lastServerDownTime = null;
+    _lastServerRecoveryTime = null;
+    
+    // Stop continuous monitoring if active
+    _stopContinuousServerMonitoring();
     
     await _dbHelper.insertExceptionLog(
       main: 'Manual Phase Reset',
-      details: 'Phase system reset by user/admin',
+      details: 'Phase system reset by user/admin, continuous monitoring stopped',
     );
     
     print('✅ Phase system reset to normal mode');
@@ -769,7 +973,7 @@ class SyncService {
   Future<bool> checkServerStatus() async {
     try {
       print('🔍 === CHECKING SERVER STATUS ===');
-      print('Current state - isServerDown: $_isServerDown, phase: $_currentPhase');
+      print('Current state - isServerDown: $_isServerDown, phase: $_currentPhase, isMonitoring: $_isMonitoringServer');
       
       // First check internet connectivity
       if (!await _hasInternetConnection()) {
@@ -784,6 +988,10 @@ class SyncService {
         print('❌ Server health check failed - server appears to be down');
         if (!_isServerDown) {
           await _handleServerDown();
+        } else if (!_isMonitoringServer) {
+          // Server is marked as down but monitoring isn't active, start it
+          print('🔄 Server is down but monitoring not active, starting continuous monitoring...');
+          _startContinuousServerMonitoring();
         }
         return false;
       } else {

@@ -11,6 +11,7 @@ import 'package:tracking_world/services/device_admin_manager.dart';
 import 'services/api_service.dart';
 import 'services/background_service.dart';
 import 'services/permission_flow_manager.dart';
+import 'services/ignition_monitor_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'welcome.dart';
 import 'live_status_screen.dart';
@@ -29,6 +30,10 @@ void main() async {
   // Start the service immediately
   final service = FlutterBackgroundService();
   await service.startService();
+
+  // Initialize ignition monitoring service
+  final ignitionMonitorService = IgnitionMonitorService();
+  print('🚀 Ignition monitoring service initialized');
 
   // Check if IMEI is already available from MainActivity
   String? imei = prefs.getString('imei');

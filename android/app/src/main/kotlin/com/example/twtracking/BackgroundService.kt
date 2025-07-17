@@ -123,6 +123,13 @@ class BackgroundService : Service() {
                 if (!isIgStatusReady) {
                     Log.d(TAG, "✅ igStatus is now ready. Initial igStatus: $newIgStatus")
                     isIgStatusReady = true
+                    
+                    // Log the start of continuous monitoring
+                    dbHelper.insertIgnitionLog(
+                        "Continuously monitoring the igStatus",
+                        "Monitoring service active, checking every 5 seconds",
+                        "monitoring"
+                    )
                 }
                 
                 Log.d(TAG, "🚗 ACC Callback Received. isAccOn: $isAccOn, newIgStatus: $newIgStatus, oldStatus: $oldStatus")
@@ -132,6 +139,15 @@ class BackgroundService : Service() {
                 if (newIgStatus != oldStatus) {
                     Log.d(TAG, "🔄 igStatus updated: $oldStatus -> $newIgStatus")
                     updateNotificationWithAccState(isAccOn)
+                    
+                    // Log the ignition status change
+                    val oldStatusName = if (oldStatus == 1) "ACC_ON" else "ACC_OFF"
+                    val newStatusName = if (newIgStatus == 1) "ACC_ON" else "ACC_OFF"
+                    dbHelper.insertIgnitionLog(
+                        "Ignition status changed: $oldStatusName → $newStatusName",
+                        "igStatus: $oldStatus → $newIgStatus",
+                        if (newIgStatus == 1) "acc_on" else "acc_off"
+                    )
 
                     // Save a new location point with the changed igStatus and sync
                     if (lastLocation != null) {
@@ -152,7 +168,7 @@ class BackgroundService : Service() {
         }
     }
 
-    inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 4) {
+    inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 5) {
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL("""
                 CREATE TABLE location_data(
@@ -181,6 +197,17 @@ class BackgroundService : Service() {
             
             db.execSQL("CREATE INDEX idx_sync_status ON location_data(sync_status)")
             db.execSQL("CREATE INDEX idx_createAt ON location_data(createAt)")
+            
+            // Create ignition_logs table
+            db.execSQL("""
+                CREATE TABLE ignition_logs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message TEXT NOT NULL,
+                    details TEXT,
+                    log_type TEXT DEFAULT 'info',
+                    timestamp TEXT
+                )
+            """)
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -219,6 +246,24 @@ class BackgroundService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error migrating created_at to createAt: ${e.message}")
+                }
+            }
+            
+            if (oldVersion < 5) {
+                try {
+                    // Create ignition_logs table if it doesn't exist
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS ignition_logs(
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            message TEXT NOT NULL,
+                            details TEXT,
+                            log_type TEXT DEFAULT 'info',
+                            timestamp TEXT
+                        )
+                    """)
+                    Log.d(TAG, "Created ignition_logs table for version 5")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error creating ignition_logs table: ${e.message}")
                 }
             }
         }
@@ -312,6 +357,74 @@ class BackgroundService : Service() {
                 Log.e(TAG, "Error marking records as synced: ${e.message}")
             }
         }
+
+        // Ignition Logs Methods
+        fun insertIgnitionLog(message: String, details: String = "", logType: String = "info") {
+            val db = writableDatabase
+            try {
+                val values = ContentValues().apply {
+                    put("message", message)
+                    put("details", details)
+                    put("log_type", logType)
+                    put("timestamp", java.time.Instant.now().toString())
+                }
+                
+                val id = db.insert("ignition_logs", null, values)
+                Log.d(TAG, "Inserted ignition log: $message (ID: $id)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error inserting ignition log: ${e.message}")
+            }
+        }
+
+        fun getIgnitionLogs(limit: Int = 100): List<Map<String, Any>> {
+            val db = readableDatabase
+            val data = mutableListOf<Map<String, Any>>()
+            
+            try {
+                val cursor = db.query(
+                    "ignition_logs",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "timestamp DESC",
+                    limit.toString()
+                )
+                
+                while (cursor.moveToNext()) {
+                    val row = mutableMapOf<String, Any>()
+                    for (i in 0 until cursor.columnCount) {
+                        val columnName = cursor.getColumnName(i)
+                        when (cursor.getType(i)) {
+                            android.database.Cursor.FIELD_TYPE_INTEGER -> row[columnName] = cursor.getLong(i)
+                            android.database.Cursor.FIELD_TYPE_FLOAT -> row[columnName] = cursor.getDouble(i)
+                            android.database.Cursor.FIELD_TYPE_STRING -> row[columnName] = cursor.getString(i)
+                            android.database.Cursor.FIELD_TYPE_BLOB -> row[columnName] = cursor.getBlob(i)
+                            else -> row[columnName] = cursor.getString(i) ?: ""
+                        }
+                    }
+                    data.add(row)
+                }
+                cursor.close()
+                
+                Log.d(TAG, "Retrieved ${data.size} ignition logs")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error getting ignition logs: ${e.message}")
+            }
+            
+            return data
+        }
+
+        fun clearIgnitionLogs() {
+            val db = writableDatabase
+            try {
+                val deletedRows = db.delete("ignition_logs", null, null)
+                Log.d(TAG, "Cleared $deletedRows ignition logs")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error clearing ignition logs: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate() {
@@ -366,6 +479,15 @@ class BackgroundService : Service() {
             // Initialize CarPowerManager with simple callback
             carPowerManager = CarPowerManager(this)
             carPowerManager?.setAccStateCallback(accStateListener)
+            
+            // Set up ignition log callback
+            carPowerManager?.setIgnitionLogCallback { message, details, logType ->
+                try {
+                    dbHelper.insertIgnitionLog(message, details, logType)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in ignition log callback: ${e.message}")
+                }
+            }
             
             // Initialize CarPowerManager
             carPowerManager?.initialize()

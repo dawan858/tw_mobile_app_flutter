@@ -19,6 +19,7 @@ class CarPowerManager(private val context: Context) {
     private var isInitialized = false
     private var accStateCallback: ((Boolean) -> Unit)? = null
     private var sleepStateCallback: ((Boolean) -> Unit)? = null
+    private var ignitionLogCallback: ((String, String, String) -> Unit)? = null
     private var currentAccState = false
     private var currentIgStatus = 0 // Default to 0 (ACC OFF)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -417,6 +418,18 @@ class CarPowerManager(private val context: Context) {
         
         Log.e("CarPowerManager", "ERROR: Power state analysis: state=$state (${getPowerStateName(state)}), isAccOn=$result")
         
+        // Log to ignition logs if database helper is available
+        try {
+            val message = "Power state analysis: state=$state (${getPowerStateName(state)}), isAccOn=$result"
+            val details = "Power state: $state, ACC Status: $result"
+            val logType = if (result) "power_state_on" else "power_state_off"
+            
+            // Try to log to ignition logs through BackgroundService
+            logToIgnitionLogs(message, details, logType)
+        } catch (e: Exception) {
+            Log.e("CarPowerManager", "Error logging to ignition logs: ${e.message}")
+        }
+        
         return result
     }
 
@@ -453,6 +466,21 @@ class CarPowerManager(private val context: Context) {
     fun setSleepStateCallback(callback: (Boolean) -> Unit) {
         sleepStateCallback = callback
         Log.d(TAG, "Sleep state callback set (not implemented in simplified version)")
+    }
+
+    // NEW METHOD: Set ignition log callback
+    fun setIgnitionLogCallback(callback: (String, String, String) -> Unit) {
+        ignitionLogCallback = callback
+        Log.d(TAG, "Ignition log callback set")
+    }
+
+    // NEW METHOD: Log to ignition logs
+    private fun logToIgnitionLogs(message: String, details: String, logType: String) {
+        try {
+            ignitionLogCallback?.invoke(message, details, logType)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in ignition log callback: ${e.message}")
+        }
     }
 
     // NEW METHOD: Get current sleep state (for compatibility)

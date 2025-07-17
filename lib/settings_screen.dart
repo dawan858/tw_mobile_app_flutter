@@ -4,6 +4,7 @@ import 'package:tracking_world/configuration_screen.dart';
 import 'live_status_screen.dart';
 import 'pending_data_screen.dart';
 import 'exception_logs_screen.dart';
+import 'ignition_logs_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'services/sync_service.dart';
 
@@ -52,9 +53,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final stats = await _syncService.getSyncStats();
       final newIsBackendDown = stats['isServerDown'] ?? false;
       final newIsSyncing = stats['isSyncing'] ?? false;
+      final isMonitoring = stats['isMonitoringServer'] ?? false;
       
       print('Server health check result: $serverHealthy');
-      print('Stats - isServerDown: $newIsBackendDown, isSyncing: $newIsSyncing');
+      print('Stats - isServerDown: $newIsBackendDown, isSyncing: $newIsSyncing, isMonitoring: $isMonitoring');
       
       setState(() {
         _isBackendDown = newIsBackendDown;
@@ -258,6 +260,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
       }},
+      {'label': 'IGNITION LOGS', 'onTap': (BuildContext ctx) {
+        Navigator.of(ctx).push(
+          MaterialPageRoute(
+            builder: (_) => const IgnitionLogsScreen(),
+          ),
+        );
+      }},
       {'label': 'LOGOUT', 'onTap': () {}},
     ];
 
@@ -325,7 +334,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       color: Colors.orange.shade600,
                                     ),
                                   ),
-                                  
+                                  SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.sync,
+                                        color: Colors.green.shade600,
+                                        size: 16,
+                                      ),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Continuous monitoring active - checking every 30 seconds',
+                                        style: TextStyle(
+                                          fontSize: buttonFontSize * 0.8,
+                                          color: Colors.green.shade600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(height: 4),
+                                  Text(
+                                    'All pending data will be synced automatically when server comes back online',
+                                    style: TextStyle(
+                                      fontSize: buttonFontSize * 0.8,
+                                      color: Colors.grey.shade600,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
@@ -344,7 +379,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     borderRadius: BorderRadius.circular(buttonHeight / 2),
                                   ),
                                 ),
-                                onPressed: btn['label'] == 'LIVE STATUS' || btn['label'] == 'PENDING DATA' || btn['label'] == 'EXCEPTION LOGS'
+                                onPressed: btn['label'] == 'LIVE STATUS' || btn['label'] == 'PENDING DATA' || btn['label'] == 'EXCEPTION LOGS' || btn['label'] == 'IGNITION LOGS'
                                     ? () => btn['onTap'](context)
                                     : btn['onTap'],
                                 child: Text(

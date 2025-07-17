@@ -26,7 +26,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'location_tracking.db');
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -91,6 +91,17 @@ class DatabaseHelper {
         last_sync_time INTEGER,
         sync_duration INTEGER,
         created_at TEXT
+      )
+    ''');
+
+    // Create ignition logs table
+    await db.execute('''
+      CREATE TABLE ignition_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message TEXT NOT NULL,
+        details TEXT,
+        log_type TEXT DEFAULT 'info',
+        timestamp TEXT
       )
     ''');
 
@@ -213,6 +224,24 @@ class DatabaseHelper {
         print('Error migrating created_at to createAt: $e');
       }
     }
+
+    if (oldVersion < 5) {
+      // Create ignition logs table if it doesn't exist
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS ignition_logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT NOT NULL,
+            details TEXT,
+            log_type TEXT DEFAULT 'info',
+            timestamp TEXT
+          )
+        ''');
+        print('Created ignition_logs table for version 5');
+      } catch (e) {
+        print('Error creating ignition_logs table: $e');
+      }
+    }
   }
 
   Future<bool> _tableExists(String tableName) async {
@@ -253,6 +282,17 @@ class DatabaseHelper {
           last_sync_time INTEGER,
           sync_duration INTEGER,
           created_at TEXT
+        )
+      ''');
+      
+      // Create ignition_logs table if it doesn't exist
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS ignition_logs(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message TEXT NOT NULL,
+          details TEXT,
+          log_type TEXT DEFAULT 'info',
+          timestamp TEXT
         )
       ''');
       
@@ -488,6 +528,62 @@ class DatabaseHelper {
       }
     } catch (e) {
       print('Error clearing exception logs: $e');
+    }
+  }
+
+  // Ignition Logs Methods
+  Future<void> insertIgnitionLog({
+    required String message, 
+    String details = '', 
+    String logType = 'info'
+  }) async {
+    try {
+      if (await _tableExists('ignition_logs')) {
+        final db = await database;
+        await db.insert('ignition_logs', {
+          'message': message,
+          'details': details,
+          'log_type': logType,
+          'timestamp': DateTime.now().toIso8601String(),
+        });
+      } else {
+        print('Ignition logs table does not exist, skipping log: $message');
+      }
+    } catch (e) {
+      print('Error inserting ignition log: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getIgnitionLogs({int limit = 100}) async {
+    try {
+      if (await _tableExists('ignition_logs')) {
+        final db = await database;
+        return await db.query(
+          'ignition_logs',
+          orderBy: 'timestamp DESC',
+          limit: limit,
+        );
+      } else {
+        print('Ignition logs table does not exist');
+        return [];
+      }
+    } catch (e) {
+      print('Error getting ignition logs: $e');
+      return [];
+    }
+  }
+
+  Future<void> clearIgnitionLogs() async {
+    try {
+      if (await _tableExists('ignition_logs')) {
+        final db = await database;
+        await db.delete('ignition_logs');
+        print('Ignition logs cleared');
+      } else {
+        print('Ignition logs table does not exist');
+      }
+    } catch (e) {
+      print('Error clearing ignition logs: $e');
     }
   }
 
