@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = 'http://121.91.56.50:3000/api';
+  static const String baseUrl = 'http://twca.trackingworld.com.pk:3000/api';
 
   Future<bool> sendLocationData(Map<String, dynamic> locationData) async {
     try {

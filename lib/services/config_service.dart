@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ConfigService {
   static final ConfigService _instance = ConfigService._internal();
-  static const String baseUrl = 'http://121.91.56.50:3000/api';
+  static const String baseUrl = 'http://twca.trackingworld.com.pk:3000/api';
   
   // Default values
   static const Map<String, dynamic> defaultConfig = {
@@ -55,7 +55,17 @@ class ConfigService {
   Future<void> _saveConfig(Map<String, dynamic> config) async {
     final prefs = await SharedPreferences.getInstance();
     for (var entry in config.entries) {
-      await prefs.setString('flutter.${entry.key}', entry.value.toString());
+      final key = 'flutter.${entry.key}';
+      final value = entry.value;
+      
+      // Store values with appropriate types based on defaultConfig
+      if (defaultConfig[entry.key] is int) {
+        await prefs.setInt(key, int.parse(value.toString()));
+      } else if (defaultConfig[entry.key] is double) {
+        await prefs.setDouble(key, double.parse(value.toString()));
+      } else {
+        await prefs.setString(key, value.toString());
+      }
     }
   }
 
@@ -121,6 +131,36 @@ class ConfigService {
 
   Future<void> updateConfig(Map<String, dynamic> newConfig) async {
     await _saveConfig(newConfig);
+    
+    // Also update the main app's tracking parameters
+    await _updateTrackingParameters(newConfig);
+  }
+  
+  Future<void> _updateTrackingParameters(Map<String, dynamic> config) async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Update tracking parameters with proper type conversion
+    if (config.containsKey('gpsTimer')) {
+      await prefs.setInt('flutter.gpsTimer', int.parse(config['gpsTimer'].toString()));
+    }
+    if (config.containsKey('uploadTimer')) {
+      await prefs.setInt('flutter.uploadTimer', int.parse(config['uploadTimer'].toString()));
+    }
+    if (config.containsKey('angleThreshold')) {
+      await prefs.setDouble('flutter.angleThreshold', double.parse(config['angleThreshold'].toString()));
+    }
+    if (config.containsKey('overSpeedingThreshold')) {
+      await prefs.setDouble('flutter.overSpeedingThreshold', double.parse(config['overSpeedingThreshold'].toString()));
+    }
+    if (config.containsKey('distanceThreshold')) {
+      await prefs.setDouble('flutter.distanceThreshold', double.parse(config['distanceThreshold'].toString()));
+    }
+    if (config.containsKey('movingTimer')) {
+      await prefs.setInt('flutter.movingTimer', int.parse(config['movingTimer'].toString()));
+    }
+    if (config.containsKey('stopTimer')) {
+      await prefs.setInt('flutter.stopTimer', int.parse(config['stopTimer'].toString()));
+    }
   }
 
   Future<Map<String, dynamic>> fetchDefaultConfigFromServer() async {

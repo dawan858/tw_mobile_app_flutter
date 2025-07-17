@@ -368,9 +368,10 @@ class _GPSTrackerState extends State<GPSTracker> {
   void _updateReason(Position position) {
     final prefs = SharedPreferences.getInstance();
     prefs.then((prefs) {
-      final angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
-      final overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
-      final distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
+      // Handle all possible types for backward compatibility
+      double angleThreshold = _getDoubleValue(prefs, 'flutter.angleThreshold', 45.0);
+      double overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
+      double distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
       
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";
@@ -547,19 +548,98 @@ class _GPSTrackerState extends State<GPSTracker> {
       });
     }
   }
+  
+  // Utility method to clear and reset configuration (for debugging)
+  Future<void> _clearConfiguration() async {
+    try {
+      print('🧹 Clearing configuration...');
+      final prefs = await SharedPreferences.getInstance();
+      
+      // Clear all flutter.* configuration keys
+      await prefs.remove('flutter.angleThreshold');
+      await prefs.remove('flutter.overSpeedingThreshold');
+      await prefs.remove('flutter.distanceThreshold');
+      await prefs.remove('flutter.gpsTimer');
+      await prefs.remove('flutter.uploadTimer');
+      await prefs.remove('flutter.movingTimer');
+      await prefs.remove('flutter.stopTimer');
+      
+      print('✅ Configuration cleared successfully');
+      
+      // Reload configuration with defaults
+      print('🔄 Reloading configuration...');
+      await _loadConfiguration();
+      print('✅ Configuration reloaded');
+    } catch (e) {
+      print('❌ Error clearing configuration: $e');
+    }
+  }
 
   void _updateTrackingParameters(Map<String, dynamic> config) {
     // Update tracking parameters based on configuration
     final prefs = SharedPreferences.getInstance();
-    prefs.then((prefs) {
-      prefs.setInt('flutter.gpsTimer', int.parse(config['gpsTimer'] ?? '5'));
-      prefs.setInt('flutter.uploadTimer', int.parse(config['uploadTimer'] ?? '10'));
-      prefs.setDouble('flutter.angleThreshold', double.parse(config['angleThreshold'] ?? '45.0'));
-      prefs.setDouble('flutter.overSpeedingThreshold', double.parse(config['overSpeedingThreshold'] ?? '60.0'));
-      prefs.setDouble('flutter.distanceThreshold', double.parse(config['distanceThreshold'] ?? '1000.0'));
-      prefs.setInt('flutter.movingTimer', int.parse(config['movingTimer'] ?? '60'));
-      prefs.setInt('flutter.stopTimer', int.parse(config['stopTimer'] ?? '130'));
+    prefs.then((prefs) async {
+      try {
+        print('🔄 Updating tracking parameters with config: $config');
+        
+        // Store values with proper type conversion
+        final gpsTimer = int.parse(config['gpsTimer']?.toString() ?? '5');
+        final uploadTimer = int.parse(config['uploadTimer']?.toString() ?? '10');
+        final angleThreshold = double.parse(config['angleThreshold']?.toString() ?? '45.0');
+        final overSpeedingThreshold = double.parse(config['overSpeedingThreshold']?.toString() ?? '60.0');
+        final distanceThreshold = double.parse(config['distanceThreshold']?.toString() ?? '1000.0');
+        final movingTimer = int.parse(config['movingTimer']?.toString() ?? '60');
+        final stopTimer = int.parse(config['stopTimer']?.toString() ?? '130');
+        
+        // Store with correct types
+        await prefs.setInt('flutter.gpsTimer', gpsTimer);
+        await prefs.setInt('flutter.uploadTimer', uploadTimer);
+        await prefs.setDouble('flutter.angleThreshold', angleThreshold);
+        await prefs.setDouble('flutter.overSpeedingThreshold', overSpeedingThreshold);
+        await prefs.setDouble('flutter.distanceThreshold', distanceThreshold);
+        await prefs.setInt('flutter.movingTimer', movingTimer);
+        await prefs.setInt('flutter.stopTimer', stopTimer);
+        
+        print('✅ Tracking parameters updated successfully:');
+        print('   - gpsTimer: $gpsTimer (int)');
+        print('   - uploadTimer: $uploadTimer (int)');
+        print('   - angleThreshold: $angleThreshold (double)');
+        print('   - overSpeedingThreshold: $overSpeedingThreshold (double)');
+        print('   - distanceThreshold: $distanceThreshold (double)');
+        print('   - movingTimer: $movingTimer (int)');
+        print('   - stopTimer: $stopTimer (int)');
+        
+      } catch (e) {
+        print('❌ Error updating tracking parameters: $e');
+      }
     });
+  }
+  
+  double _getDoubleValue(SharedPreferences prefs, String key, double defaultValue) {
+    try {
+      // Try to get as double first
+      final doubleValue = prefs.getDouble(key);
+      if (doubleValue != null) {
+        return doubleValue;
+      }
+      
+      // Try to get as int and convert
+      final intValue = prefs.getInt(key);
+      if (intValue != null) {
+        return intValue.toDouble();
+      }
+      
+      // Try to get as string and parse
+      final stringValue = prefs.getString(key);
+      if (stringValue != null) {
+        return double.tryParse(stringValue) ?? defaultValue;
+      }
+      
+      return defaultValue;
+    } catch (e) {
+      print('Error getting double value for $key: $e');
+      return defaultValue;
+    }
   }
 
   // Proper app initialization sequence
@@ -583,13 +663,16 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Step 4: Check device admin permission
     await _checkDeviceAdminPermission();
     
-    // Step 5: Get satellite data
+    // Step 5: Clear and reload configuration to ensure proper types
+    await _clearConfiguration();
+    
+    // Step 6: Get satellite data
     await _getSatelliteData();
     
-    // Step 6: Signal to native side that app is ready
+    // Step 7: Signal to native side that app is ready
     await _signalAppReady();
     
-    // Step 7: Check service status and start tracking
+    // Step 8: Check service status and start tracking
     await _checkServiceStatus();
     _startTracking();
     

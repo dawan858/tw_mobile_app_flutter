@@ -283,7 +283,7 @@ void onStart(ServiceInstance service) async {
         'reason': reason,
         'versionNo': 'v1.0.0', // Placeholder
         'sync_status': 0,
-        'created_at':  DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
+        'createAt':  DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
       };
 
       await SyncService().queueLocationData(data);
@@ -343,23 +343,49 @@ Future<void> _queueLocationData(Position position, String reason, double accurat
 }
 
 // Load configuration from SharedPreferences
-Future<void> loadConfiguration() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Load configuration values with defaults
-    gpsTimer = prefs.getInt('flutter.gpsTimer') ?? 5;
-    uploadTimer = prefs.getInt('flutter.uploadTimer') ?? 10;
-    angleThreshold = prefs.getDouble('flutter.angleThreshold') ?? 45.0;
-    overSpeedingThreshold = prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0;
-    distanceThreshold = prefs.getDouble('flutter.distanceThreshold') ?? 1000.0;
-    movingTimer = prefs.getInt('flutter.movingTimer') ?? 60;
-    stopTimer = prefs.getInt('flutter.stopTimer') ?? 130;
+  Future<void> loadConfiguration() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // Load configuration values with defaults and handle type conversion
+      gpsTimer = _getIntValue(prefs, 'flutter.gpsTimer', 5);
+      uploadTimer = _getIntValue(prefs, 'flutter.uploadTimer', 10);
+      angleThreshold = _getDoubleValue(prefs, 'flutter.angleThreshold', 45.0);
+      overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
+      distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
+      movingTimer = _getIntValue(prefs, 'flutter.movingTimer', 60);
+      stopTimer = _getIntValue(prefs, 'flutter.stopTimer', 130);
 
-    print('Enhanced configuration loaded:');
-    print('GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
-    print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
-  } catch (e) {
-    print('Error loading configuration: $e');
+      print('Enhanced configuration loaded:');
+      print('GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
+      print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
+    } catch (e) {
+      print('Error loading configuration: $e');
+    }
   }
-}
+  
+  int _getIntValue(SharedPreferences prefs, String key, int defaultValue) {
+    try {
+      return prefs.getInt(key) ?? defaultValue;
+    } catch (e) {
+      // If getInt fails, try to parse as string
+      final stringValue = prefs.getString(key);
+      if (stringValue != null) {
+        return int.tryParse(stringValue) ?? defaultValue;
+      }
+      return defaultValue;
+    }
+  }
+  
+  double _getDoubleValue(SharedPreferences prefs, String key, double defaultValue) {
+    try {
+      return prefs.getDouble(key) ?? defaultValue;
+    } catch (e) {
+      // If getDouble fails, try to parse as string
+      final stringValue = prefs.getString(key);
+      if (stringValue != null) {
+        return double.tryParse(stringValue) ?? defaultValue;
+      }
+      return defaultValue;
+    }
+  }

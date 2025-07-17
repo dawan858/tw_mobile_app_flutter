@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'package:intl/intl.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
@@ -25,7 +26,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'location_tracking.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -53,7 +54,7 @@ class DatabaseHelper {
         reason TEXT,
         versionNo TEXT,
         sync_status INTEGER DEFAULT 0,
-        created_at INTEGER
+        createAt TEXT
       )
     ''');
 
@@ -63,7 +64,7 @@ class DatabaseHelper {
     ''');
     
     await db.execute('''
-      CREATE INDEX idx_created_at ON location_data(created_at)
+      CREATE INDEX idx_createAt ON location_data(createAt)
     ''');
 
     await db.execute('''
@@ -76,7 +77,7 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         main TEXT NOT NULL,
         details TEXT,
-        created_at INTEGER
+        created_at TEXT
       )
     ''');
 
@@ -89,7 +90,7 @@ class DatabaseHelper {
         failed_records INTEGER,
         last_sync_time INTEGER,
         sync_duration INTEGER,
-        created_at INTEGER
+        created_at TEXT
       )
     ''');
 
@@ -106,7 +107,7 @@ class DatabaseHelper {
           CREATE INDEX IF NOT EXISTS idx_sync_status ON location_data(sync_status)
         ''');
         await db.execute('''
-          CREATE INDEX IF NOT EXISTS idx_created_at ON location_data(created_at)
+          CREATE INDEX IF NOT EXISTS idx_createAt ON location_data(createAt)
         ''');
         await db.execute('''
           CREATE INDEX IF NOT EXISTS idx_timestamp ON location_data(timestamp)
@@ -120,14 +121,14 @@ class DatabaseHelper {
     if (oldVersion < 3) {
       // Create exception logs table if it doesn't exist
       try {
-        await db.execute('''
-          CREATE TABLE IF NOT EXISTS exception_logs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            main TEXT NOT NULL,
-            details TEXT,
-            created_at INTEGER
-          )
-        ''');
+              await db.execute('''
+        CREATE TABLE IF NOT EXISTS exception_logs(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          main TEXT NOT NULL,
+          details TEXT,
+          created_at TEXT
+        )
+      ''');
         print('Created exception_logs table for version 3');
       } catch (e) {
         print('Error creating exception_logs table: $e');
@@ -135,20 +136,81 @@ class DatabaseHelper {
 
       // Create sync stats table if it doesn't exist
       try {
-        await db.execute('''
-          CREATE TABLE IF NOT EXISTS sync_stats(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            total_records INTEGER,
-            synced_records INTEGER,
-            failed_records INTEGER,
-            last_sync_time INTEGER,
-            sync_duration INTEGER,
-            created_at INTEGER
-          )
-        ''');
+              await db.execute('''
+        CREATE TABLE IF NOT EXISTS sync_stats(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          total_records INTEGER,
+          synced_records INTEGER,
+          failed_records INTEGER,
+          last_sync_time INTEGER,
+          sync_duration INTEGER,
+          created_at TEXT
+        )
+      ''');
         print('Created sync_stats table for version 3');
       } catch (e) {
         print('Error creating sync_stats table: $e');
+      }
+    }
+
+    if (oldVersion < 4) {
+      // Migrate created_at to createAt (camelCase)
+      try {
+        // Check if created_at column exists
+        final columns = await db.rawQuery("PRAGMA table_info(location_data)");
+        final hasCreatedAt = columns.any((col) => col['name'] == 'created_at');
+        
+        if (hasCreatedAt) {
+          // Add createAt column
+          await db.execute('ALTER TABLE location_data ADD COLUMN createAt TEXT');
+          
+          // Copy data from created_at to createAt
+          await db.execute('UPDATE location_data SET createAt = created_at');
+          
+          // Drop the old created_at column (SQLite doesn't support DROP COLUMN directly)
+          // We'll create a new table with the correct schema
+          await db.execute('''
+            CREATE TABLE location_data_new(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              latitude REAL NOT NULL,
+              longitude REAL NOT NULL,
+              accuracy REAL,
+              altitude REAL,
+              speed REAL,
+              bearing REAL,
+              imei TEXT,
+              timestamp TEXT,
+              deviceRDT TEXT,
+              gmtSettings TEXT,
+              igStatus INTEGER,
+              localPrimaryId INTEGER,
+              name TEXT,
+              phoneNo TEXT,
+              provider TEXT,
+              reason TEXT,
+              versionNo TEXT,
+              sync_status INTEGER DEFAULT 0,
+              createAt TEXT
+            )
+          ''');
+          
+          // Copy all data to new table
+          await db.execute('''
+            INSERT INTO location_data_new 
+            SELECT id, latitude, longitude, accuracy, altitude, speed, bearing, 
+                   imei, timestamp, deviceRDT, gmtSettings, igStatus, localPrimaryId,
+                   name, phoneNo, provider, reason, versionNo, sync_status, createAt
+            FROM location_data
+          ''');
+          
+          // Drop old table and rename new table
+          await db.execute('DROP TABLE location_data');
+          await db.execute('ALTER TABLE location_data_new RENAME TO location_data');
+          
+          print('Successfully migrated created_at to createAt for version 4');
+        }
+      } catch (e) {
+        print('Error migrating created_at to createAt: $e');
       }
     }
   }
@@ -177,7 +239,7 @@ class DatabaseHelper {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           main TEXT NOT NULL,
           details TEXT,
-          created_at INTEGER
+          created_at TEXT
         )
       ''');
       
@@ -190,7 +252,7 @@ class DatabaseHelper {
           failed_records INTEGER,
           last_sync_time INTEGER,
           sync_duration INTEGER,
-          created_at INTEGER
+          created_at TEXT
         )
       ''');
       
@@ -199,7 +261,7 @@ class DatabaseHelper {
         CREATE INDEX IF NOT EXISTS idx_sync_status ON location_data(sync_status)
       ''');
       await db.execute('''
-        CREATE INDEX IF NOT EXISTS idx_created_at ON location_data(created_at)
+        CREATE INDEX IF NOT EXISTS idx_createAt ON location_data(createAt)
       ''');
       await db.execute('''
         CREATE INDEX IF NOT EXISTS idx_timestamp ON location_data(timestamp)
@@ -214,7 +276,8 @@ class DatabaseHelper {
   Future<int> insertLocationData(Map<String, dynamic> data) async {
     try {
       final db = await database;
-      data['created_at'] = DateTime.now().millisecondsSinceEpoch;
+      // Use createAt (camelCase) for database consistency
+      data['createAt'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now());
       
       // Insert the new record
       final id = await db.insert('location_data', data);
@@ -246,7 +309,7 @@ class DatabaseHelper {
         // First, try to delete only synced records (keep unsynced data)
         final syncedDeleteCount = await db.delete(
           'location_data',
-          where: 'sync_status = 1 AND id IN (SELECT id FROM location_data WHERE sync_status = 1 ORDER BY created_at ASC LIMIT ?)',
+          where: 'sync_status = 1 AND id IN (SELECT id FROM location_data WHERE sync_status = 1 ORDER BY createAt ASC LIMIT ?)',
           whereArgs: [recordsToDelete],
         );
         
@@ -255,7 +318,7 @@ class DatabaseHelper {
           final remainingToDelete = recordsToDelete - syncedDeleteCount;
           await db.delete(
             'location_data',
-            where: 'id IN (SELECT id FROM location_data ORDER BY created_at ASC LIMIT ?)',
+            where: 'id IN (SELECT id FROM location_data ORDER BY createAt ASC LIMIT ?)',
             whereArgs: [remainingToDelete],
           );
         }
@@ -275,7 +338,7 @@ class DatabaseHelper {
         'location_data',
         where: 'sync_status = ?',
         whereArgs: [0],
-        orderBy: 'created_at ASC',
+        orderBy: 'createAt ASC',
         limit: limit,
       );
     } catch (e) {
@@ -290,7 +353,7 @@ class DatabaseHelper {
       final db = await database;
       return await db.query(
         'location_data',
-        orderBy: 'created_at DESC',
+        orderBy: 'createAt DESC',
         limit: limit,
         offset: offset,
       );
@@ -366,7 +429,7 @@ class DatabaseHelper {
       // Keep only the most recent synced records
       final deletedCount = await db.delete(
         'location_data',
-        where: 'sync_status = 1 AND id NOT IN (SELECT id FROM location_data WHERE sync_status = 1 ORDER BY created_at DESC LIMIT ?)',
+        where: 'sync_status = 1 AND id NOT IN (SELECT id FROM location_data WHERE sync_status = 1 ORDER BY createAt DESC LIMIT ?)',
         whereArgs: [keepRecentCount],
       );
       
@@ -385,7 +448,7 @@ class DatabaseHelper {
         await db.insert('exception_logs', {
           'main': main,
           'details': details,
-          'created_at': DateTime.now().millisecondsSinceEpoch,
+          'created_at': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
         });
       } else {
         print('Exception logs table does not exist, skipping log: $main');
@@ -459,8 +522,8 @@ class DatabaseHelper {
       final unsyncedCountResult = await db.rawQuery('SELECT COUNT(*) as count FROM location_data WHERE sync_status = 0');
       final syncedCountResult = await db.rawQuery('SELECT COUNT(*) as count FROM location_data WHERE sync_status = 1');
       
-      final oldestResult = await db.rawQuery('SELECT MIN(created_at) as oldest FROM location_data');
-      final newestResult = await db.rawQuery('SELECT MAX(created_at) as newest FROM location_data');
+      final oldestResult = await db.rawQuery('SELECT MIN(createAt) as oldest FROM location_data');
+      final newestResult = await db.rawQuery('SELECT MAX(createAt) as newest FROM location_data');
       
       // Check if exception_logs table exists before querying
       int exceptionLogsCount = 0;

@@ -19,12 +19,22 @@ class SyncService {
   bool _isSyncing = false;
   String? _lastError;
   int _retryCount = 0;
-  static const String serverUrl = 'http://121.91.56.50:3000/api/location';
+  static const String serverUrl = 'http://twca.trackingworld.com.pk:3000/api/location';
   int _syncIntervalSeconds = 30; // Default sync interval
   static const int maxRetries = 3;
   static const Duration defaultSyncInterval = Duration(minutes: 1);
   static const Duration retryDelay = Duration(seconds: 30);
   int _batchSize = 50; // Sync in smaller batches
+  
+  // NEW: Phase-based retry logic for server downtime
+  int _consecutiveFailures = 0;
+  int _currentPhase = 0;
+  DateTime? _lastServerDownTime;
+  bool _isServerDown = false;
+  
+  // Phase intervals in minutes
+  static const List<int> _retryPhases = [5, 15, 30, 45, 60, 240, 480]; // 5min, 15min, 30min, 45min, 1hr, 4hr, 8hr
+  static const int _maxPhases = 7;
   
   // REMOVED: Method channels since we're using SharedPreferences instead
   // static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
@@ -55,6 +65,188 @@ class SyncService {
     } on SocketException catch (_) {
       return false;
     }
+  }
+
+  // NEW: Server health check
+  Future<bool> _isServerHealthy() async {
+    try {
+      print('🔍 Testing server health at: ${serverUrl.replaceAll('/api/location', '/health')}');
+      
+      final response = await http.get(
+        Uri.parse(serverUrl.replaceAll('/api/location', '/health')),
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'TrackingWorld-Mobile-App',
+        },
+      ).timeout(const Duration(seconds: 10));
+      
+      print('Health check response: ${response.statusCode} - ${response.body}');
+      
+      // Accept both 200 and 404 (if health endpoint doesn't exist, try the main endpoint)
+      if (response.statusCode == 200) {
+        return true;
+      } else if (response.statusCode == 404) {
+        // Health endpoint doesn't exist, try the main endpoint
+        print('Health endpoint not found, testing main endpoint...');
+        return await _testMainEndpoint();
+      }
+      
+      return false;
+    } catch (e) {
+      print('Server health check failed: $e');
+      // If health check fails, try the main endpoint as fallback
+      return await _testMainEndpoint();
+    }
+  }
+
+  // NEW: Test main endpoint as fallback
+  Future<bool> _testMainEndpoint() async {
+    try {
+      print('🔍 Testing main endpoint at: $serverUrl');
+      
+      final response = await http.get(
+        Uri.parse(serverUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'TrackingWorld-Mobile-App',
+        },
+      ).timeout(const Duration(seconds: 10));
+      
+      print('Main endpoint response: ${response.statusCode}');
+      
+      // Accept 200, 201, 404, 405 (GET not allowed but server is reachable)
+      return response.statusCode == 200 || 
+             response.statusCode == 201 || 
+             response.statusCode == 404 || 
+             response.statusCode == 405;
+    } catch (e) {
+      print('Main endpoint test failed: $e');
+      return false;
+    }
+  }
+
+  // NEW: Get current retry interval based on phase
+  Duration _getCurrentRetryInterval() {
+    if (_currentPhase >= _retryPhases.length) {
+      return Duration(minutes: _retryPhases.last); // Use last phase (8 hours)
+    }
+    return Duration(minutes: _retryPhases[_currentPhase]);
+  }
+
+  // NEW: Advance to next phase
+  void _advancePhase() {
+    if (_currentPhase < _maxPhases - 1) {
+      _currentPhase++;
+      print('🔄 Advancing to retry phase $_currentPhase: ${_retryPhases[_currentPhase]} minutes');
+    }
+  }
+
+  // NEW: Reset phases on successful sync
+  void _resetPhases() {
+    print('🔄 Resetting phases - current: phase $_currentPhase, isServerDown: $_isServerDown');
+    
+    if (_currentPhase > 0 || _isServerDown) {
+      print('✅ Server back online! Resetting from phase $_currentPhase to 0');
+      _currentPhase = 0;
+      _consecutiveFailures = 0;
+      _isServerDown = false;
+      _lastServerDownTime = null;
+      print('✅ Phase reset complete - new state: phase $_currentPhase, isServerDown: $_isServerDown');
+    } else {
+      print('ℹ️ Server already in normal state, no reset needed');
+    }
+  }
+
+  // NEW: Handle server down scenario
+  Future<void> _handleServerDown() async {
+    if (!_isServerDown) {
+      _isServerDown = true;
+      _lastServerDownTime = DateTime.now();
+      print('🚨 SERVER DOWN DETECTED - Switching to phase-based retry mode');
+      
+      await _dbHelper.insertExceptionLog(
+        main: 'Server Down',
+        details: 'Server unavailable, switching to phase $_currentPhase (${_retryPhases[_currentPhase]} min intervals)',
+      );
+    }
+    
+    _consecutiveFailures++;
+    _advancePhase();
+    
+    final nextInterval = _getCurrentRetryInterval();
+    print('⏰ Next retry in ${nextInterval.inMinutes} minutes (phase $_currentPhase)');
+    
+    // Log the phase change
+    await _dbHelper.insertExceptionLog(
+      main: 'Retry Phase Change',
+      details: 'Phase $_currentPhase: ${nextInterval.inMinutes} min intervals, consecutive failures: $_consecutiveFailures',
+    );
+  }
+
+  // NEW: Get prioritized unsynced data (critical data first)
+  Future<List<Map<String, dynamic>>> _getPrioritizedUnsyncedData({int limit = 50}) async {
+    try {
+      final db = await _dbHelper.database;
+      
+      // Priority 1: High-speed events (>60 km/h) - most critical
+      var highSpeedData = await db.rawQuery('''
+        SELECT * FROM location_data 
+        WHERE sync_status = 0 AND speed > 16.67 
+        ORDER BY createAt ASC 
+        LIMIT ?
+      ''', [limit ~/ 3]);
+      
+      // Priority 2: Distance-based events (>1000m) - important
+      var distanceData = await db.rawQuery('''
+        SELECT * FROM location_data 
+        WHERE sync_status = 0 AND reason = 'Distance' 
+        ORDER BY createAt ASC 
+        LIMIT ?
+      ''', [limit ~/ 3]);
+      
+      // Priority 3: Regular timer-based events - normal priority
+      var regularData = await db.rawQuery('''
+        SELECT * FROM location_data 
+        WHERE sync_status = 0 AND reason = 'Timer' 
+        ORDER BY createAt ASC 
+        LIMIT ?
+      ''', [limit ~/ 3]);
+      
+      // Combine and sort by priority
+      final allData = <Map<String, dynamic>>[];
+      allData.addAll(highSpeedData);
+      allData.addAll(distanceData);
+      allData.addAll(regularData);
+      
+      // Remove duplicates and limit
+      final uniqueData = <Map<String, dynamic>>[];
+      final seenIds = <int>{};
+      
+      for (var data in allData) {
+        if (uniqueData.length >= limit) break;
+        if (!seenIds.contains(data['id'])) {
+          seenIds.add(data['id']);
+          uniqueData.add(data);
+        }
+      }
+      
+      print('📊 Prioritized data: ${highSpeedData.length} high-speed, ${distanceData.length} distance, ${regularData.length} regular');
+      return uniqueData;
+      
+    } catch (e) {
+      print('Error getting prioritized data: $e');
+      // Fallback to regular query
+      return await _dbHelper.getUnsyncedData(limit: limit);
+    }
+  }
+
+  // NEW: Adaptive batch size based on server status
+  int _getAdaptiveBatchSize() {
+    if (_isServerDown) {
+      // Smaller batches when server is down to reduce load
+      return _batchSize ~/ 2;
+    }
+    return _batchSize;
   }
 
   Future<void> testServerConnectivity() async {
@@ -136,7 +328,7 @@ class SyncService {
     }
 
     _isSyncing = true;
-    print('Starting sync process...');
+    print('Starting sync process... (Phase: $_currentPhase, Server Down: $_isServerDown)');
 
     try {
       // Check internet connectivity
@@ -145,17 +337,30 @@ class SyncService {
         return;
       }
 
-      // No longer updating unsynced records with current igStatus.
-      // Each record will be sent with the igStatus it was created with.
-      print('ℹ️ Syncing records with their original igStatus.');
+      // NEW: Check server health before attempting sync
+      if (_isServerDown) {
+        print('🔍 Checking server health before retry...');
+        final isHealthy = await _isServerHealthy();
+        if (isHealthy) {
+          print('✅ Server is back online!');
+          _resetPhases();
+        } else {
+          print('❌ Server still down, continuing with phase $_currentPhase');
+        }
+      }
 
-      final unsyncedData = await _dbHelper.getUnsyncedData(limit: _batchSize);
+      // NEW: Use prioritized data when server is down
+      final adaptiveBatchSize = _getAdaptiveBatchSize();
+      final unsyncedData = _isServerDown 
+          ? await _getPrioritizedUnsyncedData(limit: adaptiveBatchSize)
+          : await _dbHelper.getUnsyncedData(limit: adaptiveBatchSize);
+          
       if (unsyncedData.isEmpty) {
         print('No unsynced data to upload');
         return;
       }
 
-      print('Found ${unsyncedData.length} records to sync');
+      print('Found ${unsyncedData.length} records to sync (batch size: $adaptiveBatchSize)');
       final List<int> syncedIds = [];
       int successCount = 0;
       int failureCount = 0;
@@ -167,11 +372,32 @@ class SyncService {
           dataToSend.remove('id');
           dataToSend.remove('sync_status');
           
-          // Convert createdAt from milliseconds to the same format as deviceRDT
+          // Convert createdAt to createAt (camelCase) and format properly
           if (dataToSend.containsKey('created_at')) {
-            final createdAtMillis = dataToSend['created_at'] as int;
-            final createdAtDateTime = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
-            dataToSend['created_at'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(createdAtDateTime);
+            DateTime createdAtDateTime;
+            
+            // Handle both int (milliseconds) and String (formatted) cases
+            if (dataToSend['created_at'] is int) {
+              final createdAtMillis = dataToSend['created_at'] as int;
+              createdAtDateTime = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
+            } else if (dataToSend['created_at'] is String) {
+              // If it's already a formatted string, try to parse it
+              try {
+                createdAtDateTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(dataToSend['created_at'] as String);
+              } catch (e) {
+                // If parsing fails, use current time as fallback
+                print('Warning: Could not parse created_at string: ${dataToSend['created_at']}, using current time');
+                createdAtDateTime = DateTime.now();
+              }
+            } else {
+              // Fallback to current time
+              print('Warning: created_at is neither int nor String, using current time');
+              createdAtDateTime = DateTime.now();
+            }
+            
+            // Remove the snake_case key and add camelCase key
+            dataToSend.remove('created_at');
+            dataToSend['createAt'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(createdAtDateTime);
           }
 
           print('=== SENDING DATA TO SERVER ===');
@@ -181,9 +407,12 @@ class SyncService {
           print('Data to send: ${jsonEncode(dataToSend)}');
 
           bool syncSuccess = false;
-          for (int retry = 0; retry < maxRetries; retry++) {
+          // NEW: Adaptive retry logic based on server status
+          final maxRetriesForRecord = _isServerDown ? 2 : maxRetries; // Fewer retries when server is down
+          
+          for (int retry = 0; retry < maxRetriesForRecord; retry++) {
             try {
-              print('Attempt ${retry + 1}/$maxRetries for record ${data['id']}');
+              print('Attempt ${retry + 1}/$maxRetriesForRecord for record ${data['id']} (Phase: $_currentPhase)');
               
               final response = await http.post(
                 Uri.parse(serverUrl),
@@ -207,33 +436,36 @@ class SyncService {
               } else {
                 print('❌ Server error for record ${data['id']}: ${response.statusCode}');
                 print('Error response body: ${response.body}');
-                if (retry == maxRetries - 1) {
+                if (retry == maxRetriesForRecord - 1) {
                   failureCount++;
                   await _dbHelper.insertExceptionLog(
                     main: 'Sync Server Error',
-                    details: 'Record ID: ${data['id']}, Status: ${response.statusCode}, Body: ${response.body}',
+                    details: 'Record ID: ${data['id']}, Status: ${response.statusCode}, Body: ${response.body}, Phase: $_currentPhase',
                   );
                 }
               }
             } catch (e) {
               print('❌ Network error for record ${data['id']} (attempt ${retry + 1}): $e');
-              if (retry == maxRetries - 1) {
+              if (retry == maxRetriesForRecord - 1) {
                 failureCount++;
                 await _dbHelper.insertExceptionLog(
                   main: 'Sync Network Error',
-                  details: 'Record ID: ${data['id']}, Error: $e',
+                  details: 'Record ID: ${data['id']}, Error: $e, Phase: $_currentPhase',
                 );
               }
               
-              // Wait before retrying
-              if (retry < maxRetries - 1) {
-                await Future.delayed(Duration(seconds: (retry + 1) * 2));
+              // NEW: Adaptive delay based on phase
+              if (retry < maxRetriesForRecord - 1) {
+                final delay = _isServerDown ? Duration(seconds: 5) : Duration(seconds: (retry + 1) * 2);
+                await Future.delayed(delay);
               }
             }
           }
 
+          // NEW: Continue processing other records even if this one fails
           if (!syncSuccess) {
-            break; // Stop syncing on persistent failures
+            print('⚠️ Record ${data['id']} failed to sync, continuing with next record...');
+            // Don't break - continue with other records
           }
 
         } catch (e) {
@@ -258,6 +490,15 @@ class SyncService {
 
       print('Sync completed: $successCount successful, $failureCount failed');
 
+      // NEW: Handle phase transitions based on sync results
+      if (failureCount > 0 && successCount == 0) {
+        // All records failed - advance to next phase
+        await _handleServerDown();
+      } else if (successCount > 0) {
+        // Some or all records succeeded - reset phases
+        _resetPhases();
+      }
+
       // Get updated stats
       final stats = await _dbHelper.getDatabaseStats();
       print('Database stats: ${stats['totalRecords']} total, ${stats['unsyncedRecords']} unsynced');
@@ -268,6 +509,11 @@ class SyncService {
         main: 'Sync Process Error',
         details: e.toString(),
       );
+      
+      // NEW: Handle sync process errors
+      if (!_isServerDown) {
+        await _handleServerDown();
+      }
     } finally {
       _isSyncing = false;
       // REMOVED: CarPowerService.stopMonitoring() call
@@ -300,8 +546,20 @@ class SyncService {
     // Initial sync
     _startSync();
     
-    // Periodic sync
-    _syncTimer = Timer.periodic(Duration(seconds: _syncIntervalSeconds), (timer) {
+    // NEW: Adaptive periodic sync based on server status
+    _syncTimer = Timer.periodic(Duration(seconds: _syncIntervalSeconds), (timer) async {
+      // Check if we need to adjust interval based on phase
+      if (_isServerDown) {
+        final phaseInterval = _getCurrentRetryInterval();
+        if (phaseInterval.inSeconds != _syncIntervalSeconds) {
+          print('🔄 Adjusting sync interval to ${phaseInterval.inMinutes} minutes (phase $_currentPhase)');
+          _syncIntervalSeconds = phaseInterval.inSeconds;
+          timer.cancel();
+          _syncTimer = Timer.periodic(phaseInterval, (newTimer) {
+            _startSync();
+          });
+        }
+      }
       _startSync();
     });
   }
@@ -398,6 +656,12 @@ class SyncService {
       print('Fallback to SharedPreferences for stats - igStatus: $currentIgStatus');
     }
     
+    // NEW: Add phase-based retry information
+    final currentPhaseInterval = _getCurrentRetryInterval();
+    final nextPhaseInterval = _currentPhase < _retryPhases.length - 1 
+        ? Duration(minutes: _retryPhases[_currentPhase + 1])
+        : currentPhaseInterval;
+    
     return {
       ...dbStats,
       'isSyncing': _isSyncing,
@@ -406,6 +670,16 @@ class SyncService {
       'currentIgStatus': currentIgStatus,
       'igStatusLastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
       'igStatusSource': 'BackgroundService (direct)',
+      // NEW: Phase-based retry stats
+      'isServerDown': _isServerDown,
+      'currentPhase': _currentPhase,
+      'consecutiveFailures': _consecutiveFailures,
+      'currentPhaseInterval': '${currentPhaseInterval.inMinutes} minutes',
+      'nextPhaseInterval': '${nextPhaseInterval.inMinutes} minutes',
+      'lastServerDownTime': _lastServerDownTime?.toIso8601String(),
+      'serverDownDuration': _lastServerDownTime != null 
+          ? '${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes'
+          : null,
     };
   }
 
@@ -431,6 +705,106 @@ class SyncService {
 
   Future<void> maintainRecordLimit() async {
     await _dbHelper.forceMaintainRecordLimit();
+  }
+
+  // NEW: Manual phase reset for testing/debugging
+  Future<void> resetPhaseSystem() async {
+    print('🔄 Manually resetting phase system...');
+    _currentPhase = 0;
+    _consecutiveFailures = 0;
+    _isServerDown = false;
+    _lastServerDownTime = null;
+    
+    await _dbHelper.insertExceptionLog(
+      main: 'Manual Phase Reset',
+      details: 'Phase system reset by user/admin',
+    );
+    
+    print('✅ Phase system reset to normal mode');
+  }
+
+  // NEW: Force server status check and reset
+  Future<void> forceServerStatusCheck() async {
+    print('🔄 Forcing server status check...');
+    await checkServerStatus();
+    print('✅ Server status check completed');
+  }
+
+  // NEW: Force advance to specific phase for testing
+  Future<void> forcePhase(int phase) async {
+    if (phase >= 0 && phase < _retryPhases.length) {
+      print('🔄 Forcing phase to $phase (${_retryPhases[phase]} minutes)');
+      _currentPhase = phase;
+      _isServerDown = true;
+      _lastServerDownTime = DateTime.now();
+      
+      await _dbHelper.insertExceptionLog(
+        main: 'Force Phase',
+        details: 'Phase forced to $phase (${_retryPhases[phase]} minutes) for testing',
+      );
+      
+      print('✅ Phase forced to $phase');
+    } else {
+      print('❌ Invalid phase: $phase (must be 0-${_retryPhases.length - 1})');
+    }
+  }
+
+  // NEW: Force server down detection for testing
+  Future<void> forceServerDownDetection() async {
+    print('🔄 Forcing server down detection for testing...');
+    _isServerDown = true;
+    _currentPhase = 0;
+    _consecutiveFailures = 1;
+    _lastServerDownTime = DateTime.now();
+    
+    await _dbHelper.insertExceptionLog(
+      main: 'Force Server Down Detection',
+      details: 'Server down detection forced for testing purposes',
+    );
+    
+    print('✅ Server down detection forced');
+  }
+
+  // NEW: Check if server is actually down by testing connectivity
+  Future<bool> checkServerStatus() async {
+    try {
+      print('🔍 === CHECKING SERVER STATUS ===');
+      print('Current state - isServerDown: $_isServerDown, phase: $_currentPhase');
+      
+      // First check internet connectivity
+      if (!await _hasInternetConnection()) {
+        print('❌ No internet connection available');
+        return false;
+      }
+      
+      // Then check server health
+      final isHealthy = await _isServerHealthy();
+      
+      if (!isHealthy) {
+        print('❌ Server health check failed - server appears to be down');
+        if (!_isServerDown) {
+          await _handleServerDown();
+        }
+        return false;
+      } else {
+        print('✅ Server is healthy');
+        // Always reset phases if server is healthy, regardless of current state
+        if (_isServerDown || _currentPhase > 0) {
+          print('🔄 Resetting server status from down to healthy...');
+          _resetPhases();
+          print('✅ Server status reset to normal mode - isServerDown: $_isServerDown, phase: $_currentPhase');
+        } else {
+          print('✅ Server already in healthy state');
+        }
+        return true;
+      }
+    } catch (e) {
+      print('❌ Error checking server status: $e');
+      if (!_isServerDown) {
+        await _handleServerDown();
+      }
+      return false;
+    }
   }
 
   // NEW METHOD: Get current ACC state (for debugging/monitoring)

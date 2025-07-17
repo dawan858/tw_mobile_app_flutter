@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'package:tracking_world/configuration_screen.dart';
 import 'live_status_screen.dart';
 import 'pending_data_screen.dart';
 import 'exception_logs_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'services/sync_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -14,11 +16,23 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   String _appVersion = '';
+  final SyncService _syncService = SyncService();
+  bool _isBackendDown = false;
+  bool _isSyncing = false;
+  Timer? _statusTimer;
 
   @override
   void initState() {
     super.initState();
     _loadAppVersion();
+    _loadBackendStatus();
+    _startStatusMonitoring();
+  }
+
+  @override
+  void dispose() {
+    _statusTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadAppVersion() async {
@@ -27,6 +41,165 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _appVersion = 'v${info.version}';
     });
   }
+
+  Future<void> _loadBackendStatus() async {
+    try {
+      print('🔄 Loading backend status...');
+      
+      // Check server status to ensure accurate detection
+      final serverHealthy = await _syncService.checkServerStatus();
+      
+      final stats = await _syncService.getSyncStats();
+      final newIsBackendDown = stats['isServerDown'] ?? false;
+      final newIsSyncing = stats['isSyncing'] ?? false;
+      
+      print('Server health check result: $serverHealthy');
+      print('Stats - isServerDown: $newIsBackendDown, isSyncing: $newIsSyncing');
+      
+      setState(() {
+        _isBackendDown = newIsBackendDown;
+        _isSyncing = newIsSyncing;
+      });
+      
+      print('✅ Backend status updated - isDown: $_isBackendDown');
+    } catch (e) {
+      print('❌ Error loading backend status: $e');
+    }
+  }
+
+  void _startStatusMonitoring() {
+    // Update status every 30 seconds
+    _statusTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _loadBackendStatus();
+    });
+  }
+
+  Future<void> _manualSyncBackend() async {
+    if (_isSyncing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sync already in progress...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      // Show loading dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text('Syncing Backend'),
+            content: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Attempting to sync with backend...'),
+              ],
+            ),
+          );
+        },
+      );
+
+      // Force sync with debug
+      await _syncService.forceSyncWithDebug();
+      
+      // Reload status
+      await _loadBackendStatus();
+
+      // Close loading dialog
+      Navigator.of(context).pop();
+
+      // Show result
+      if (!_isBackendDown) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Backend sync successful!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+              } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Backend still down. Retry will be attempted automatically.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+    } catch (e) {
+      // Close loading dialog
+      Navigator.of(context).pop();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Sync failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() {
+        _isSyncing = false;
+      });
+    }
+  }
+
+  Future<void> _resetPhaseSystem() async {
+    try {
+      await _syncService.resetPhaseSystem();
+      await _loadBackendStatus();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ Phase system reset to normal mode'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Reset failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _forceServerStatusCheck() async {
+    try {
+      print('🔄 Force server status check requested...');
+      
+      await _syncService.forceServerStatusCheck();
+      await _loadBackendStatus();
+      
+      final message = _isBackendDown 
+          ? '⚠️ Server is currently down'
+          : '✅ Server is healthy';
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: _isBackendDown ? Colors.orange : Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Status check failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -116,6 +289,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                           SizedBox(height: verticalSpacing),
+                          
+                          // NEW: Backend Status Card (only show when backend is down)
+                          if (_isBackendDown) ...[
+                            Container(
+                              width: double.infinity,
+                              padding: EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.shade50,
+                                borderRadius: BorderRadius.circular(borderRadius),
+                                border: Border.all(color: Colors.orange.shade200),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.warning, color: Colors.orange.shade700, size: 20),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Backend Status',
+                                        style: TextStyle(
+                                          fontSize: buttonFontSize,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.orange.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    'Server is currently down',
+                                    style: TextStyle(
+                                      fontSize: buttonFontSize * 0.9,
+                                      color: Colors.orange.shade600,
+                                    ),
+                                  ),
+                                  
+                                ],
+                              ),
+                            ),
+                            SizedBox(height: verticalSpacing),
+                          ],
+                          
                           ...buttons.map((btn) => Padding(
                             padding: EdgeInsets.only(bottom: verticalSpacing),
                             child: SizedBox(
@@ -138,6 +354,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ),
                           )),
+                          
+                          // NEW: Sync Backend Button (only show when backend is down)
+                          if (_isBackendDown) ...[
+                            SizedBox(height: verticalSpacing),
+                            SizedBox(
+                              width: double.infinity,
+                              height: buttonHeight,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.orange.shade600,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                  ),
+                                ),
+                                onPressed: _isSyncing ? null : _manualSyncBackend,
+                                icon: _isSyncing 
+                                    ? SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                        ),
+                                      )
+                                    : Icon(Icons.sync, color: Colors.white, size: 20),
+                                label: Text(
+                                  _isSyncing ? 'SYNCING...' : 'SYNC BACKEND',
+                                  style: TextStyle(fontSize: buttonFontSize, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            
+                            // NEW: Reset Phase Button (admin only)
+                            SizedBox(height: verticalSpacing / 2),
+                            SizedBox(
+                              width: double.infinity,
+                              height: buttonHeight * 0.8,
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: Colors.grey.shade400),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                  ),
+                                ),
+                                onPressed: _resetPhaseSystem,
+                                icon: Icon(Icons.refresh, color: Colors.grey.shade600, size: 16),
+                                label: Text(
+                                  'RESET PHASE SYSTEM',
+                                  style: TextStyle(fontSize: buttonFontSize * 0.9, color: Colors.grey.shade600),
+                                ),
+                              ),
+                            ),
+                            
+                            // NEW: Force Server Status Check Button
+                            SizedBox(height: verticalSpacing / 2),
+                            SizedBox(
+                              width: double.infinity,
+                              height: buttonHeight * 0.8,
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: Colors.blue.shade400),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                  ),
+                                ),
+                                onPressed: _forceServerStatusCheck,
+                                icon: Icon(Icons.check_circle, color: Colors.blue.shade600, size: 16),
+                                label: Text(
+                                  'CHECK SERVER STATUS',
+                                  style: TextStyle(fontSize: buttonFontSize * 0.9, color: Colors.blue.shade600),
+                                ),
+                              ),
+                            ),
+                          ],
+                          
+
                         ],
                       ),
                     ),

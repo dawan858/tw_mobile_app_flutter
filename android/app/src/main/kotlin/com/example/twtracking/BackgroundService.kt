@@ -71,7 +71,7 @@ class BackgroundService : Service() {
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
-    private val serverUrl = "http://121.91.56.50:3000/api/location"
+    private val serverUrl = "http://twca.trackingworld.com.pk:3000/api/location"
     private lateinit var dbHelper: LocationDatabaseHelper
     private var syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -152,7 +152,7 @@ class BackgroundService : Service() {
         }
     }
 
-    inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 3) {
+    inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 4) {
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL("""
                 CREATE TABLE location_data(
@@ -175,21 +175,50 @@ class BackgroundService : Service() {
                     reason TEXT,
                     versionNo TEXT,
                     sync_status INTEGER DEFAULT 0,
-                    created_at INTEGER
+                    createAt TEXT
                 )
             """)
             
             db.execSQL("CREATE INDEX idx_sync_status ON location_data(sync_status)")
-            db.execSQL("CREATE INDEX idx_created_at ON location_data(created_at)")
+            db.execSQL("CREATE INDEX idx_createAt ON location_data(createAt)")
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
             if (oldVersion < 3) {
                 try {
                     db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_status ON location_data(sync_status)")
-                    db.execSQL("CREATE INDEX IF NOT EXISTS idx_created_at ON location_data(created_at)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS idx_createAt ON location_data(createAt)")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error creating indexes: ${e.message}")
+                }
+            }
+            
+            if (oldVersion < 4) {
+                try {
+                    // Migrate created_at to createAt (camelCase)
+                    // Check if created_at column exists
+                    val cursor = db.rawQuery("PRAGMA table_info(location_data)", null)
+                    var hasCreatedAt = false
+                    while (cursor.moveToNext()) {
+                        val columnName = cursor.getString(cursor.getColumnIndexOrThrow("name"))
+                        if (columnName == "created_at") {
+                            hasCreatedAt = true
+                            break
+                        }
+                    }
+                    cursor.close()
+                    
+                    if (hasCreatedAt) {
+                        // Add createAt column
+                        db.execSQL("ALTER TABLE location_data ADD COLUMN createAt TEXT")
+                        
+                        // Copy data from created_at to createAt
+                        db.execSQL("UPDATE location_data SET createAt = created_at")
+                        
+                        Log.d(TAG, "Successfully migrated created_at to createAt for version 4")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error migrating created_at to createAt: ${e.message}")
                 }
             }
         }
@@ -209,7 +238,7 @@ class BackgroundService : Service() {
                         WHERE id IN (
                             SELECT id FROM location_data 
                             WHERE sync_status = 1 
-                            ORDER BY created_at ASC 
+                            ORDER BY createAt ASC 
                             LIMIT ?
                         )
                     """, arrayOf(recordsToDelete))
@@ -234,7 +263,7 @@ class BackgroundService : Service() {
                     arrayOf("0"),
                     null,
                     null,
-                    "created_at ASC",
+                    "createAt ASC",
                     limit.toString()
                 )
                 
@@ -1304,7 +1333,7 @@ class BackgroundService : Service() {
                 put("reason", reason)
                 put("versionNo", "v ${getAppVersion()}")
                 put("sync_status", 0)
-                put("created_at", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
+                put("createAt", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
             }
 
             val db = dbHelper.writableDatabase
@@ -1608,7 +1637,7 @@ class BackgroundService : Service() {
                     dataToSend.remove("id")
                     dataToSend.remove("sync_status")
                     
-                    // Convert createdAt from milliseconds to the same format as deviceRDT
+                    // Convert createdAt to createAt (camelCase) and format properly
                     if (dataToSend.containsKey("created_at")) {
                         val createdAtMillis = when (val createdAt = dataToSend["created_at"]) {
                             is Long -> createdAt
@@ -1619,7 +1648,10 @@ class BackgroundService : Service() {
                         val createdAtDateTime = java.time.Instant.ofEpochMilli(createdAtMillis)
                         val formattedCreatedAt = createdAtDateTime.atZone(java.time.ZoneId.systemDefault())
                             .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS"))
-                        dataToSend["created_at"] = formattedCreatedAt
+                        
+                        // Remove the snake_case key and add camelCase key
+                        dataToSend.remove("created_at")
+                        dataToSend["createAt"] = formattedCreatedAt
                     }
 
                     // Log the igStatus being sent to server
