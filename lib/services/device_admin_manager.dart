@@ -3,6 +3,22 @@ import 'package:flutter/material.dart';
 
 class DeviceAdminManager {
   static const MethodChannel _channel = MethodChannel('device_admin_channel');
+  static Function(bool)? onDeviceAdminStatusChanged;
+
+  // Initialize the method channel listener
+  static void initialize() {
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'onDeviceAdminGranted':
+          final isGranted = call.arguments as bool;
+          print('🔄 Device admin status changed: $isGranted');
+          onDeviceAdminStatusChanged?.call(isGranted);
+          break;
+        default:
+          print('Unknown method call: ${call.method}');
+      }
+    });
+  }
 
   /// Request device admin permission
   static Future<bool> requestDeviceAdmin() async {
@@ -60,8 +76,30 @@ class DeviceAdminManager {
       // Request permission
       final success = await requestDeviceAdmin();
       if (success) {
-        print('✅ Device admin permission request successful');
-        return true;
+        print('✅ Device admin permission request initiated');
+        
+        // Wait for user to respond and check status multiple times
+        for (int i = 0; i < 5; i++) {
+          await Future.delayed(const Duration(seconds: 2));
+          final isNowActive = await isDeviceAdminActive();
+          if (isNowActive) {
+            print('✅ Device admin permission granted');
+            return true;
+          }
+          print('🔄 Checking device admin status... attempt ${i + 1}/5');
+        }
+        
+        // Final check
+        final finalCheck = await isDeviceAdminActive();
+        if (finalCheck) {
+          print('✅ Device admin permission granted (final check)');
+          return true;
+        } else {
+          print('❌ Device admin permission not granted after multiple checks');
+          // Show error dialog
+          await _showDeviceAdminErrorDialog(context);
+          return false;
+        }
       } else {
         print('❌ Device admin permission request failed');
         // Show error dialog
@@ -117,10 +155,10 @@ class DeviceAdminManager {
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('Device Admin Permission Failed'),
+          title: const Text('Device Admin Permission Status'),
           content: const Text(
-            'Failed to request device admin permission. This permission is important for reliable background operation.\n\n'
-            'You can try again or manually enable device admin in your device settings.'
+            'The device admin permission request was initiated. If you granted the permission, the app will continue normally.\n\n'
+            'If you did not grant the permission, you can try again or manually enable device admin in your device settings for optimal background operation.'
           ),
           actions: <Widget>[
             TextButton(
@@ -131,7 +169,7 @@ class DeviceAdminManager {
               },
             ),
             TextButton(
-              child: const Text('Skip'),
+              child: const Text('Continue'),
               onPressed: () {
                 Navigator.of(context).pop();
               },

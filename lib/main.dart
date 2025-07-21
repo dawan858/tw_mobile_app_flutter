@@ -17,6 +17,8 @@ import 'welcome.dart';
 import 'live_status_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'services/config_service.dart';
+import 'services/log_broadcast_receiver.dart';
+import 'services/log_upload_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,6 +72,20 @@ void main() async {
     
     // Fetch configuration from server
     await configService.fetchConfigFromServer(imei);
+    
+    // NEW: Validate configuration after loading
+    print('🔍 Validating configuration after startup...');
+    await configService.validateConfig();
+    
+    // NEW: Initialize and upload latest logs to endpoint
+    try {
+      final logUploadService = LogUploadService.instance;
+      await logUploadService.uploadLatestLogs();
+      print('📤 Latest logs queued for upload to endpoint');
+      print('🔄 LogUploadService initialized and running');
+    } catch (e) {
+      print('⚠️ Error uploading latest logs: $e');
+    }
   }
   
   runApp(const MyApp());
@@ -155,6 +171,23 @@ class _GPSTrackerState extends State<GPSTracker> {
     
     // Load current igStatus from SharedPreferences (set by native side)
     _loadCurrentIgStatus();
+    
+    // Initialize device admin manager
+    DeviceAdminManager.initialize();
+    DeviceAdminManager.onDeviceAdminStatusChanged = (bool isGranted) {
+      if (mounted) {
+        setState(() {
+          _isDeviceAdminActive = isGranted;
+        });
+        if (isGranted) {
+          print('✅ Device admin permission granted - continuing app initialization');
+          _initializeApp();
+        }
+      }
+    };
+    
+    // Initialize log broadcast receiver
+    LogBroadcastReceiver.initialize();
     
     // Listen for permission events from native side
     const MethodChannel('com.trackingWorld.tracking/device_info').setMethodCallHandler((call) async {

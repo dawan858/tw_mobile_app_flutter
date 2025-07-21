@@ -21,7 +21,7 @@ class SyncService {
   String? _lastError;
   int _retryCount = 0;
   static const String serverUrl = 'http://twca.trackingworld.com.pk:3000/api/location';
-  int _syncIntervalSeconds = 30; // Default sync interval
+  int _syncIntervalSeconds = 30; // Default sync interval - will be updated from config
   static const int maxRetries = 3;
   static const Duration defaultSyncInterval = Duration(minutes: 1);
   static const Duration retryDelay = Duration(seconds: 30);
@@ -41,17 +41,40 @@ class SyncService {
   
   // NEW: Continuous monitoring intervals
   static const Duration _serverMonitoringInterval = Duration(seconds: 30); // Ping every 30 seconds when server is down
-  static const Duration _normalSyncInterval = Duration(minutes: 1); // Normal sync interval when server is up
+  Duration _normalSyncInterval = Duration(minutes: 1); // Normal sync interval when server is up - will be updated from config
   
-  // REMOVED: Method channels since we're using SharedPreferences instead
-  // static const MethodChannel _avnSleepChannel = MethodChannel('com.example.twtracking/avn_sleep');
-  // static const MethodChannel _serviceChannel = MethodChannel('com.example.twtracking/service');
-
+  // NEW: Configuration reload timer
+  Timer? _configReloadTimer;
+  
   factory SyncService() => _instance;
-
   SyncService._internal() {
+    _loadConfiguration();
+    // Start configuration reload timer
+    _configReloadTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
+      await _loadConfiguration();
+    });
     _initConnectivityListener();
     // REMOVED: CarPowerService callback - now handled by Kotlin BackgroundService
+  }
+  
+  // NEW: Load configuration from SharedPreferences
+  Future<void> _loadConfiguration() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // Load sync interval from configuration
+      final uploadTimer = prefs.getInt('flutter.uploadTimer') ?? 30;
+      _syncIntervalSeconds = uploadTimer;
+      _normalSyncInterval = Duration(seconds: uploadTimer);
+      
+      // Load batch size from configuration or use default
+      final retryCounter = prefs.getInt('flutter.retryCounter') ?? 10;
+      _batchSize = (retryCounter / 2).round().clamp(10, 100); // Use half of retry counter as batch size
+      
+      print('🔄 Sync configuration loaded: interval=${_syncIntervalSeconds}s, batchSize=$_batchSize, normalInterval=${_normalSyncInterval.inSeconds}s');
+    } catch (e) {
+      print('❌ Error loading sync configuration: $e');
+    }
   }
 
   void _initConnectivityListener() {
@@ -741,7 +764,12 @@ class SyncService {
     _syncIntervalSeconds = intervalSeconds;
     _syncTimer?.cancel();
     
-    print('Starting periodic sync with interval: ${_syncIntervalSeconds}s');
+    print('🔄 Starting periodic sync with interval: ${_syncIntervalSeconds}s');
+    print('📊 Current configuration:');
+    print('   - Sync interval: ${_syncIntervalSeconds}s');
+    print('   - Batch size: $_batchSize');
+    print('   - Normal interval: ${_normalSyncInterval.inSeconds}s');
+    print('   - Server URL: $serverUrl');
     
     // Initial sync
     _startSync();
@@ -1091,5 +1119,62 @@ class SyncService {
     }
     
     return results;
+  }
+
+  // NEW: Check Kotlin service configuration
+  Future<Map<String, dynamic>> checkKotlinServiceConfiguration() async {
+    try {
+      print('🔍 === CHECKING KOTLIN SERVICE CONFIGURATION ===');
+      
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      
+      // Get Kotlin service configuration
+      final kotlinConfig = await serviceChannel.invokeMethod('getConfiguration');
+      print('📊 Kotlin service configuration: $kotlinConfig');
+      
+      // Get Flutter configuration
+      final prefs = await SharedPreferences.getInstance();
+      final flutterConfig = {
+        'gpsTimer': prefs.getInt('flutter.gpsTimer') ?? 5,
+        'uploadTimer': prefs.getInt('flutter.uploadTimer') ?? 10,
+        'angleThreshold': prefs.getDouble('flutter.angleThreshold') ?? 45.0,
+        'overSpeedingThreshold': prefs.getDouble('flutter.overSpeedingThreshold') ?? 60.0,
+        'distanceThreshold': prefs.getDouble('flutter.distanceThreshold') ?? 1000.0,
+        'movingTimer': prefs.getInt('flutter.movingTimer') ?? 60,
+        'stopTimer': prefs.getInt('flutter.stopTimer') ?? 130,
+      };
+      
+      print('📊 Flutter configuration: $flutterConfig');
+      
+      // Compare configurations
+      final mismatches = <String>[];
+      flutterConfig.forEach((key, flutterValue) {
+        final kotlinValue = kotlinConfig[key];
+        if (kotlinValue != null && kotlinValue != flutterValue) {
+          mismatches.add('$key: Flutter=$flutterValue, Kotlin=$kotlinValue');
+        }
+      });
+      
+      if (mismatches.isNotEmpty) {
+        print('❌ Configuration mismatches found:');
+        mismatches.forEach((mismatch) => print('   - $mismatch'));
+      } else {
+        print('✅ All configurations match');
+      }
+      
+      return {
+        'kotlinConfig': kotlinConfig,
+        'flutterConfig': flutterConfig,
+        'mismatches': mismatches,
+        'hasMismatches': mismatches.isNotEmpty,
+      };
+      
+    } catch (e) {
+      print('❌ Error checking Kotlin service configuration: $e');
+      return {
+        'error': e.toString(),
+        'hasMismatches': true,
+      };
+    }
   }
 }

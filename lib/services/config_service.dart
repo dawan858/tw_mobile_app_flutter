@@ -58,15 +58,35 @@ class ConfigService {
       final key = 'flutter.${entry.key}';
       final value = entry.value;
       
-      // Store values with appropriate types based on defaultConfig
-      if (defaultConfig[entry.key] is int) {
-        await prefs.setInt(key, int.parse(value.toString()));
-      } else if (defaultConfig[entry.key] is double) {
-        await prefs.setDouble(key, double.parse(value.toString()));
-      } else {
-        await prefs.setString(key, value.toString());
+      try {
+        // Store values with appropriate types based on defaultConfig
+        if (defaultConfig[entry.key] is int) {
+          final intValue = int.tryParse(value.toString()) ?? defaultConfig[entry.key] as int;
+          await prefs.setInt(key, intValue);
+          print('✅ Saved config $key as int: $intValue');
+        } else if (defaultConfig[entry.key] is double) {
+          final doubleValue = double.tryParse(value.toString()) ?? defaultConfig[entry.key] as double;
+          await prefs.setDouble(key, doubleValue);
+          print('✅ Saved config $key as double: $doubleValue');
+        } else {
+          await prefs.setString(key, value.toString());
+          print('✅ Saved config $key as string: $value');
+        }
+      } catch (e) {
+        print('❌ Error saving config $key: $e');
+        // Use default value as fallback
+        if (defaultConfig[entry.key] is int) {
+          await prefs.setInt(key, defaultConfig[entry.key] as int);
+        } else if (defaultConfig[entry.key] is double) {
+          await prefs.setDouble(key, defaultConfig[entry.key] as double);
+        } else {
+          await prefs.setString(key, defaultConfig[entry.key].toString());
+        }
       }
     }
+    
+    // Also update the main app's tracking parameters
+    await _updateTrackingParameters(config);
   }
 
   Future<Map<String, dynamic>> fetchImeiConfig(String imei) async {
@@ -103,17 +123,40 @@ class ConfigService {
     final config = <String, dynamic>{};
     
     for (var key in defaultConfig.keys) {
-      final value = prefs.getString('flutter.$key');
-      if (value != null) {
-        // Convert string values to appropriate types based on defaultConfig
+      try {
+        // Try to get the value as the correct type first
+        dynamic value;
         if (defaultConfig[key] is int) {
-          config[key] = int.parse(value);
+          value = prefs.getInt('flutter.$key');
+          if (value == null) {
+            // Try as string and parse
+            final stringValue = prefs.getString('flutter.$key');
+            if (stringValue != null) {
+              final intValue = int.tryParse(stringValue);
+              if (intValue != null) {
+                value = intValue;
+              }
+            }
+          }
         } else if (defaultConfig[key] is double) {
-          config[key] = double.parse(value);
+          value = prefs.getDouble('flutter.$key');
+          if (value == null) {
+            // Try as string and parse
+            final stringValue = prefs.getString('flutter.$key');
+            if (stringValue != null) {
+              final doubleValue = double.tryParse(stringValue);
+              if (doubleValue != null) {
+                value = doubleValue;
+              }
+            }
+          }
         } else {
-          config[key] = value;
+          value = prefs.getString('flutter.$key');
         }
-      } else {
+        
+        config[key] = value ?? defaultConfig[key];
+      } catch (e) {
+        print('Error reading $key from SharedPreferences: $e');
         config[key] = defaultConfig[key];
       }
     }
@@ -127,6 +170,78 @@ class ConfigService {
     
     // Try to fetch from server first
     return await fetchImeiConfig(imei);
+  }
+
+  // NEW: Validate and debug configuration
+  Future<Map<String, dynamic>> validateConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final config = <String, dynamic>{};
+    final issues = <String>[];
+    
+    print('🔍 === CONFIGURATION VALIDATION ===');
+    
+    for (var key in defaultConfig.keys) {
+      try {
+        // Try to get the value as the correct type first
+        dynamic value;
+        if (defaultConfig[key] is int) {
+          value = prefs.getInt('flutter.$key');
+          if (value == null) {
+            // Try as string and parse
+            final stringValue = prefs.getString('flutter.$key');
+            if (stringValue != null) {
+              final intValue = int.tryParse(stringValue);
+              if (intValue != null) {
+                value = intValue;
+              }
+            }
+          }
+        } else if (defaultConfig[key] is double) {
+          value = prefs.getDouble('flutter.$key');
+          if (value == null) {
+            // Try as string and parse
+            final stringValue = prefs.getString('flutter.$key');
+            if (stringValue != null) {
+              final doubleValue = double.tryParse(stringValue);
+              if (doubleValue != null) {
+                value = doubleValue;
+              }
+            }
+          }
+        } else {
+          value = prefs.getString('flutter.$key');
+        }
+        
+        if (value != null) {
+          config[key] = value;
+          print('✅ $key: $value (${value.runtimeType})');
+        } else {
+          config[key] = defaultConfig[key];
+          issues.add('$key: Missing value, using default ${defaultConfig[key]}');
+          print('⚠️ $key: Missing value, using default ${defaultConfig[key]}');
+        }
+      } catch (e) {
+        print('❌ Error reading $key: $e');
+        config[key] = defaultConfig[key];
+        issues.add('$key: Error reading value, using default ${defaultConfig[key]}');
+      }
+    }
+    
+    if (issues.isNotEmpty) {
+      print('❌ Configuration issues found:');
+      for (var issue in issues) {
+        print('   - $issue');
+      }
+    } else {
+      print('✅ All configuration values are valid');
+    }
+    
+    print('📊 Current configuration:');
+    config.forEach((key, value) {
+      print('   $key: $value (${value.runtimeType})');
+    });
+    
+    return config;
   }
 
   Future<void> updateConfig(Map<String, dynamic> newConfig) async {
@@ -175,7 +290,7 @@ class ConfigService {
         await _saveConfig(data);
         return data;
       } else {
-        print('Failed to fetch default config. Status code: [${response.statusCode}m');
+        print('Failed to fetch default config. Status code:  [${response.statusCode}m');
         print('Response body: ${response.body}');
         return defaultConfig;
       }

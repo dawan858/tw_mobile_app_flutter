@@ -120,8 +120,16 @@ class PermissionFlowManager {
       checkPermission: () async => await DeviceAdminManager.isDeviceAdminActive(),
       requestPermission: () async {
         await DeviceAdminManager.requestDeviceAdmin();
-        // Wait a bit for user to respond
-        await Future.delayed(const Duration(seconds: 2));
+        // Wait longer for user to respond and system to update
+        await Future.delayed(const Duration(seconds: 5));
+        // Check multiple times with delays to ensure status is updated
+        for (int i = 0; i < 3; i++) {
+          final isActive = await DeviceAdminManager.isDeviceAdminActive();
+          if (isActive) {
+            return true;
+          }
+          await Future.delayed(const Duration(seconds: 2));
+        }
         return await DeviceAdminManager.isDeviceAdminActive();
       },
     ));

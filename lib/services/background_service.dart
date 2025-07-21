@@ -180,12 +180,21 @@ double distanceThreshold = 1000.0; // Default 1000 meters
 int movingTimer = 60; // Default 60 seconds
 int stopTimer = 130; // Default 130 seconds
 
+// Add configuration reload timer
+Timer? _configReloadTimer;
+
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   print('=== FLUTTER BACKGROUND SERVICE STARTED ===');
   
   DartPluginRegistrant.ensureInitialized();
   await loadConfiguration();
+
+  // Start configuration reload timer to keep config updated
+  _configReloadTimer = Timer.periodic(const Duration(minutes: 5), (timer) async {
+    await loadConfiguration();
+    print('🔄 Configuration reloaded from SharedPreferences');
+  });
 
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
@@ -198,6 +207,7 @@ void onStart(ServiceInstance service) async {
   }
 
   service.on('stopService').listen((event) {
+    _configReloadTimer?.cancel();
     service.stopSelf();
   });
 
@@ -206,6 +216,9 @@ void onStart(ServiceInstance service) async {
   // Switched back to Timer.periodic for reliable, time-based updates.
   Timer.periodic(Duration(seconds: gpsTimer), (timer) async {
     try {
+      // Reload configuration before each cycle to ensure we have latest values
+      await loadConfiguration();
+      
       // 1. Check igStatus from native to ensure ignition is ON
       int currentIgStatus = 0;
       try {
@@ -227,12 +240,12 @@ void onStart(ServiceInstance service) async {
         desiredAccuracy: LocationAccuracy.bestForNavigation,
       );
 
-      // 4. Determine reason
+      // 4. Determine reason using configuration values
       String reason = "Timer";
       if (lastPosition == null) {
         reason = "Initial Position";
       } else {
-        // Check for distance-based reason first
+        // Check for distance-based reason first using configured threshold
         final distance = Geolocator.distanceBetween(
           lastPosition!.latitude, 
           lastPosition!.longitude, 
@@ -243,7 +256,7 @@ void onStart(ServiceInstance service) async {
         if (distance >= distanceThreshold) {
           reason = "Distance";
         } else {
-          // Check for turn detection if vehicle is moving
+          // Check for turn detection if vehicle is moving using configured threshold
           if (position.speed * 3.6 >= 5) { // speed >= 5 km/h
             final bearingChange = (position.heading ?? 0) - (lastPosition!.heading ?? 0);
             final normalizedBearingChange = bearingChange.abs() > 180 ? 360 - bearingChange.abs() : bearingChange.abs();
@@ -287,7 +300,7 @@ void onStart(ServiceInstance service) async {
       };
 
       await SyncService().queueLocationData(data);
-      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus');
+      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus, Config: GPS=${gpsTimer}s, Distance=${distanceThreshold}m, Angle=${angleThreshold}°');
       
       lastPosition = position;
 

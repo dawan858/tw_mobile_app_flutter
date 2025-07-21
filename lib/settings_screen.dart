@@ -7,6 +7,9 @@ import 'exception_logs_screen.dart';
 import 'ignition_logs_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'services/sync_service.dart';
+import 'services/log_upload_service.dart';
+
+import 'services/database_helper.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -28,6 +31,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadAppVersion();
     _loadBackendStatus();
     _startStatusMonitoring();
+  }
+
+  // NEW: Log Upload Debug Methods
+  Future<void> _testLogUploadConnection() async {
+    try {
+      final logUploadService = LogUploadService.instance;
+      final isConnected = await logUploadService.testConnection();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isConnected ? '✅ Connection successful!' : '❌ Connection failed'),
+          backgroundColor: isConnected ? Colors.green : Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Test failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showLogUploadStatus() async {
+    try {
+      final logUploadService = LogUploadService.instance;
+      final status = logUploadService.getStatus();
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('📊 Log Upload Status'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('🔗 Endpoint: ${status['endpoint']}'),
+                Text('📱 Device IMEI: ${status['deviceImei']}'),
+                Text('⏳ Is Uploading: ${status['isUploading']}'),
+                Text('📦 Queue Size: ${status['queueSize']}'),
+                Text('⏰ Upload Interval: ${status['uploadInterval']}s'),
+                Text('🔄 Last Exception Log: ${status['lastExceptionLog'] ?? 'None'}'),
+                Text('🚗 Last Ignition Log: ${status['lastIgnitionLog'] ?? 'None'}'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Error getting status: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _forceLogUpload() async {
+    try {
+      final logUploadService = LogUploadService.instance;
+      await logUploadService.forceUpload();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🔄 Force upload triggered'),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Force upload failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -267,6 +357,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
       }},
+
+
       {'label': 'LOGOUT', 'onTap': () {}},
     ];
 
@@ -463,6 +555,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ),
                           ],
+                          
+                          // NEW: Debug Section for Log Upload (always visible)
+                          SizedBox(height: verticalSpacing),
+                          Container(
+                            padding: EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey.shade300),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '🔧 LOG UPLOAD DEBUG',
+                                  style: TextStyle(
+                                    fontSize: buttonFontSize * 0.9,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: buttonHeight * 0.7,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.purple.shade600,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                      ),
+                                    ),
+                                    onPressed: _testLogUploadConnection,
+                                    icon: Icon(Icons.wifi_tethering, color: Colors.white, size: 16),
+                                    label: Text(
+                                      'TEST CONNECTION',
+                                      style: TextStyle(fontSize: buttonFontSize * 0.8, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: buttonHeight * 0.7,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.teal.shade600,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                      ),
+                                    ),
+                                    onPressed: _showLogUploadStatus,
+                                    icon: Icon(Icons.info, color: Colors.white, size: 16),
+                                    label: Text(
+                                      'SHOW STATUS',
+                                      style: TextStyle(fontSize: buttonFontSize * 0.8, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: buttonHeight * 0.7,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.indigo.shade600,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(buttonHeight / 2),
+                                      ),
+                                    ),
+                                    onPressed: _forceLogUpload,
+                                    icon: Icon(Icons.upload, color: Colors.white, size: 16),
+                                    label: Text(
+                                      'FORCE UPLOAD',
+                                      style: TextStyle(fontSize: buttonFontSize * 0.8, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                           
 
                         ],

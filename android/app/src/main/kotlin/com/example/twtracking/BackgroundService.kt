@@ -39,6 +39,7 @@ import android.app.AlarmManager
 import android.os.SystemClock
 import com.google.gson.Gson
 import android.os.Handler
+import java.util.Timer
 
 class BackgroundService : Service() {
     companion object {
@@ -98,6 +99,9 @@ class BackgroundService : Service() {
     private var movingTimer: Int = 60
     private var stopTimer: Int = 130
     
+    // NEW: Configuration reload timer
+    private var configReloadTimer: java.util.Timer? = null
+
     private val restartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_RESTART_SERVICE) {
@@ -301,6 +305,26 @@ class BackgroundService : Service() {
             val data = mutableListOf<Map<String, Any>>()
             
             try {
+                // First, get total count of records
+                val totalCursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
+                totalCursor.moveToFirst()
+                val totalRecords = totalCursor.getInt(0)
+                totalCursor.close()
+                
+                // Get count of synced records
+                val syncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 1", null)
+                syncedCursor.moveToFirst()
+                val syncedRecords = syncedCursor.getInt(0)
+                syncedCursor.close()
+                
+                // Get count of unsynced records
+                val unsyncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 0", null)
+                unsyncedCursor.moveToFirst()
+                val unsyncedRecords = unsyncedCursor.getInt(0)
+                unsyncedCursor.close()
+                
+                Log.e(TAG, "ERROR: Database stats - Total: $totalRecords, Synced: $syncedRecords, Unsynced: $unsyncedRecords")
+                
                 val cursor = db.query(
                     "location_data",
                     null,
@@ -328,9 +352,9 @@ class BackgroundService : Service() {
                 }
                 cursor.close()
                 
-                Log.d(TAG, "Retrieved ${data.size} unsynced records")
+                Log.e(TAG, "ERROR: Retrieved ${data.size} unsynced records")
             } catch (e: Exception) {
-                Log.e(TAG, "Error getting unsynced data: ${e.message}")
+                Log.e(TAG, "ERROR: Exception getting unsynced data: ${e.message}")
             }
             
             return data
@@ -352,9 +376,10 @@ class BackgroundService : Service() {
                     args
                 )
                 
-                Log.d(TAG, "Marked $updatedRows records as synced")
+                Log.e(TAG, "ERROR: Marked $updatedRows records as synced. IDs: $ids")
+                Log.e(TAG, "ERROR: These records were successfully sent to server and marked as synced")
             } catch (e: Exception) {
-                Log.e(TAG, "Error marking records as synced: ${e.message}")
+                Log.e(TAG, "ERROR: Exception marking records as synced: ${e.message}")
             }
         }
 
@@ -362,15 +387,29 @@ class BackgroundService : Service() {
         fun insertIgnitionLog(message: String, details: String = "", logType: String = "info") {
             val db = writableDatabase
             try {
+                val timestamp = java.time.Instant.now().toString()
                 val values = ContentValues().apply {
                     put("message", message)
                     put("details", details)
                     put("log_type", logType)
-                    put("timestamp", java.time.Instant.now().toString())
+                    put("timestamp", timestamp)
                 }
                 
                 val id = db.insert("ignition_logs", null, values)
                 Log.d(TAG, "Inserted ignition log: $message (ID: $id)")
+                
+                // Notify Flutter to upload the log to endpoint
+                try {
+                    val intent = Intent("UPLOAD_IGNITION_LOG")
+                    intent.putExtra("message", message)
+                    intent.putExtra("details", details)
+                    intent.putExtra("logType", logType)
+                    intent.putExtra("timestamp", timestamp)
+                    sendBroadcast(intent)
+                    Log.d(TAG, "Broadcast sent for ignition log upload: $message")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending ignition log upload broadcast: ${e.message}")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error inserting ignition log: ${e.message}")
             }
@@ -425,6 +464,60 @@ class BackgroundService : Service() {
                 Log.e(TAG, "Error clearing ignition logs: ${e.message}")
             }
         }
+
+        // NEW METHOD: Reset all records to unsynced status
+        fun resetAllRecordsToUnsynced() {
+            val db = writableDatabase
+            try {
+                val updatedRows = db.update(
+                    "location_data",
+                    ContentValues().apply { put("sync_status", 0) },
+                    "sync_status = ?",
+                    arrayOf("1")
+                )
+                Log.e(TAG, "ERROR: Reset $updatedRows records from synced to unsynced status")
+            } catch (e: Exception) {
+                Log.e(TAG, "ERROR: Exception resetting records to unsynced: ${e.message}")
+            }
+        }
+
+        // NEW METHOD: Verify sync status integrity
+        fun verifySyncStatusIntegrity() {
+            val db = readableDatabase
+            try {
+                // Get total records
+                val totalCursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
+                totalCursor.moveToFirst()
+                val totalRecords = totalCursor.getInt(0)
+                totalCursor.close()
+                
+                // Get synced records
+                val syncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 1", null)
+                syncedCursor.moveToFirst()
+                val syncedRecords = syncedCursor.getInt(0)
+                syncedCursor.close()
+                
+                // Get unsynced records
+                val unsyncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 0", null)
+                unsyncedCursor.moveToFirst()
+                val unsyncedRecords = unsyncedCursor.getInt(0)
+                unsyncedCursor.close()
+                
+                Log.e(TAG, "ERROR: Sync Status Integrity Check:")
+                Log.e(TAG, "ERROR:   - Total records: $totalRecords")
+                Log.e(TAG, "ERROR:   - Synced records: $syncedRecords")
+                Log.e(TAG, "ERROR:   - Unsynced records: $unsyncedRecords")
+                
+                // Check for potential issues
+                if (syncedRecords > totalRecords * 0.8 && unsyncedRecords == 0) {
+                    Log.e(TAG, "ERROR: ⚠️ WARNING: High percentage of records marked as synced with no unsynced records")
+                    Log.e(TAG, "ERROR:   This might indicate incorrect sync status marking")
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "ERROR: Exception in sync status integrity check: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate() {
@@ -438,6 +531,13 @@ class BackgroundService : Service() {
             clearOldIgStatusValues()
             
             dbHelper = LocationDatabaseHelper(this)
+            
+            // NEW: Reset all records to unsynced status to fix sync issue
+            dbHelper.resetAllRecordsToUnsynced()
+            
+            // NEW: Verify sync status integrity after reset
+            dbHelper.verifySyncStatusIntegrity()
+            
             acquireWakeLock()
             createNotificationChannel()
             fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -448,12 +548,18 @@ class BackgroundService : Service() {
             // CRITICAL: Ensure IMEI is available
             ensureImeiAvailable()
             
+            // NEW: Try to update unknown IMEI records on service start
+            updateUnknownImeiRecords()
+            
             val filter = IntentFilter(ACTION_RESTART_SERVICE)
             registerReceiver(restartReceiver, filter)
             
             loadConfiguration()
             setupLocationUpdates()
             startPeriodicSync()
+            
+            // NEW: Start configuration reload timer
+            startConfigurationReloadTimer()
             
             // NEW: Force update igStatus after initialization
             Handler().postDelayed({
@@ -869,6 +975,11 @@ class BackgroundService : Service() {
                 Log.d(TAG, "🚀 HANDLING DIRECT IGSTATUS SEND")
                 sendIgStatusDirectlyToServer()
             }
+            intent?.action == "GET_CONFIGURATION" -> {
+                Log.d(TAG, "📊 HANDLING GET CONFIGURATION")
+                val config = getCurrentConfiguration()
+                Log.d(TAG, "Current configuration: $config")
+            }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
                 handleCarPowerStart(intent)
@@ -899,8 +1010,28 @@ class BackgroundService : Service() {
             Log.w(TAG, "CarPowerManager not initialized, retrying...")
             initializeCarPowerManager()
         }
-        
+
+        // --- FIX: Always ensure tracking is started, regardless of how service is started ---
+        ensureServiceIsTracking()
+        // --- END FIX ---
+
         return START_STICKY
+    }
+
+    // --- FIX: Helper to always start foreground, location updates, and periodic sync ---
+    private fun ensureServiceIsTracking() {
+        try {
+            // Always start foreground notification if not already running
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForeground(NOTIFICATION_ID, createNotification())
+            }
+            // Always start location updates and periodic sync
+            startLocationUpdates()
+            startPeriodicSync()
+            Log.d(TAG, "ensureServiceIsTracking: Location updates and periodic sync started")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error ensuring service is tracking", e)
+        }
     }
 
     // FIX: Add missing startedBy parameter
@@ -1072,6 +1203,9 @@ class BackgroundService : Service() {
                 return
             }
             
+            // NEW: Stop configuration reload timer
+            stopConfigurationReloadTimer()
+            
             carPowerManager?.cleanup()
             fusedLocationClient.removeLocationUpdates(locationCallback)
             releaseWakeLock()
@@ -1123,6 +1257,11 @@ class BackgroundService : Service() {
     private fun loadConfiguration() {
         try {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val oldGpsTimer = gpsTimer
+            val oldUploadTimer = uploadTimer
+            val oldAngleThreshold = angleThreshold
+            val oldDistanceThreshold = distanceThreshold
+            
             gpsTimer = prefs.getInt("flutter.gpsTimer", 5)
             uploadTimer = prefs.getInt("flutter.uploadTimer", 10)
             angleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
@@ -1131,14 +1270,110 @@ class BackgroundService : Service() {
             movingTimer = prefs.getInt("flutter.movingTimer", 60)
             stopTimer = prefs.getInt("flutter.stopTimer", 130)
             
-            Log.d(TAG, "Configuration loaded successfully")
+            // Log configuration changes
+            if (oldGpsTimer != gpsTimer || oldUploadTimer != uploadTimer || 
+                oldAngleThreshold != angleThreshold || oldDistanceThreshold != distanceThreshold) {
+                Log.d(TAG, "🔄 Configuration updated:")
+                Log.d(TAG, "   - GPS Timer: $oldGpsTimer → $gpsTimer")
+                Log.d(TAG, "   - Upload Timer: $oldUploadTimer → $uploadTimer")
+                Log.d(TAG, "   - Angle Threshold: $oldAngleThreshold → $angleThreshold")
+                Log.d(TAG, "   - Distance Threshold: $oldDistanceThreshold → $distanceThreshold")
+                
+                // Restart location updates with new GPS timer
+                if (oldGpsTimer != gpsTimer) {
+                    restartLocationUpdatesWithNewInterval()
+                }
+                
+                // Restart sync with new upload timer
+                if (oldUploadTimer != uploadTimer) {
+                    restartPeriodicSyncWithNewInterval()
+                }
+            } else {
+                Log.d(TAG, "✅ Configuration loaded (no changes)")
+            }
+            
+            Log.d(TAG, "📊 Current configuration:")
+            Log.d(TAG, "   - GPS Timer: ${gpsTimer}s")
+            Log.d(TAG, "   - Upload Timer: ${uploadTimer}s")
+            Log.d(TAG, "   - Angle Threshold: ${angleThreshold}°")
+            Log.d(TAG, "   - Distance Threshold: ${distanceThreshold}m")
+            Log.d(TAG, "   - Over Speeding Threshold: ${overSpeedingThreshold} km/h")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading configuration: ${e.message}")
+            Log.e(TAG, "❌ Error loading configuration: ${e.message}")
+        }
+    }
+    
+    // NEW: Start configuration reload timer
+    private fun startConfigurationReloadTimer() {
+        try {
+            configReloadTimer?.cancel()
+            configReloadTimer = java.util.Timer()
+            
+            configReloadTimer?.scheduleAtFixedRate(object : java.util.TimerTask() {
+                override fun run() {
+                    try {
+                        Log.d(TAG, "🔄 Reloading configuration from SharedPreferences...")
+                        loadConfiguration()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error in configuration reload: ${e.message}")
+                    }
+                }
+            }, 30000, 30000) // Reload every 30 seconds
+            
+            Log.d(TAG, "✅ Configuration reload timer started (every 30s)")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error starting configuration reload timer: ${e.message}")
+        }
+    }
+    
+    // NEW: Stop configuration reload timer
+    private fun stopConfigurationReloadTimer() {
+        try {
+            configReloadTimer?.cancel()
+            configReloadTimer = null
+            Log.d(TAG, "✅ Configuration reload timer stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error stopping configuration reload timer: ${e.message}")
+        }
+    }
+    
+    // NEW: Restart location updates with new GPS timer
+    private fun restartLocationUpdatesWithNewInterval() {
+        try {
+            Log.d(TAG, "🔄 Restarting location updates with new GPS timer: ${gpsTimer}s")
+            stopLocationUpdates()
+            
+            // Wait a moment then restart
+            Handler().postDelayed({
+                startLocationUpdates()
+            }, 1000)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error restarting location updates: ${e.message}")
+        }
+    }
+    
+    // NEW: Restart periodic sync with new upload timer
+    private fun restartPeriodicSyncWithNewInterval() {
+        try {
+            Log.d(TAG, "🔄 Restarting periodic sync with new upload timer: ${uploadTimer}s")
+            
+            // Cancel existing sync executor
+            syncExecutor.shutdown()
+            syncExecutor = Executors.newSingleThreadScheduledExecutor()
+            
+            // Restart periodic sync
+            startPeriodicSync()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error restarting periodic sync: ${e.message}")
         }
     }
 
     private fun setupLocationUpdates() {
         try {
+            Log.e(TAG, "ERROR: setupLocationUpdates called")
             setupEnhancedGnssCallback()
             forceRegisterGnssCallback()
             
@@ -1152,9 +1387,11 @@ class BackgroundService : Service() {
 
             locationCallback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
+                    Log.e(TAG, "ERROR: onLocationResult called in BackgroundService")
                     locationResult.lastLocation?.let { location ->
+                        Log.e(TAG, "ERROR: Location received: lat=${location.latitude}, lon=${location.longitude}, acc=${location.accuracy}")
                         if (location.accuracy > 30) {
-                            Log.d(TAG, "Skipping inaccurate location: accuracy = ${location.accuracy}m")
+                            Log.e(TAG, "ERROR: Skipping inaccurate location: accuracy = ${location.accuracy}m")
                             return
                         }
                         
@@ -1165,32 +1402,23 @@ class BackgroundService : Service() {
 
                         if (shouldProcessLocationUpdate(location, speed, distance, timeSinceLastUpdate)) {
                             val reason = calculateEnhancedReason(location)
-                            
-                            Log.d(TAG, "=== PROCESSING LOCATION UPDATE ===")
-                            Log.d(TAG, "Location: ${location.latitude}, ${location.longitude}")
-                            Log.d(TAG, "Speed: ${String.format("%.1f", speed)} km/h")
-                            Log.d(TAG, "Reason: $reason")
-                            
-                            updateNotification(
-                                "GPS Tracking Active", 
-                                "Speed: ${String.format("%.1f", speed)} km/h - Reason: $reason"
-                            )
-                            
+                            Log.e(TAG, "ERROR: Processing location update. Speed: ${String.format("%.1f", speed)} km/h, Reason: $reason")
                             val correctedLocation = Location(location).apply {
                                 this.speed = speed / 3.6f
                             }
-                            
                             saveLocationData(correctedLocation)
                             lastLocationUpdateTime = currentTime
                             lastLocation = location
+                        } else {
+                            Log.e(TAG, "ERROR: Location update not processed. speed=$speed, distance=$distance, timeSinceLastUpdate=$timeSinceLastUpdate")
                         }
-                    }
+                    } ?: Log.e(TAG, "ERROR: onLocationResult: lastLocation is null")
                 }
             }
 
             startLocationUpdates()
         } catch (e: Exception) {
-            Log.e(TAG, "Error setting up location updates", e)
+            Log.e(TAG, "ERROR: Exception in setupLocationUpdates", e)
         }
     }
 
@@ -1228,8 +1456,9 @@ class BackgroundService : Service() {
 
     private fun startLocationUpdates() {
         try {
+            Log.e(TAG, "ERROR: startLocationUpdates called")
             if (!::fusedLocationClient.isInitialized || !::locationCallback.isInitialized) {
-                Log.w(TAG, "Location components not ready")
+                Log.e(TAG, "ERROR: Location components not ready")
                 return
             }
 
@@ -1247,10 +1476,12 @@ class BackgroundService : Service() {
                     locationCallback,
                     Looper.getMainLooper()
                 )
-                Log.d(TAG, "Location updates started")
+                Log.e(TAG, "ERROR: Location updates started")
+            } else {
+                Log.e(TAG, "ERROR: Missing ACCESS_FINE_LOCATION permission")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting location updates", e)
+            Log.e(TAG, "ERROR: Exception in startLocationUpdates", e)
         }
     }
 
@@ -1267,38 +1498,51 @@ class BackgroundService : Service() {
 
     private fun startPeriodicSync() {
         try {
+            Log.e(TAG, "ERROR: startPeriodicSync called")
             syncExecutor.scheduleAtFixedRate({
                 try {
+                    Log.e(TAG, "ERROR: Periodic sync task executing")
                     if (!isSyncing) {
+                        Log.e(TAG, "ERROR: Calling syncData() from periodic task")
                         syncData()
+                    } else {
+                        Log.e(TAG, "ERROR: Sync already in progress, skipping periodic sync")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in periodic sync", e)
+                    Log.e(TAG, "ERROR: Exception in periodic sync task", e)
                 }
             }, 0, uploadTimer.toLong(), TimeUnit.SECONDS)
             
             // Add periodic igStatus test (every 30 seconds)
             syncExecutor.scheduleAtFixedRate({
                 try {
+                    Log.e(TAG, "ERROR: Periodic igStatus test executing")
                     testCurrentIgStatus()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in periodic igStatus test", e)
+                    Log.e(TAG, "ERROR: Exception in periodic igStatus test", e)
                 }
             }, 30, 30, TimeUnit.SECONDS)
             
             // NEW: Add periodic power state checker (every 15 seconds)
             syncExecutor.scheduleAtFixedRate({
                 try {
+                    Log.e(TAG, "ERROR: Periodic power state check executing")
                     checkAndUpdatePowerState()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in periodic power state check", e)
+                    Log.e(TAG, "ERROR: Exception in periodic power state check", e)
                 }
             }, 15, 15, TimeUnit.SECONDS)
             
-            Log.d(TAG, "Periodic sync started")
+            Log.e(TAG, "ERROR: Periodic sync started with uploadTimer: ${uploadTimer}s")
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting periodic sync", e)
+            Log.e(TAG, "ERROR: Exception in startPeriodicSync", e)
         }
+    }
+
+    private fun syncData() {
+        // Your existing sync implementation
+        Log.e(TAG, "ERROR: syncData() called - calling performSyncToServer()")
+        performSyncToServer()
     }
 
     // UPDATED METHOD: Check and update power state periodically
@@ -1357,11 +1601,6 @@ class BackgroundService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error in periodic power state check", e)
         }
-    }
-
-    private fun syncData() {
-        // Your existing sync implementation
-        Log.d(TAG, "Syncing data...")
     }
 
     private fun getEnhancedAccurateSpeed(location: Location): Float {
@@ -1424,18 +1663,13 @@ class BackgroundService : Service() {
             val currentTime = System.currentTimeMillis()
             val imei = getImei()
             val reason = calculateEnhancedReason(location)
-            
+
             var fixedSpeed = location.speed * 3.6f
             if (fixedSpeed < 0) fixedSpeed = 0f
-            
-            if (imei.isEmpty() || imei == "unknown") {
-                Log.e(TAG, "❌ Cannot save location without valid IMEI!")
-                return
-            }
-            
-            // Get current igStatus directly from service (no SharedPreferences dependency)
+
+            // Allow saving with IMEI = "unknown" (buffer until IMEI is available)
             val currentIgStatus = this.igStatus
-            
+
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
@@ -1447,7 +1681,7 @@ class BackgroundService : Service() {
                 put("timestamp", java.time.Instant.now().toString())
                 put("deviceRDT", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
                 put("gmtSettings", "GMT+${java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 3600}:00")
-                put("igStatus", currentIgStatus) // Use service igStatus directly
+                put("igStatus", currentIgStatus)
                 put("localPrimaryId", currentTime % 100000)
                 put("name", Build.MODEL)
                 put("phoneNo", "unknown")
@@ -1460,39 +1694,35 @@ class BackgroundService : Service() {
 
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
-            
-            // Log the igStatus being saved (direct from service)
-            Log.d(TAG, "💾 SAVED LOCATION DATA - ID: $id")
-            Log.d(TAG, "   - igStatus saved (direct): $currentIgStatus")
-            Log.d(TAG, "   - ACC state: ${if (currentIgStatus == 1) "ON" else "OFF"}")
-            Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
-            Log.d(TAG, "   - IMEI: $imei")
-            Log.d(TAG, "   - Source: BackgroundService igStatus (no SharedPreferences)")
-            
-            Log.d(TAG, "Saved location data with ID: $id")
+
+            Log.e(TAG, "ERROR: 💾 SAVED LOCATION DATA - ID: $id, IMEI: $imei, Reason: $reason, Speed: ${String.format("%.1f", fixedSpeed)} km/h")
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving location data: ${e.message}")
+            Log.e(TAG, "ERROR: Exception in saveLocationData: ${e.message}")
         }
     }
 
     private fun getImei(): String {
         try {
-            val imeiManager = ImeiManager.getInstance(this)
-            val deviceId = imeiManager.getDeviceIdentifier()
-            
-            if (deviceId != "unknown" && deviceId.isNotEmpty()) {
-                return deviceId
-            }
-            
+            // Always check SharedPreferences first
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             val storedImei = prefs.getString("flutter.imei", null)
-            
             if (!storedImei.isNullOrEmpty() && storedImei != "unknown") {
+                Log.d(TAG, "getImei: Loaded from SharedPreferences: $storedImei")
                 return storedImei
             }
-            
+
+            // Fallback to ImeiManager
+            val imeiManager = ImeiManager.getInstance(this)
+            val deviceId = imeiManager.getDeviceIdentifier()
+            if (deviceId != "unknown" && deviceId.isNotEmpty()) {
+                // Save to SharedPreferences for future use
+                prefs.edit().putString("flutter.imei", deviceId).apply()
+                Log.d(TAG, "getImei: Obtained from ImeiManager and saved: $deviceId")
+                return deviceId
+            }
+
+            Log.e(TAG, "getImei: IMEI is unknown")
             return "unknown"
-            
         } catch (e: Exception) {
             Log.e(TAG, "Error getting IMEI: ${e.message}")
             return "unknown"
@@ -1735,21 +1965,22 @@ class BackgroundService : Service() {
     // NEW METHOD: Perform actual sync to server
     private fun performSyncToServer() {
         if (isSyncing) {
-            Log.d(TAG, "Sync already in progress, skipping...")
+            Log.e(TAG, "ERROR: Sync already in progress, skipping...")
             return
         }
 
         isSyncing = true
-        Log.d(TAG, "Starting sync to server...")
+        Log.e(TAG, "ERROR: Starting sync to server...")
 
         try {
             val unsyncedData = dbHelper.getUnsyncedData(limit = 50)
+            Log.e(TAG, "ERROR: Found ${unsyncedData.size} records to sync")
+            
             if (unsyncedData.isEmpty()) {
-                Log.d(TAG, "No unsynced data to upload")
+                Log.e(TAG, "ERROR: No unsynced data to upload")
                 return
             }
 
-            Log.d(TAG, "Found ${unsyncedData.size} records to sync")
             val syncedIds = mutableListOf<Long>()
 
             for (data in unsyncedData) {
@@ -1784,13 +2015,13 @@ class BackgroundService : Service() {
                         is String -> id
                         else -> "unknown"
                     }
-                    Log.d(TAG, "🔄 SYNC TO SERVER - Record ID: $recordId")
-                    Log.d(TAG, "   - igStatus being sent: $igStatusBeingSent")
-                    Log.d(TAG, "   - Current service igStatus: $igStatus")
-                    Log.d(TAG, "   - ACC state: ${if (igStatusBeingSent == 1) "ON" else "OFF"}")
-                    Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+                    Log.e(TAG, "ERROR: 🔄 SYNC TO SERVER - Record ID: $recordId")
+                    Log.e(TAG, "ERROR:    - igStatus being sent: $igStatusBeingSent")
+                    Log.e(TAG, "ERROR:    - Current service igStatus: $igStatus")
+                    Log.e(TAG, "ERROR:    - ACC state: ${if (igStatusBeingSent == 1) "ON" else "OFF"}")
+                    Log.e(TAG, "ERROR:    - Timestamp: ${System.currentTimeMillis()}")
 
-                    Log.d(TAG, "Sending data: ${dataToSend}")
+                    Log.e(TAG, "ERROR: Sending data: ${dataToSend}")
 
                     val request = okhttp3.Request.Builder()
                         .url(serverUrl)
@@ -1809,9 +2040,9 @@ class BackgroundService : Service() {
                             else -> 0L
                         }
                         syncedIds.add(recordId)
-                        Log.d(TAG, "✅ Successfully synced record ID: $recordId with igStatus: $igStatusBeingSent")
+                        Log.e(TAG, "ERROR: ✅ Successfully synced record ID: $recordId with igStatus: $igStatusBeingSent")
                     } else {
-                        Log.e(TAG, "❌ Server error: ${response.code} - ${response.body?.string()}")
+                        Log.e(TAG, "ERROR: ❌ Server error: ${response.code} - ${response.body?.string()}")
                     }
 
                     response.close()
@@ -1823,27 +2054,43 @@ class BackgroundService : Service() {
                         is String -> id
                         else -> "unknown"
                     }
-                    Log.e(TAG, "Error syncing record $recordId: $e")
+                    Log.e(TAG, "ERROR: Exception syncing record $recordId: $e")
                 }
             }
 
             // Mark successfully synced records
             if (syncedIds.isNotEmpty()) {
                 dbHelper.markAsSynced(syncedIds)
-                Log.d(TAG, "Marked ${syncedIds.size} records as synced")
+                Log.e(TAG, "ERROR: Marked ${syncedIds.size} records as synced")
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error in sync to server", e)
+            Log.e(TAG, "ERROR: Exception in sync to server", e)
         } finally {
             isSyncing = false
-            Log.d(TAG, "Sync to server completed")
+            Log.e(TAG, "ERROR: Sync to server completed")
         }
     }
 
     // NEW METHOD: Get current igStatus
     fun getCurrentIgStatus(): Int {
         return igStatus
+    }
+    
+    // NEW METHOD: Get current configuration for debugging
+    fun getCurrentConfiguration(): Map<String, Any> {
+        return mapOf(
+            "gpsTimer" to gpsTimer,
+            "uploadTimer" to uploadTimer,
+            "angleThreshold" to angleThreshold,
+            "overSpeedingThreshold" to overSpeedingThreshold,
+            "distanceThreshold" to distanceThreshold,
+            "movingTimer" to movingTimer,
+            "stopTimer" to stopTimer,
+            "igStatus" to igStatus,
+            "isCarPowerInitialized" to isCarPowerInitialized,
+            "isIgStatusReady" to isIgStatusReady
+        )
     }
 
     // NEW METHOD: Handle IMEI from MainActivity
@@ -1861,6 +2108,9 @@ class BackgroundService : Service() {
             trackingPrefs.edit().putString("imei", imei).apply()
             
             Log.d(TAG, "✅ IMEI stored successfully: $imei")
+            
+            // NEW: Try to update unknown IMEI records after IMEI is set
+            updateUnknownImeiRecords()
             
             // Now that IMEI is available, ensure the service is fully operational
             ensureServiceOperational()
@@ -2163,5 +2413,31 @@ class BackgroundService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error requesting location update", e)
         }
+    }
+
+    // NEW: Update all records with IMEI = "unknown" once IMEI is available
+    private fun updateUnknownImeiRecords() {
+        try {
+            val imei = getImei()
+            if (imei == "unknown" || imei.isEmpty()) return
+
+            val db = dbHelper.writableDatabase
+            val values = ContentValues().apply { put("imei", imei) }
+            val updatedRows = db.update(
+                "location_data",
+                values,
+                "imei = ?",
+                arrayOf("unknown")
+            )
+            Log.d(TAG, "Updated $updatedRows records with new IMEI: $imei")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating unknown IMEI records: ${e.message}")
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.e(TAG, "ERROR: onTaskRemoved called - scheduling service restart")
+        scheduleServiceRestart()
     }
 }

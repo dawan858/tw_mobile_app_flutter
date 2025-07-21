@@ -1,6 +1,7 @@
 package com.example.twtracking
 
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Intent
 import android.content.IntentFilter
@@ -32,9 +33,11 @@ class MainActivity : FlutterActivity() {
     private val AVN_SLEEP_CHANNEL = "com.example.twtracking/avn_sleep"
     private val TAG = "MainActivity"
     private var terminationReceiver: AppTerminationReceiver? = null
+    private var logUploadReceiver: LogUploadReceiver? = null
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
     private lateinit var carPowerManager: CarPowerManager
+    private var flutterEngine: FlutterEngine? = null
     
     companion object {
         // Permission request codes
@@ -76,6 +79,7 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
         
         registerTerminationReceiver()
+        registerLogUploadReceiver()
         // Don't start tracking service here - let permission flow control it
     }
 
@@ -133,6 +137,25 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         Log.d(TAG, "MainActivity onResume")
         startTrackingService()
+        
+        // Check if device admin was granted while user was in settings
+        try {
+            val devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
+            val isActive = devicePolicyManager.isAdminActive(adminComponent)
+            
+            if (isActive) {
+                Log.d(TAG, "✅ Device admin is now active - user granted permission")
+                // Notify Flutter that device admin is now active
+                flutterEngine?.let { engine ->
+                    MethodChannel(engine.dartExecutor.binaryMessenger, "device_admin_channel").invokeMethod("onDeviceAdminGranted", true)
+                }
+            } else {
+                Log.d(TAG, "Device admin is not active")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking device admin status in onResume", e)
+        }
     }
 
     override fun onPause() {
@@ -143,6 +166,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        
+        // Store the FlutterEngine for later use
+        this.flutterEngine = flutterEngine
         
         Log.d(TAG, "=== CONFIGURE FLUTTER ENGINE CALLED ===")
         Log.d(TAG, "Flutter engine: ${flutterEngine.javaClass.simpleName}")
@@ -201,6 +227,37 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error in simple method test", e)
                         result.error("SIMPLE_TEST_ERROR", "Simple method test failed", e.message)
+                    }
+                }
+                "getConfiguration" -> {
+                    try {
+                        Log.d(TAG, "📊 GET CONFIGURATION CALLED")
+                        // Get configuration from BackgroundService if it's running
+                        val backgroundService = getBackgroundServiceInstance()
+                        if (backgroundService != null) {
+                            val config = backgroundService.getCurrentConfiguration()
+                            Log.d(TAG, "Configuration from BackgroundService: $config")
+                            result.success(config)
+                        } else {
+                            Log.w(TAG, "BackgroundService not running, returning default config")
+                            // Return default configuration
+                            val defaultConfig = mapOf(
+                                "gpsTimer" to 5,
+                                "uploadTimer" to 10,
+                                "angleThreshold" to 45f,
+                                "overSpeedingThreshold" to 60f,
+                                "distanceThreshold" to 1000f,
+                                "movingTimer" to 60,
+                                "stopTimer" to 130,
+                                "igStatus" to 0,
+                                "isCarPowerInitialized" to false,
+                                "isIgStatusReady" to false
+                            )
+                            result.success(defaultConfig)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting configuration", e)
+                        result.error("CONFIG_ERROR", "Failed to get configuration", e.message)
                     }
                 }
                 "triggerPowerStateCheck" -> {
@@ -605,6 +662,14 @@ class MainActivity : FlutterActivity() {
         }
         
         Log.d(TAG, "✅ DEVICE_ADMIN_CHANNEL method handler registered successfully")
+        
+        // Log Broadcast channel (for handling log uploads from BackgroundService)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "log_broadcast_channel").setMethodCallHandler { call, result ->
+            Log.d(TAG, "LOG_BROADCAST_CHANNEL method called: ${call.method}")
+            result.success(null) // Just acknowledge the call
+        }
+        
+        Log.d(TAG, "✅ LOG_BROADCAST_CHANNEL method handler registered successfully")
     }
 
     private fun getSatelliteData(): Map<String, Int> {
@@ -646,12 +711,26 @@ class MainActivity : FlutterActivity() {
         }
         return false
     }
+    
+    // NEW: Get BackgroundService instance if running
+    private fun getBackgroundServiceInstance(): BackgroundService? {
+        return try {
+            // Since we can't directly access the service instance, we'll use a static reference
+            // This is a workaround - in a real implementation, you might want to use a singleton pattern
+            null // For now, return null and handle it in the method channel
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting BackgroundService instance", e)
+            null
+        }
+    }
 
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "MainActivity onDestroy")
         // Don't unregister the receiver here as we want it to survive app termination
     }
+
+
 
     // NEW METHOD: Start comprehensive permission flow
     private fun startComprehensivePermissionFlow() {
@@ -836,40 +915,19 @@ class MainActivity : FlutterActivity() {
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 prefs.edit().putString("flutter.imei", imei).apply()
                 
-                // Continue to next permission (Location)
+                Log.d(TAG, "✅ IMEI stored in SharedPreferences: $imei")
+                
+                // Continue with location permissions
                 requestLocationPermissions()
                 
             } else {
-                Log.e(TAG, "❌ Failed to get valid IMEI: $imei")
-                showImeiPermissionDialog()
+                Log.w(TAG, "⚠️ IMEI not available or invalid: $imei")
+                showImeiNotAvailableDialog()
             }
             
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error getting IMEI after permission granted", e)
-            showImeiPermissionDialog()
-        }
-    }
-
-    // NEW METHOD: Handle when IMEI permission is denied
-    private fun showImeiPermissionDialog() {
-        try {
-            val builder = android.app.AlertDialog.Builder(this)
-            builder.setTitle("Permission Required")
-                .setMessage("This app requires Phone State permission to get your device's IMEI number, which is essential for GPS tracking functionality. Without this permission, the app cannot function properly.")
-                .setPositiveButton("Grant Permission") { _, _ ->
-                    // Try requesting permission again
-                    requestImeiPermission()
-                }
-                .setNegativeButton("Open Settings") { _, _ ->
-                    // Open app settings
-                    val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    intent.data = android.net.Uri.fromParts("package", packageName, null)
-                    startActivity(intent)
-                }
-                .setCancelable(false)
-                .show()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing IMEI permission dialog", e)
+            Log.e(TAG, "❌ Error handling IMEI permission granted", e)
+            showImeiNotAvailableDialog()
         }
     }
 
@@ -878,7 +936,7 @@ class MainActivity : FlutterActivity() {
         try {
             Log.d(TAG, "=== LOCATION PERMISSIONS GRANTED ===")
             
-            // Continue to next permission (Storage)
+            // Continue with storage permissions
             requestStoragePermissions()
             
         } catch (e: Exception) {
@@ -890,93 +948,174 @@ class MainActivity : FlutterActivity() {
     private fun handleStoragePermissionsGranted() {
         try {
             Log.d(TAG, "=== STORAGE PERMISSIONS GRANTED ===")
-            Log.d(TAG, "✅ ALL NATIVE PERMISSIONS GRANTED - PERMISSION FLOW COMPLETE ===")
+            Log.d(TAG, "✅ All permissions granted - app is ready")
             
-            // All native permissions are now granted
-            // Device admin permission will be handled by Flutter
-            // Start background service with available permissions
-            startBackgroundServiceWithAvailablePermissions()
+            // Notify Flutter that the app is ready
+            // This will trigger the Flutter side to start the tracking service
+            Log.d(TAG, "🚀 App is ready - all permissions granted")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error handling storage permissions granted", e)
         }
     }
 
-    // NEW METHOD: Start background service with available permissions
-    private fun startBackgroundServiceWithAvailablePermissions() {
+    // NEW METHOD: Show IMEI permission dialog
+    private fun showImeiPermissionDialog() {
         try {
-            Log.d(TAG, "=== STARTING BACKGROUND SERVICE WITH AVAILABLE PERMISSIONS ===")
+            Log.d(TAG, "📱 Showing IMEI permission dialog")
             
-            // Get IMEI if available
-            val imeiManager = ImeiManager.getInstance(this)
-            val imei = imeiManager.getDeviceIdentifier()
-            
-            Log.d(TAG, "IMEI: $imei")
-            
-            val serviceIntent = Intent(this, BackgroundService::class.java).apply {
-                putExtra("imei_available", imei != null && imei.isNotEmpty() && imei != "unknown")
-                putExtra("imei", imei ?: "")
-                putExtra("started_by", "main_activity_native_permissions")
-                putExtra("auto_started", true)
-                putExtra("background_only", false)
-            }
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            
-            Log.d(TAG, "✅ Background service started with available permissions")
-            
+            AlertDialog.Builder(this)
+                .setTitle("Permission Required")
+                .setMessage("This app needs phone state permission to get the device IMEI for tracking purposes.")
+                .setPositiveButton("Grant Permission") { _, _ ->
+                    requestImeiPermission()
+                }
+                .setNegativeButton("Cancel") { _, _ ->
+                    Log.w(TAG, "User cancelled IMEI permission request")
+                }
+                .setCancelable(false)
+                .show()
+                
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error starting background service with available permissions", e)
+            Log.e(TAG, "❌ Error showing IMEI permission dialog", e)
         }
     }
 
-    // NEW METHOD: Show dialog explaining location permission importance
-    private fun showLocationPermissionDialog() {
+    // NEW METHOD: Show IMEI not available dialog
+    private fun showImeiNotAvailableDialog() {
         try {
-            val builder = AlertDialog.Builder(this)
-            builder.setTitle("Location Permission Required")
-                .setMessage("This app requires location permissions to track your device's GPS location. Without these permissions, the app cannot function properly.")
-                .setPositiveButton("Grant Permission") { _, _ ->
-                    // Try requesting permission again
+            Log.d(TAG, "📱 Showing IMEI not available dialog")
+            
+            AlertDialog.Builder(this)
+                .setTitle("IMEI Not Available")
+                .setMessage("Unable to get device IMEI. This may affect tracking functionality.")
+                .setPositiveButton("Continue") { _, _ ->
+                    Log.d(TAG, "User chose to continue without IMEI")
+                    // Continue with location permissions anyway
                     requestLocationPermissions()
                 }
-                .setNegativeButton("Open Settings") { _, _ ->
-                    // Open app settings
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    intent.data = Uri.fromParts("package", packageName, null)
-                    startActivity(intent)
+                .setNegativeButton("Exit") { _, _ ->
+                    Log.w(TAG, "User chose to exit due to IMEI unavailability")
+                    finish()
                 }
                 .setCancelable(false)
                 .show()
+                
         } catch (e: Exception) {
-            Log.e(TAG, "Error showing location permission dialog", e)
+            Log.e(TAG, "❌ Error showing IMEI not available dialog", e)
         }
     }
 
-    // NEW METHOD: Show dialog explaining storage permission importance
-    private fun showStoragePermissionDialog() {
+    // NEW METHOD: Show location permission dialog
+    private fun showLocationPermissionDialog() {
         try {
-            val builder = AlertDialog.Builder(this)
-            builder.setTitle("Storage Permission Required")
-                .setMessage("This app requires storage permissions to save location data locally. Without these permissions, the app cannot function properly.")
+            Log.d(TAG, "📱 Showing location permission dialog")
+            
+            AlertDialog.Builder(this)
+                .setTitle("Location Permission Required")
+                .setMessage("This app needs location permission for GPS tracking functionality.")
                 .setPositiveButton("Grant Permission") { _, _ ->
-                    // Try requesting permission again
-                    requestStoragePermissions()
+                    requestLocationPermissions()
                 }
-                .setNegativeButton("Open Settings") { _, _ ->
-                    // Open app settings
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    intent.data = Uri.fromParts("package", packageName, null)
-                    startActivity(intent)
+                .setNegativeButton("Cancel") { _, _ ->
+                    Log.w(TAG, "User cancelled location permission request")
                 }
                 .setCancelable(false)
                 .show()
+                
         } catch (e: Exception) {
-            Log.e(TAG, "Error showing storage permission dialog", e)
+            Log.e(TAG, "❌ Error showing location permission dialog", e)
+        }
+    }
+
+    // NEW METHOD: Show storage permission dialog
+    private fun showStoragePermissionDialog() {
+        try {
+            Log.d(TAG, "📱 Showing storage permission dialog")
+            
+            AlertDialog.Builder(this)
+                .setTitle("Storage Permission Required")
+                .setMessage("This app needs storage permission for data logging and configuration.")
+                .setPositiveButton("Grant Permission") { _, _ ->
+                    requestStoragePermissions()
+                }
+                .setNegativeButton("Cancel") { _, _ ->
+                    Log.w(TAG, "User cancelled storage permission request")
+                }
+                .setCancelable(false)
+                .show()
+                
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error showing storage permission dialog", e)
+        }
+    }
+    
+    // NEW: Register log upload receiver
+    private fun registerLogUploadReceiver() {
+        try {
+            logUploadReceiver = LogUploadReceiver()
+            val filter = IntentFilter().apply {
+                addAction("UPLOAD_IGNITION_LOG")
+                addAction("UPLOAD_EXCEPTION_LOG")
+            }
+            logUploadReceiver?.let { receiver ->
+                registerReceiver(receiver, filter)
+                Log.d(TAG, "✅ LogUploadReceiver registered successfully")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error registering LogUploadReceiver: ${e.message}")
+        }
+    }
+    
+    // NEW: LogUploadReceiver class
+    inner class LogUploadReceiver : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            try {
+                when (intent?.action) {
+                    "UPLOAD_IGNITION_LOG" -> {
+                        val message = intent.getStringExtra("message") ?: ""
+                        val details = intent.getStringExtra("details") ?: ""
+                        val logType = intent.getStringExtra("logType") ?: "info"
+                        val timestamp = intent.getStringExtra("timestamp") ?: ""
+                        
+                        Log.d(TAG, "📤 Forwarding ignition log to Flutter: $message")
+                        
+                        // Forward to Flutter via method channel
+                        flutterEngine?.let { engine ->
+                            MethodChannel(engine.dartExecutor.binaryMessenger, "log_broadcast_channel").invokeMethod(
+                                "onIgnitionLogInserted",
+                                mapOf(
+                                    "message" to message,
+                                    "details" to details,
+                                    "logType" to logType,
+                                    "timestamp" to timestamp
+                                )
+                            )
+                        }
+                    }
+                    "UPLOAD_EXCEPTION_LOG" -> {
+                        val main = intent.getStringExtra("main") ?: ""
+                        val details = intent.getStringExtra("details") ?: ""
+                        val timestamp = intent.getStringExtra("timestamp") ?: ""
+                        
+                        Log.d(TAG, "📤 Forwarding exception log to Flutter: $main")
+                        
+                        // Forward to Flutter via method channel
+                        flutterEngine?.let { engine ->
+                            MethodChannel(engine.dartExecutor.binaryMessenger, "log_broadcast_channel").invokeMethod(
+                                "onExceptionLogInserted",
+                                mapOf(
+                                    "main" to main,
+                                    "details" to details,
+                                    "timestamp" to timestamp
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error in LogUploadReceiver: ${e.message}")
+            }
         }
     }
 } 

@@ -3,6 +3,7 @@ import 'package:path/path.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:intl/intl.dart';
+import 'log_upload_service.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
@@ -485,11 +486,25 @@ class DatabaseHelper {
     try {
       if (await _tableExists('exception_logs')) {
         final db = await database;
+        final timestamp = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now());
+        
         await db.insert('exception_logs', {
           'main': main,
           'details': details,
-          'created_at': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
+          'created_at': timestamp,
         });
+        
+        // Upload to endpoint immediately
+        try {
+          final logUploadService = LogUploadService();
+          await logUploadService.uploadExceptionLog(
+            main: main,
+            details: details,
+            timestamp: timestamp,
+          );
+        } catch (e) {
+          print('⚠️ Failed to upload exception log to endpoint: $e');
+        }
       } else {
         print('Exception logs table does not exist, skipping log: $main');
       }
@@ -540,12 +555,27 @@ class DatabaseHelper {
     try {
       if (await _tableExists('ignition_logs')) {
         final db = await database;
+        final timestamp = DateTime.now().toIso8601String();
+        
         await db.insert('ignition_logs', {
           'message': message,
           'details': details,
           'log_type': logType,
-          'timestamp': DateTime.now().toIso8601String(),
+          'timestamp': timestamp,
         });
+        
+        // Upload to endpoint immediately
+        try {
+          final logUploadService = LogUploadService();
+          await logUploadService.uploadIgnitionLog(
+            message: message,
+            details: details,
+            logType: logType,
+            timestamp: timestamp,
+          );
+        } catch (e) {
+          print('⚠️ Failed to upload ignition log to endpoint: $e');
+        }
       } else {
         print('Ignition logs table does not exist, skipping log: $message');
       }
