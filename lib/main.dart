@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:tracking_world/services/device_admin_manager.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'services/api_service.dart';
 import 'services/background_service.dart';
 import 'services/permission_flow_manager.dart';
@@ -19,9 +20,21 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'services/config_service.dart';
 import 'services/log_broadcast_receiver.dart';
 import 'services/log_upload_service.dart';
+import 'services/firebase_service.dart';
+import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize Firebase
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    print('✅ Firebase initialized in main');
+  } catch (e) {
+    print('❌ Error initializing Firebase in main: $e');
+  }
   
   final prefs = await SharedPreferences.getInstance();
   final configService = ConfigService();
@@ -85,6 +98,15 @@ void main() async {
       print('🔄 LogUploadService initialized and running');
     } catch (e) {
       print('⚠️ Error uploading latest logs: $e');
+    }
+    
+    // NEW: Sync existing logs to Firebase
+    try {
+      final firebaseService = FirebaseService();
+      await firebaseService.syncExistingLogs();
+      print('🔥 Existing logs synced to Firebase');
+    } catch (e) {
+      print('⚠️ Error syncing logs to Firebase: $e');
     }
   }
   
@@ -927,6 +949,6 @@ class _GPSTrackerState extends State<GPSTracker> {
             ),
         ],
       ),
-    );
-  }
+          );
+    }
 }

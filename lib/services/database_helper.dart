@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:intl/intl.dart';
 import 'log_upload_service.dart';
+import 'firebase_service.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
@@ -505,6 +506,18 @@ class DatabaseHelper {
         } catch (e) {
           print('⚠️ Failed to upload exception log to endpoint: $e');
         }
+        
+        // Send to Firebase
+        try {
+          final firebaseService = FirebaseService();
+          await firebaseService.sendExceptionLog(
+            main: main,
+            details: details,
+            timestamp: timestamp,
+          );
+        } catch (e) {
+          print('⚠️ Failed to send exception log to Firebase: $e');
+        }
       } else {
         print('Exception logs table does not exist, skipping log: $main');
       }
@@ -575,6 +588,19 @@ class DatabaseHelper {
           );
         } catch (e) {
           print('⚠️ Failed to upload ignition log to endpoint: $e');
+        }
+        
+        // Send to Firebase
+        try {
+          final firebaseService = FirebaseService();
+          await firebaseService.sendIgnitionLog(
+            message: message,
+            details: details,
+            logType: logType,
+            timestamp: timestamp,
+          );
+        } catch (e) {
+          print('⚠️ Failed to send ignition log to Firebase: $e');
         }
       } else {
         print('Ignition logs table does not exist, skipping log: $message');
