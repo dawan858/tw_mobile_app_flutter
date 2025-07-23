@@ -7,9 +7,28 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:677023761996:android:420971c1e1149c0659d6e9",
+        "mobilesdk_app_id": "1:677023761996:android:3d826212ebb2d80759d6e9",
         "android_client_info": {
           "package_name": "com.example.twtracking"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC3K1esYYWZo2iIzpdymQuwhhuxIFAMEhM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:677023761996:android:420971c1e1149c0659d6e9",
+        "android_client_info": {
+          "package_name": "com.trackingWorld.tracking.tracking_world"
         }
       },
       "oauth_client": [],

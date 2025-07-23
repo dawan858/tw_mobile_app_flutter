@@ -1014,23 +1014,33 @@ class BackgroundService : Service() {
         // --- FIX: Always ensure tracking is started, regardless of how service is started ---
         ensureServiceIsTracking()
         // --- END FIX ---
-
+        
         return START_STICKY
     }
 
     // --- FIX: Helper to always start foreground, location updates, and periodic sync ---
     private fun ensureServiceIsTracking() {
         try {
-            // Always start foreground notification if not already running
+            // Only start foreground if not already running (don't override existing notification)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForeground(NOTIFICATION_ID, createNotification())
+                // Check if service is already in foreground
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                val activeNotifications = notificationManager.activeNotifications
+                val isAlreadyForeground = activeNotifications.any { it.id == NOTIFICATION_ID }
+                
+                if (!isAlreadyForeground) {
+                    startForeground(NOTIFICATION_ID, createNotification())
+                    Log.e(TAG, "ERROR: Started foreground service with default notification")
+                } else {
+                    Log.e(TAG, "ERROR: Service already in foreground, keeping existing notification")
+                }
             }
             // Always start location updates and periodic sync
             startLocationUpdates()
             startPeriodicSync()
-            Log.d(TAG, "ensureServiceIsTracking: Location updates and periodic sync started")
+            Log.e(TAG, "ERROR: ensureServiceIsTracking: Location updates and periodic sync started")
         } catch (e: Exception) {
-            Log.e(TAG, "Error ensuring service is tracking", e)
+            Log.e(TAG, "ERROR: Exception in ensureServiceIsTracking", e)
         }
     }
 
@@ -1663,13 +1673,13 @@ class BackgroundService : Service() {
             val currentTime = System.currentTimeMillis()
             val imei = getImei()
             val reason = calculateEnhancedReason(location)
-
+            
             var fixedSpeed = location.speed * 3.6f
             if (fixedSpeed < 0) fixedSpeed = 0f
-
+            
             // Allow saving with IMEI = "unknown" (buffer until IMEI is available)
             val currentIgStatus = this.igStatus
-
+            
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
@@ -1694,7 +1704,7 @@ class BackgroundService : Service() {
 
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
-
+            
             Log.e(TAG, "ERROR: 💾 SAVED LOCATION DATA - ID: $id, IMEI: $imei, Reason: $reason, Speed: ${String.format("%.1f", fixedSpeed)} km/h")
         } catch (e: Exception) {
             Log.e(TAG, "ERROR: Exception in saveLocationData: ${e.message}")
@@ -1710,7 +1720,7 @@ class BackgroundService : Service() {
                 Log.d(TAG, "getImei: Loaded from SharedPreferences: $storedImei")
                 return storedImei
             }
-
+            
             // Fallback to ImeiManager
             val imeiManager = ImeiManager.getInstance(this)
             val deviceId = imeiManager.getDeviceIdentifier()

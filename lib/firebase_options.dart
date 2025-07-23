@@ -54,7 +54,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyC3K1esYYWZo2iIzpdymQuwhhuxIFAMEhM',
-    appId: '1:677023761996:android:420971c1e1149c0659d6e9',
+    appId: '1:677023761996:android:3d826212ebb2d80759d6e9',
     messagingSenderId: '677023761996',
     projectId: 'twtracking-ed046',
     storageBucket: 'twtracking-ed046.firebasestorage.app',
