@@ -57,9 +57,9 @@
     <uses-permission android:name="android.car.permission.READ_CAR_DISPLAY_UNITS" />
 
     <application
-        android:label="tracking_world"
+        android:label="TW Live"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/launcher_icon"
         android:usesCleartextTraffic="true"
         android:allowBackup="false"
         android:killAfterRestore="false"

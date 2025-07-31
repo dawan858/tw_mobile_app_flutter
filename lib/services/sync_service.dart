@@ -34,6 +34,7 @@ class SyncService {
   bool _isServerDown = false;
   bool _isMonitoringServer = false; // NEW: Track if we're actively monitoring server
   DateTime? _lastServerRecoveryTime; // NEW: Track when server came back online
+  bool _connectionRestoredLogged = false; // NEW: Track if connection restored has been logged
   
   // Phase intervals in minutes (for fallback only)
   static const List<int> _retryPhases = [5, 15, 30, 45, 60, 240, 480]; // 5min, 15min, 30min, 45min, 1hr, 4hr, 8hr
@@ -45,6 +46,7 @@ class SyncService {
   
   // NEW: Configuration reload timer
   Timer? _configReloadTimer;
+  Timer? _connectionResetTimer; // NEW: Timer to reset connection restored flag
   
   factory SyncService() => _instance;
   SyncService._internal() {
@@ -53,6 +55,14 @@ class SyncService {
     _configReloadTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
       await _loadConfiguration();
     });
+    
+    // Start connection reset timer (reset flag every 30 minutes to allow new connection restored logs)
+    _connectionResetTimer = Timer.periodic(const Duration(minutes: 30), (timer) {
+      if (_connectionRestoredLogged) {
+        _resetConnectionRestoredFlag();
+      }
+    });
+    
     _initConnectivityListener();
     // REMOVED: CarPowerService callback - now handled by Kotlin BackgroundService
   }
@@ -87,12 +97,17 @@ class SyncService {
         if (hasInternet) {
           final isServerHealthy = await _isServerHealthy();
           if (isServerHealthy) {
-            // Log connection restored with data sync
-            await _dbHelper.insertExceptionLog(
-              main: 'Connection Restored',
-              details: 'Data is synced with the server',
-            );
-            print('✅ Connection restored - data is synced with the server');
+            // Only log connection restored if it hasn't been logged recently
+            if (!_connectionRestoredLogged) {
+              await _dbHelper.insertExceptionLog(
+                main: 'Connection Restored',
+                details: 'Data is synced with the server',
+              );
+              _connectionRestoredLogged = true;
+              print('✅ Connection restored - data is synced with the server');
+            } else {
+              print('✅ Connection already restored, skipping duplicate log');
+            }
           } else {
             // Log server not responding even with internet
             await _dbHelper.insertExceptionLog(
@@ -113,6 +128,8 @@ class SyncService {
         _startSync();
       } else {
         print('Network connection lost');
+        // Reset connection restored flag when network is lost
+        _connectionRestoredLogged = false;
         // Log connection error when network is lost
         await _dbHelper.insertExceptionLog(
           main: 'Connection Error',
@@ -252,6 +269,7 @@ class SyncService {
     if (!_isServerDown) {
       _isServerDown = true;
       _lastServerDownTime = DateTime.now();
+      _connectionRestoredLogged = false; // Reset connection restored flag when server goes down
       print('🚨 SERVER DOWN DETECTED - Starting continuous monitoring');
       
       await _dbHelper.insertExceptionLog(
@@ -313,10 +331,14 @@ class SyncService {
         _stopContinuousServerMonitoring();
         _resetPhases();
         
-        await _dbHelper.insertExceptionLog(
-          main: 'Connection Restored',
-          details: 'Data is synced with the server - server recovery after ${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes of downtime',
-        );
+        // Only log server recovery if connection restored hasn't been logged
+        if (!_connectionRestoredLogged) {
+          await _dbHelper.insertExceptionLog(
+            main: 'Connection Restored',
+            details: 'Data is synced with the server - server recovery after ${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes of downtime',
+          );
+          _connectionRestoredLogged = true;
+        }
         
         // Immediately sync all pending data
         await _syncAllPendingData();
@@ -333,6 +355,12 @@ class SyncService {
     _serverMonitoringTimer = null;
     _isMonitoringServer = false;
     print('🛑 Continuous server monitoring stopped');
+  }
+
+  // NEW: Reset connection restored flag (for manual reset if needed)
+  void _resetConnectionRestoredFlag() {
+    _connectionRestoredLogged = false;
+    print('🔄 Connection restored flag reset');
   }
 
   // NEW: Sync all pending data when server comes back online
@@ -371,10 +399,14 @@ class SyncService {
       
       print('✅ Full sync completed: $totalSynced successful, $totalFailed failed');
       
-      await _dbHelper.insertExceptionLog(
-        main: 'Connection Restored',
-        details: 'Data is synced with the server - full sync completed: $totalSynced records synced, $totalFailed failed',
-      );
+      // Only log if connection restored hasn't been logged yet
+      if (!_connectionRestoredLogged) {
+        await _dbHelper.insertExceptionLog(
+          main: 'Connection Restored',
+          details: 'Data is synced with the server - full sync completed: $totalSynced records synced, $totalFailed failed',
+        );
+        _connectionRestoredLogged = true;
+      }
       
     } catch (e) {
       print('❌ Error during full sync: $e');
@@ -799,12 +831,13 @@ class SyncService {
         // Some or all records succeeded - reset phases
         _resetPhases();
         
-        // Log connection restored when data is successfully synced
-        if (successCount > 0) {
+        // Only log connection restored if it hasn't been logged and this is a recovery scenario
+        if (successCount > 0 && !_connectionRestoredLogged && _isServerDown) {
           await _dbHelper.insertExceptionLog(
             main: 'Connection Restored',
             details: 'Data is synced with the server - successfully synced $successCount records',
           );
+          _connectionRestoredLogged = true;
         }
       }
 
@@ -876,6 +909,10 @@ class SyncService {
   Future<void> stopPeriodicSync() async {
     _syncTimer?.cancel();
     _syncTimer = null;
+    _configReloadTimer?.cancel();
+    _configReloadTimer = null;
+    _connectionResetTimer?.cancel();
+    _connectionResetTimer = null;
     _stopContinuousServerMonitoring(); // Also stop continuous monitoring
     print('Periodic sync and continuous monitoring stopped');
   }
