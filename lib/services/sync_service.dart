@@ -78,12 +78,46 @@ class SyncService {
   }
 
   void _initConnectivityListener() {
-    _connectivity.onConnectivityChanged.listen((ConnectivityResult result) {
+    _connectivity.onConnectivityChanged.listen((ConnectivityResult result) async {
       if (result != ConnectivityResult.none) {
         print('Network connection restored, starting sync...');
+        
+        // Check if server is actually reachable after network restoration
+        final hasInternet = await _hasInternetConnection();
+        if (hasInternet) {
+          final isServerHealthy = await _isServerHealthy();
+          if (isServerHealthy) {
+            // Log connection restored with data sync
+            await _dbHelper.insertExceptionLog(
+              main: 'Connection Restored',
+              details: 'Data is synced with the server',
+            );
+            print('✅ Connection restored - data is synced with the server');
+          } else {
+            // Log server not responding even with internet
+            await _dbHelper.insertExceptionLog(
+              main: 'Server Not Responding',
+              details: 'Server down - network available but server unreachable',
+            );
+            print('❌ Server not responding - server down');
+          }
+        } else {
+          // Log connection error - no internet
+          await _dbHelper.insertExceptionLog(
+            main: 'Connection Error',
+            details: 'Unit is not connected to server - no internet connection',
+          );
+          print('❌ Connection error - unit is not connected to server');
+        }
+        
         _startSync();
       } else {
         print('Network connection lost');
+        // Log connection error when network is lost
+        await _dbHelper.insertExceptionLog(
+          main: 'Connection Error',
+          details: 'Unit is not connected to server - network connection lost',
+        );
       }
     });
   }
@@ -121,9 +155,19 @@ class SyncService {
         return await _testMainEndpoint();
       }
       
+      // Server responded but with error status
+      await _dbHelper.insertExceptionLog(
+        main: 'Server Not Responding',
+        details: 'Server down - health check returned status ${response.statusCode}',
+      );
       return false;
     } catch (e) {
       print('Server health check failed: $e');
+      // Log server not responding when health check fails
+      await _dbHelper.insertExceptionLog(
+        main: 'Server Not Responding',
+        details: 'Server down - health check failed: $e',
+      );
       // If health check fails, try the main endpoint as fallback
       return await _testMainEndpoint();
     }
@@ -145,12 +189,27 @@ class SyncService {
       print('Main endpoint response: ${response.statusCode}');
       
       // Accept 200, 201, 404, 405 (GET not allowed but server is reachable)
-      return response.statusCode == 200 || 
+      final isHealthy = response.statusCode == 200 || 
              response.statusCode == 201 || 
              response.statusCode == 404 || 
              response.statusCode == 405;
+      
+      if (!isHealthy) {
+        // Server responded but with error status
+        await _dbHelper.insertExceptionLog(
+          main: 'Server Not Responding',
+          details: 'Server down - main endpoint returned status ${response.statusCode}',
+        );
+      }
+      
+      return isHealthy;
     } catch (e) {
       print('Main endpoint test failed: $e');
+      // Log server not responding when main endpoint test fails
+      await _dbHelper.insertExceptionLog(
+        main: 'Server Not Responding',
+        details: 'Server down - main endpoint test failed: $e',
+      );
       return false;
     }
   }
@@ -196,8 +255,8 @@ class SyncService {
       print('🚨 SERVER DOWN DETECTED - Starting continuous monitoring');
       
       await _dbHelper.insertExceptionLog(
-        main: 'Server Down',
-        details: 'Server unavailable, starting continuous monitoring every ${_serverMonitoringInterval.inSeconds} seconds',
+        main: 'Server Not Responding',
+        details: 'Server down - starting continuous monitoring every ${_serverMonitoringInterval.inSeconds} seconds',
       );
       
       // Start continuous server monitoring
@@ -238,6 +297,11 @@ class SyncService {
       // Check if we have internet connection
       if (!await _hasInternetConnection()) {
         print('⚠️ No internet connection, skipping server check');
+        // Log connection error during monitoring
+        await _dbHelper.insertExceptionLog(
+          main: 'Connection Error',
+          details: 'Unit is not connected to server - no internet connection during monitoring',
+        );
         return;
       }
       
@@ -250,8 +314,8 @@ class SyncService {
         _resetPhases();
         
         await _dbHelper.insertExceptionLog(
-          main: 'Server Recovery',
-          details: 'Server is back online after ${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes of downtime',
+          main: 'Connection Restored',
+          details: 'Data is synced with the server - server recovery after ${DateTime.now().difference(_lastServerDownTime!).inMinutes} minutes of downtime',
         );
         
         // Immediately sync all pending data
@@ -308,8 +372,8 @@ class SyncService {
       print('✅ Full sync completed: $totalSynced successful, $totalFailed failed');
       
       await _dbHelper.insertExceptionLog(
-        main: 'Full Sync After Recovery',
-        details: 'Synced $totalSynced records, $totalFailed failed after server recovery',
+        main: 'Connection Restored',
+        details: 'Data is synced with the server - full sync completed: $totalSynced records synced, $totalFailed failed',
       );
       
     } catch (e) {
@@ -397,32 +461,41 @@ class SyncService {
     try {
       final db = await _dbHelper.database;
       
-      // Priority 1: High-speed events (>60 km/h) - most critical
+      // Priority 1: Ignition events - most critical
+      var ignitionData = await db.rawQuery('''
+        SELECT * FROM location_data 
+        WHERE sync_status = 0 AND (reason = 'Ignition On' OR reason = 'Ignition Off') 
+        ORDER BY createAt ASC 
+        LIMIT ?
+      ''', [limit ~/ 4]);
+      
+      // Priority 2: High-speed events (>60 km/h) - very critical
       var highSpeedData = await db.rawQuery('''
         SELECT * FROM location_data 
         WHERE sync_status = 0 AND speed > 16.67 
         ORDER BY createAt ASC 
         LIMIT ?
-      ''', [limit ~/ 3]);
+      ''', [limit ~/ 4]);
       
-      // Priority 2: Distance-based events (>1000m) - important
+      // Priority 3: Distance-based events (>1000m) - important
       var distanceData = await db.rawQuery('''
         SELECT * FROM location_data 
         WHERE sync_status = 0 AND reason = 'Distance' 
         ORDER BY createAt ASC 
         LIMIT ?
-      ''', [limit ~/ 3]);
+      ''', [limit ~/ 4]);
       
-      // Priority 3: Regular timer-based events - normal priority
+      // Priority 4: Regular timer-based events - normal priority
       var regularData = await db.rawQuery('''
         SELECT * FROM location_data 
         WHERE sync_status = 0 AND reason = 'Timer' 
         ORDER BY createAt ASC 
         LIMIT ?
-      ''', [limit ~/ 3]);
+      ''', [limit ~/ 4]);
       
       // Combine and sort by priority
       final allData = <Map<String, dynamic>>[];
+      allData.addAll(ignitionData);
       allData.addAll(highSpeedData);
       allData.addAll(distanceData);
       allData.addAll(regularData);
@@ -439,7 +512,7 @@ class SyncService {
         }
       }
       
-      print('📊 Prioritized data: ${highSpeedData.length} high-speed, ${distanceData.length} distance, ${regularData.length} regular');
+      print('📊 Prioritized data: ${ignitionData.length} ignition, ${highSpeedData.length} high-speed, ${distanceData.length} distance, ${regularData.length} regular');
       return uniqueData;
       
     } catch (e) {
@@ -543,6 +616,11 @@ class SyncService {
       // Check internet connectivity
       if (!await _hasInternetConnection()) {
         print('No internet connection available');
+        // Log connection error when no internet is available
+        await _dbHelper.insertExceptionLog(
+          main: 'Connection Error',
+          details: 'Unit is not connected to server - no internet connection available',
+        );
         return;
       }
 
@@ -720,6 +798,14 @@ class SyncService {
       } else if (successCount > 0) {
         // Some or all records succeeded - reset phases
         _resetPhases();
+        
+        // Log connection restored when data is successfully synced
+        if (successCount > 0) {
+          await _dbHelper.insertExceptionLog(
+            main: 'Connection Restored',
+            details: 'Data is synced with the server - successfully synced $successCount records',
+          );
+        }
       }
 
       // Get updated stats
@@ -821,9 +907,18 @@ class SyncService {
         await _dbHelper.insertLocationData(data);
         print('Location data queued successfully with igStatus: ${data['igStatus']}');
         
-        // Try to sync immediately if we have connection
+        // Check if this is an ignition change event for immediate sync
+        final isIgnitionEvent = data['reason'] == 'Ignition On' || data['reason'] == 'Ignition Off';
+        
+        // Try to sync immediately if we have connection (prioritize ignition events)
         if (await _hasInternetConnection()) {
-          _startSync();
+          if (isIgnitionEvent) {
+            print('🚗 Ignition event detected - triggering immediate sync');
+            // Force immediate sync for ignition events
+            _startSync();
+          } else {
+            _startSync();
+          }
         }
       } else {
         print('Duplicate location entry detected, skipping insert');

@@ -115,6 +115,7 @@ class BackgroundService : Service() {
     private var isCarPowerAvailable = false
     private var serviceStartAttempts = 0
     private val MAX_START_ATTEMPTS = 3
+    private var lastIgStatus = 0 // Track previous igStatus for ignition change detection
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -153,16 +154,39 @@ class BackgroundService : Service() {
                         if (newIgStatus == 1) "acc_on" else "acc_off"
                     )
 
-                    // Save a new location point with the changed igStatus and sync
+                    // Save a new location point with ignition change reason and sync
                     if (lastLocation != null) {
-                        saveLocationData(lastLocation!!)
+                        // Set ignition change reason
+                        val ignitionReason = if (newIgStatus == 1) "Ignition On" else "Ignition Off"
+                        Log.d(TAG, "🚗 Saving ignition change location with reason: $ignitionReason, igStatus: $newIgStatus")
+                        saveLocationDataWithReason(lastLocation!!, ignitionReason)
                         // Trigger immediate sync
                         syncExecutor.execute {
                             performSyncToServer()
                         }
                     } else {
                         Log.w(TAG, "⚠️ No location available, igStatus changed but not synced yet")
+                        // Try to get a fresh location for ignition change
+                        try {
+                            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                                val freshLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                                if (freshLocation != null) {
+                                    val ignitionReason = if (newIgStatus == 1) "Ignition On" else "Ignition Off"
+                                    Log.d(TAG, "🚗 Saving ignition change with fresh location, reason: $ignitionReason")
+                                    saveLocationDataWithReason(freshLocation, ignitionReason)
+                                    syncExecutor.execute {
+                                        performSyncToServer()
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error getting fresh location for ignition change", e)
+                        }
                     }
+                    
+                    // Update lastIgStatus for future change detection
+                    lastIgStatus = oldStatus
                 } else {
                     Log.d(TAG, "ℹ️ igStatus value confirmed: $newIgStatus")
                 }
@@ -1625,12 +1649,23 @@ class BackgroundService : Service() {
     private fun calculateEnhancedReason(location: Location): String {
         val speed = getEnhancedAccurateSpeed(location)
         
+        Log.d(TAG, "🔍 Reason calculation - Config: Distance=${distanceThreshold}m, Angle=${angleThreshold}°, Speed=${overSpeedingThreshold}km/h")
+        
         // Check for distance-based reason if we have a previous location
         if (lastLocation != null) {
             val distance = lastLocation!!.distanceTo(location)
+            Log.d(TAG, "📏 Distance calculation: ${String.format("%.2f", distance)}m (threshold: ${distanceThreshold}m)")
+            Log.d(TAG, "📍 Last position: ${lastLocation!!.latitude}, ${lastLocation!!.longitude}")
+            Log.d(TAG, "📍 Current position: ${location.latitude}, ${location.longitude}")
+            
             if (distance >= distanceThreshold) {
+                Log.d(TAG, "✅ Distance reason triggered: ${String.format("%.2f", distance)}m >= ${distanceThreshold}m")
                 return "Distance"
+            } else {
+                Log.d(TAG, "ℹ️ Distance below threshold: ${String.format("%.2f", distance)}m < ${distanceThreshold}m")
             }
+        } else {
+            Log.d(TAG, "📍 First position - no previous location for distance calculation")
         }
         
         // Check for turn detection if we have a previous location
@@ -1638,16 +1673,31 @@ class BackgroundService : Service() {
             val bearingChange = kotlin.math.abs(location.bearing - lastLocation!!.bearing)
             val normalizedBearingChange = if (bearingChange > 180f) 360f - bearingChange else bearingChange
             
+            Log.d(TAG, "🧭 Bearing change: ${String.format("%.2f", normalizedBearingChange)}° (threshold: ${angleThreshold}°)")
+            
             if (normalizedBearingChange >= angleThreshold) {
+                Log.d(TAG, "✅ Turn reason triggered: ${String.format("%.2f", normalizedBearingChange)}° >= ${angleThreshold}°")
                 return "Turn"
             }
         }
         
         return when {
-            speed > overSpeedingThreshold -> "Over Speeding"
-            speed < 3f -> "Idle"
-            speed >= 8f -> "Move"
-            else -> "Idle"
+            speed > overSpeedingThreshold -> {
+                Log.d(TAG, "✅ Over Speeding reason triggered: ${String.format("%.1f", speed)} km/h > ${overSpeedingThreshold} km/h")
+                "Over Speeding"
+            }
+            speed < 3f -> {
+                Log.d(TAG, "✅ Idle reason triggered: speed < 3 km/h")
+                "Idle"
+            }
+            speed >= 8f -> {
+                Log.d(TAG, "✅ Move reason triggered: speed >= 8 km/h")
+                "Move"
+            }
+            else -> {
+                Log.d(TAG, "✅ Idle reason triggered: default case")
+                "Idle"
+            }
         }
     }
 
@@ -1664,6 +1714,11 @@ class BackgroundService : Service() {
     }
 
     private fun saveLocationData(location: Location) {
+        val reason = calculateEnhancedReason(location)
+        saveLocationDataWithReason(location, reason)
+    }
+
+    private fun saveLocationDataWithReason(location: Location, reason: String) {
         try {
             if (!isIgStatusReady) {
                 Log.w(TAG, "⚠️ Discarding location point because igStatus is not ready yet.")
@@ -1672,13 +1727,14 @@ class BackgroundService : Service() {
 
             val currentTime = System.currentTimeMillis()
             val imei = getImei()
-            val reason = calculateEnhancedReason(location)
             
             var fixedSpeed = location.speed * 3.6f
             if (fixedSpeed < 0) fixedSpeed = 0f
             
             // Allow saving with IMEI = "unknown" (buffer until IMEI is available)
             val currentIgStatus = this.igStatus
+            
+            Log.d(TAG, "💾 Saving location data with reason: $reason, igStatus: $currentIgStatus")
             
             val values = ContentValues().apply {
                 put("latitude", location.latitude)

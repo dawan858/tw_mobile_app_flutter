@@ -212,6 +212,7 @@ void onStart(ServiceInstance service) async {
   });
 
   Position? lastPosition;
+  int _lastIgStatus = 0; // Track previous igStatus for ignition change detection
 
   // Switched back to Timer.periodic for reliable, time-based updates.
   Timer.periodic(Duration(seconds: gpsTimer), (timer) async {
@@ -229,8 +230,16 @@ void onStart(ServiceInstance service) async {
         return; // Don't proceed if we can't get a reliable status
       }
       
-      // 2. If ignition is off, skip this cycle.
-      if (currentIgStatus == 0) {
+      // 2. Check for ignition state change and update tracking
+      bool ignitionChanged = false;
+      if (currentIgStatus != _lastIgStatus) {
+        print('🔄 Ignition state changed: $_lastIgStatus -> $currentIgStatus');
+        ignitionChanged = true;
+        _lastIgStatus = currentIgStatus;
+      }
+      
+      // 3. If ignition is off and we haven't just detected a change, skip this cycle.
+      if (currentIgStatus == 0 && !ignitionChanged) {
         print('ℹ️ Ignition is off (igStatus: 0). Skipping timer-based location save.');
         return;
       }
@@ -242,8 +251,20 @@ void onStart(ServiceInstance service) async {
 
       // 4. Determine reason using configuration values
       String reason = "Timer";
-      if (lastPosition == null) {
+      
+      // Check if this is an ignition change cycle
+      if (ignitionChanged) {
+        reason = currentIgStatus == 1 ? "Ignition On" : "Ignition Off";
+        print('🚗 Ignition change cycle detected - reason: $reason');
+        
+        // For ignition off events, we should also check if the Kotlin service is handling this
+        // to avoid duplicate ignition off events
+        if (currentIgStatus == 0) {
+          print('🚗 Ignition OFF detected in Flutter service - ensuring proper handling');
+        }
+      } else if (lastPosition == null) {
         reason = "Initial Position";
+        print('📍 First position - reason: $reason');
       } else {
         // Check for distance-based reason first using configured threshold
         final distance = Geolocator.distanceBetween(
@@ -253,21 +274,33 @@ void onStart(ServiceInstance service) async {
           position.longitude
         );
         
+        print('📏 Distance calculation: ${distance.toStringAsFixed(2)}m (threshold: ${distanceThreshold}m)');
+        print('📍 Last position: ${lastPosition!.latitude}, ${lastPosition!.longitude}');
+        print('📍 Current position: ${position.latitude}, ${position.longitude}');
+        
         if (distance >= distanceThreshold) {
           reason = "Distance";
+          print('✅ Distance reason triggered: ${distance.toStringAsFixed(2)}m >= ${distanceThreshold}m');
         } else {
+          print('ℹ️ Distance below threshold: ${distance.toStringAsFixed(2)}m < ${distanceThreshold}m');
+          
           // Check for turn detection if vehicle is moving using configured threshold
           if (position.speed * 3.6 >= 5) { // speed >= 5 km/h
             final bearingChange = (position.heading ?? 0) - (lastPosition!.heading ?? 0);
             final normalizedBearingChange = bearingChange.abs() > 180 ? 360 - bearingChange.abs() : bearingChange.abs();
             
+            print('🧭 Bearing change: ${normalizedBearingChange.toStringAsFixed(2)}° (threshold: ${angleThreshold}°)');
+            
             if (normalizedBearingChange >= angleThreshold) {
               reason = "Turn";
+              print('✅ Turn reason triggered: ${normalizedBearingChange.toStringAsFixed(2)}° >= ${angleThreshold}°');
             } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
               reason = "Movement";
+              print('✅ Movement reason triggered: speed > 1 m/s');
             }
           } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
             reason = "Movement";
+            print('✅ Movement reason triggered: speed > 1 m/s');
           }
         }
       }
@@ -300,7 +333,7 @@ void onStart(ServiceInstance service) async {
       };
 
       await SyncService().queueLocationData(data);
-      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus, Config: GPS=${gpsTimer}s, Distance=${distanceThreshold}m, Angle=${angleThreshold}°');
+      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus, IgnitionChanged: $ignitionChanged, Config: GPS=${gpsTimer}s, Distance=${distanceThreshold}m, Angle=${angleThreshold}°');
       
       lastPosition = position;
 
@@ -311,6 +344,10 @@ void onStart(ServiceInstance service) async {
 }
 
 Future<void> _queueLocationData(Position position, String reason, double accurateSpeed) async {
+  await _queueLocationDataWithReason(position, reason, accurateSpeed);
+}
+
+Future<void> _queueLocationDataWithReason(Position position, String reason, double accurateSpeed) async {
   try {
     print('=== QUEUING LOCATION DATA ===');
     
@@ -400,5 +437,42 @@ Future<void> _queueLocationData(Position position, String reason, double accurat
         return double.tryParse(stringValue) ?? defaultValue;
       }
       return defaultValue;
+    }
+  }
+
+  // NEW: Test distance calculation with sample coordinates
+  Future<void> testDistanceCalculation() async {
+    try {
+      print('🧪 === TESTING DISTANCE CALCULATION ===');
+      
+      // Load current configuration
+      await loadConfiguration();
+      print('📊 Current configuration:');
+      print('   - Distance threshold: ${distanceThreshold}m');
+      print('   - Angle threshold: ${angleThreshold}°');
+      print('   - Speed threshold: ${overSpeedingThreshold} km/h');
+      
+      // Test coordinates that should trigger distance reason
+      final lat1 = 31.3025483;
+      final lon1 = 74.0778433;
+      final lat2 = 31.3115483; // ~1000m north
+      final lon2 = 74.0778433;
+      
+      final distance = Geolocator.distanceBetween(lat1, lon1, lat2, lon2);
+      print('📏 Test distance calculation:');
+      print('   - Point 1: $lat1, $lon1');
+      print('   - Point 2: $lat2, $lon2');
+      print('   - Calculated distance: ${distance.toStringAsFixed(2)}m');
+      print('   - Distance threshold: ${distanceThreshold}m');
+      print('   - Should trigger distance reason: ${distance >= distanceThreshold}');
+      
+      if (distance >= distanceThreshold) {
+        print('✅ Distance calculation test PASSED - should trigger "Distance" reason');
+      } else {
+        print('❌ Distance calculation test FAILED - distance below threshold');
+      }
+      
+    } catch (e) {
+      print('❌ Error in distance calculation test: $e');
     }
   }

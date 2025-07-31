@@ -12,13 +12,13 @@ class ConfigService {
     'configTimer': 60,
     'uploadTimer': 10,
     'retryCounter': 10,
-    'angleThreshold': 45,
-    'overSpeedingThreshold': 60,
+    'angleThreshold': 45.0,
+    'overSpeedingThreshold': 60.0,
     'travelStartTimer': 20,
     'travelStopTimer': 20,
     'movingTimer': 60,
     'stopTimer': 130,
-    'distanceThreshold': 1000,
+    'distanceThreshold': 1000.0,
     'heartbeatTimer': 30,
     'liveStatusUpdateTimer': 30,
   };
@@ -127,26 +127,40 @@ class ConfigService {
         // Try to get the value as the correct type first
         dynamic value;
         if (defaultConfig[key] is int) {
+          // Try to get as int first
           value = prefs.getInt('flutter.$key');
           if (value == null) {
-            // Try as string and parse
-            final stringValue = prefs.getString('flutter.$key');
-            if (stringValue != null) {
-              final intValue = int.tryParse(stringValue);
-              if (intValue != null) {
-                value = intValue;
+            // Try as double and convert to int
+            final doubleValue = prefs.getDouble('flutter.$key');
+            if (doubleValue != null) {
+              value = doubleValue.toInt();
+            } else {
+              // Try as string and parse
+              final stringValue = prefs.getString('flutter.$key');
+              if (stringValue != null) {
+                final intValue = int.tryParse(stringValue);
+                if (intValue != null) {
+                  value = intValue;
+                }
               }
             }
           }
         } else if (defaultConfig[key] is double) {
+          // Try to get as double first
           value = prefs.getDouble('flutter.$key');
           if (value == null) {
-            // Try as string and parse
-            final stringValue = prefs.getString('flutter.$key');
-            if (stringValue != null) {
-              final doubleValue = double.tryParse(stringValue);
-              if (doubleValue != null) {
-                value = doubleValue;
+            // Try as int and convert to double
+            final intValue = prefs.getInt('flutter.$key');
+            if (intValue != null) {
+              value = intValue.toDouble();
+            } else {
+              // Try as string and parse
+              final stringValue = prefs.getString('flutter.$key');
+              if (stringValue != null) {
+                final doubleValue = double.tryParse(stringValue);
+                if (doubleValue != null) {
+                  value = doubleValue;
+                }
               }
             }
           }
@@ -185,26 +199,42 @@ class ConfigService {
         // Try to get the value as the correct type first
         dynamic value;
         if (defaultConfig[key] is int) {
+          // Try to get as int first
           value = prefs.getInt('flutter.$key');
           if (value == null) {
-            // Try as string and parse
-            final stringValue = prefs.getString('flutter.$key');
-            if (stringValue != null) {
-              final intValue = int.tryParse(stringValue);
-              if (intValue != null) {
-                value = intValue;
+            // Try as double and convert to int
+            final doubleValue = prefs.getDouble('flutter.$key');
+            if (doubleValue != null) {
+              value = doubleValue.toInt();
+              print('🔄 Converted $key from double ($doubleValue) to int ($value)');
+            } else {
+              // Try as string and parse
+              final stringValue = prefs.getString('flutter.$key');
+              if (stringValue != null) {
+                final intValue = int.tryParse(stringValue);
+                if (intValue != null) {
+                  value = intValue;
+                }
               }
             }
           }
         } else if (defaultConfig[key] is double) {
+          // Try to get as double first
           value = prefs.getDouble('flutter.$key');
           if (value == null) {
-            // Try as string and parse
-            final stringValue = prefs.getString('flutter.$key');
-            if (stringValue != null) {
-              final doubleValue = double.tryParse(stringValue);
-              if (doubleValue != null) {
-                value = doubleValue;
+            // Try as int and convert to double
+            final intValue = prefs.getInt('flutter.$key');
+            if (intValue != null) {
+              value = intValue.toDouble();
+              print('🔄 Converted $key from int ($intValue) to double ($value)');
+            } else {
+              // Try as string and parse
+              final stringValue = prefs.getString('flutter.$key');
+              if (stringValue != null) {
+                final doubleValue = double.tryParse(stringValue);
+                if (doubleValue != null) {
+                  value = doubleValue;
+                }
               }
             }
           }
@@ -330,5 +360,58 @@ class ConfigService {
     } catch (e) {
       print('Error sending default config: $e');
     }
+  }
+
+  // NEW: Fix existing configuration data with incorrect types
+  Future<void> fixConfigurationTypes() async {
+    final prefs = await SharedPreferences.getInstance();
+    print('🔧 === FIXING CONFIGURATION TYPES ===');
+    
+    for (var key in defaultConfig.keys) {
+      try {
+        final prefKey = 'flutter.$key';
+        
+        if (defaultConfig[key] is int) {
+          // Check if stored as double and convert to int
+          final doubleValue = prefs.getDouble(prefKey);
+          if (doubleValue != null) {
+            final intValue = doubleValue.toInt();
+            await prefs.setInt(prefKey, intValue);
+            await prefs.remove(prefKey); // Remove the double value
+            print('🔧 Fixed $key: converted double ($doubleValue) to int ($intValue)');
+          }
+        } else if (defaultConfig[key] is double) {
+          // Check if stored as int and convert to double
+          final intValue = prefs.getInt(prefKey);
+          if (intValue != null) {
+            final doubleValue = intValue.toDouble();
+            await prefs.setDouble(prefKey, doubleValue);
+            await prefs.remove(prefKey); // Remove the int value
+            print('🔧 Fixed $key: converted int ($intValue) to double ($doubleValue)');
+          }
+        }
+      } catch (e) {
+        print('❌ Error fixing $key: $e');
+      }
+    }
+    
+    print('✅ Configuration type fixing completed');
+  }
+
+  // NEW: Clear all configuration and reset to defaults
+  Future<void> clearAndResetConfiguration() async {
+    final prefs = await SharedPreferences.getInstance();
+    print('🧹 === CLEARING AND RESETTING CONFIGURATION ===');
+    
+    // Clear all flutter.* configuration keys
+    for (var key in defaultConfig.keys) {
+      final prefKey = 'flutter.$key';
+      await prefs.remove(prefKey);
+      print('🧹 Cleared $prefKey');
+    }
+    
+    // Save default configuration
+    await _saveConfig(defaultConfig);
+    print('✅ Configuration cleared and reset to defaults');
   }
 } 

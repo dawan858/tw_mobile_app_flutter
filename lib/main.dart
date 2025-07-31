@@ -86,6 +86,10 @@ void main() async {
     // Fetch configuration from server
     await configService.fetchConfigFromServer(imei);
     
+    // NEW: Fix configuration types before validation
+    print('🔧 Fixing configuration types...');
+    await configService.fixConfigurationTypes();
+    
     // NEW: Validate configuration after loading
     print('🔍 Validating configuration after startup...');
     await configService.validateConfig();
@@ -173,6 +177,7 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isTracking = false;
+  int _lastIgStatus = 0; // Track previous igStatus for ignition change detection
   final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
   final ApiService _apiService = ApiService();
   
@@ -397,8 +402,24 @@ class _GPSTrackerState extends State<GPSTracker> {
     
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: locationSettings
-    ).listen((Position position) {
+    ).listen((Position position) async {
       print('Received position update: ${position.latitude}, ${position.longitude}');
+      
+      // Check for ignition state change
+      final prefs = await SharedPreferences.getInstance();
+      final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
+      
+      if (currentIgStatus != _lastIgStatus) {
+        print('🔄 Ignition state changed in foreground: $_lastIgStatus -> $currentIgStatus');
+        
+        // Send location data with ignition change reason
+        final ignitionReason = currentIgStatus == 1 ? "Ignition On" : "Ignition Off";
+        await _sendLocationDataWithReason(ignitionReason);
+        print('✅ Foreground location sent with ignition change reason: $ignitionReason');
+        
+        _lastIgStatus = currentIgStatus;
+      }
+      
       if (mounted) {
         setState(() {
           _currentPosition = position;
@@ -433,8 +454,11 @@ class _GPSTrackerState extends State<GPSTracker> {
       double overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
       double distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
       
+      print('🔍 Reason calculation - Config: Distance=${distanceThreshold}m, Angle=${angleThreshold}°, Speed=${overSpeedingThreshold}km/h');
+      
       if (position.speed * 3.6 > overSpeedingThreshold) {
         _reason = "Over Speeding";
+        print('✅ Over Speeding reason triggered: ${(position.speed * 3.6).toStringAsFixed(1)} km/h > ${overSpeedingThreshold} km/h');
       } else if (_currentPosition != null) {
         // Check for distance-based reason first
         final distance = Geolocator.distanceBetween(
@@ -444,20 +468,34 @@ class _GPSTrackerState extends State<GPSTracker> {
           position.longitude
         );
         
+        print('📏 Distance calculation: ${distance.toStringAsFixed(2)}m (threshold: ${distanceThreshold}m)');
+        print('📍 Last position: ${_currentPosition!.latitude}, ${_currentPosition!.longitude}');
+        print('📍 Current position: ${position.latitude}, ${position.longitude}');
+        
         if (distance >= distanceThreshold) {
           _reason = "Distance";
+          print('✅ Distance reason triggered: ${distance.toStringAsFixed(2)}m >= ${distanceThreshold}m');
         } else {
+          print('ℹ️ Distance below threshold: ${distance.toStringAsFixed(2)}m < ${distanceThreshold}m');
+          
           final bearingChange = (_bearing - _currentPosition!.heading).abs();
           final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
           
+          print('🧭 Bearing change: ${normalizedBearingChange.toStringAsFixed(2)}° (threshold: ${angleThreshold}°)');
+          
           if (position.speed * 3.6 >= 5 && normalizedBearingChange > angleThreshold) {
             _reason = "Turn";
+            print('✅ Turn reason triggered: ${normalizedBearingChange.toStringAsFixed(2)}° > ${angleThreshold}°');
           } else if (position.speed * 3.6 > 1) {
             _reason = "Move";
+            print('✅ Move reason triggered: speed > 1 km/h');
           } else {
             _reason = "Idle";
+            print('✅ Idle reason triggered: low speed');
           }
         }
+      } else {
+        print('📍 First position - no previous position for distance calculation');
       }
     });
   }
@@ -476,6 +514,11 @@ class _GPSTrackerState extends State<GPSTracker> {
   
   // Send location data to server
   Future<void> _sendLocationData() async {
+    await _sendLocationDataWithReason(_reason);
+  }
+
+  // Send location data to server with custom reason
+  Future<void> _sendLocationDataWithReason(String reason) async {
     // Get current igStatus from SharedPreferences (set by native side)
     final prefs = await SharedPreferences.getInstance();
     final currentIgStatus = prefs.getInt('current_ig_status') ?? 0;
@@ -496,7 +539,7 @@ class _GPSTrackerState extends State<GPSTracker> {
       'name': _name,
       'phoneNo': _phoneNo,
       'provider': _provider,
-      'reason': _reason,
+      'reason': reason,
       'speed': _speed,
       'time': _time,
       'versionNo': _appVersion,
@@ -506,7 +549,7 @@ class _GPSTrackerState extends State<GPSTracker> {
     try {
       final success = await _apiService.sendLocationData(locationData);
       if (success) {
-        print('Data sent successfully to backend');
+        print('Data sent successfully to backend with reason: $reason');
       } else {
         print('Failed to send data to backend');
       }
