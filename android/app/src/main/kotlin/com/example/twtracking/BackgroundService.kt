@@ -40,6 +40,7 @@ import android.os.SystemClock
 import com.google.gson.Gson
 import android.os.Handler
 import java.util.Timer
+import io.flutter.plugin.common.MethodChannel
 
 class BackgroundService : Service() {
     companion object {
@@ -1004,6 +1005,10 @@ class BackgroundService : Service() {
                 val config = getCurrentConfiguration()
                 Log.d(TAG, "Current configuration: $config")
             }
+            intent?.action == "REFRESH_SATELLITE_DATA" -> {
+                Log.d(TAG, "🛰️ HANDLING REFRESH SATELLITE DATA")
+                refreshSatelliteData()
+            }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
                 handleCarPowerStart(intent)
@@ -1485,6 +1490,38 @@ class BackgroundService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error registering GNSS callback: ${e.message}")
             }
+        }
+    }
+
+    private fun refreshSatelliteData() {
+        Log.d(TAG, "🛰️ Refreshing satellite data...")
+        
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    // Force re-register the GNSS callback to trigger satellite status update
+                    try {
+                        locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "GNSS callback was not registered, continuing...")
+                    }
+                    
+                    // Re-register the callback
+                    locationManager.registerGnssStatusCallback(gnssStatusCallback)
+                    Log.d(TAG, "🛰️ GNSS callback re-registered for satellite data refresh")
+                    
+                    // Log current satellite data
+                    Log.d(TAG, "🛰️ Current satellite data: $connectedSatellites/$totalSatellites")
+                } else {
+                    Log.w(TAG, "🛰️ Location permission not granted for satellite data refresh")
+                }
+            } else {
+                Log.w(TAG, "🛰️ GNSS status not available on this Android version")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "🛰️ Error refreshing satellite data: $e")
         }
     }
 

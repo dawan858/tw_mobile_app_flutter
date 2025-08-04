@@ -274,11 +274,21 @@ class ConfigService {
     return config;
   }
 
-  Future<void> updateConfig(Map<String, dynamic> newConfig) async {
+  Future<bool> updateConfig(Map<String, dynamic> newConfig) async {
     await _saveConfig(newConfig);
     
     // Also update the main app's tracking parameters
     await _updateTrackingParameters(newConfig);
+    
+    // Send updated configuration to server
+    final serverSuccess = await _sendConfigToServer(newConfig);
+    
+    return serverSuccess;
+  }
+
+  Future<String?> getLastServerUpdateTime() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('flutter.config_last_server_update');
   }
   
   Future<void> _updateTrackingParameters(Map<String, dynamic> config) async {
@@ -307,6 +317,58 @@ class ConfigService {
       await prefs.setInt('flutter.stopTimer', int.parse(config['stopTimer'].toString()));
     }
   }
+
+  Future<bool> _sendConfigToServer(Map<String, dynamic> config) async {
+    try {
+      // Get IMEI from SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      final imei = prefs.getString('imei') ?? prefs.getString('flutter.imei');
+      
+      if (imei == null || imei.isEmpty || imei == 'unknown') {
+        print('❌ Cannot send config to server: IMEI not available');
+        throw Exception('IMEI not available for server communication');
+      }
+
+      // Convert all values to strings as required by the API
+      final Map<String, String> stringConfig = config.map(
+        (key, value) => MapEntry(key, value.toString())
+      );
+      
+      // Add timestamp for server tracking
+      stringConfig['updatedAt'] = DateTime.now().toIso8601String();
+      
+      print('🔄 Sending updated config to server for IMEI: $imei');
+      print('📤 Config data: $stringConfig');
+      
+      final response = await http.post(
+        Uri.parse('$baseUrl/devices/$imei/config'),
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'TrackingWorld-Mobile-App',
+        },
+        body: jsonEncode(stringConfig),
+      ).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        print('✅ Configuration successfully sent to server for IMEI: $imei');
+        print('📥 Server response: ${response.body}');
+        
+        // Store server response timestamp
+        await prefs.setString('flutter.config_last_server_update', DateTime.now().toIso8601String());
+      } else {
+        print('❌ Failed to send configuration to server. Status code: ${response.statusCode}');
+        print('📥 Server response: ${response.body}');
+        print('📤 Sent data: ${jsonEncode(stringConfig)}');
+        throw Exception('Server returned status code: ${response.statusCode}');
+      }
+          } catch (e) {
+        print('❌ Error sending configuration to server: $e');
+        // Don't rethrow the error to avoid breaking the local save
+        // The configuration is still saved locally even if server communication fails
+        return false;
+      }
+      return true;
+    }
 
   Future<Map<String, dynamic>> fetchDefaultConfigFromServer() async {
     try {

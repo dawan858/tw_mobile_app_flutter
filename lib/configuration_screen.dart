@@ -68,6 +68,16 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
 
   Future<void> _saveConfiguration() async {
     try {
+      // Show loading indicator
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Saving configuration...'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
       final newConfig = <String, dynamic>{};
       controllers.forEach((key, controller) {
         final value = controller.text;
@@ -80,17 +90,35 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
         }
       });
 
-      await _configService.updateConfig(newConfig);
+      final serverSuccess = await _configService.updateConfig(newConfig);
       
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Configuration saved successfully')),
-        );
+        if (serverSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Configuration saved locally and sent to server'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Configuration saved locally but server update failed'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving configuration: $e')),
+          SnackBar(
+            content: Text('Error saving configuration: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
         );
       }
     }

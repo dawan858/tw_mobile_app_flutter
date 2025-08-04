@@ -66,7 +66,30 @@ class _LiveStatusScreenState extends State<LiveStatusScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black),
-            onPressed: () => _liveDataService.refreshData(),
+            onPressed: () async {
+              // Show loading indicator
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Refreshing satellite data...'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+              
+              // Refresh all data
+              await _liveDataService.refreshData();
+              // Also specifically refresh satellite data
+              await _liveDataService.refreshSatelliteData();
+              
+              // Show completion message
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Data refreshed successfully'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              }
+            },
           ),
         ],
       ),

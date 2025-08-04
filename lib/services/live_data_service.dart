@@ -105,13 +105,38 @@ class LiveDataService {
   // Get satellite data from native service
   Future<void> _getSatelliteData() async {
     try {
+      print('🛰️ Requesting satellite data from native service...');
       final result = await satelliteChannel.invokeMethod('getSatelliteData');
       if (result != null) {
         _totalSatellites = result['totalSatellites'] ?? 0;
         _connectedSatellites = result['connectedSatellites'] ?? 0;
+        
+        print('🛰️ Satellite data received: $_connectedSatellites/$_totalSatellites');
+        
+        // If satellite data is 0, try to refresh it
+        if (_totalSatellites == 0 && _connectedSatellites == 0) {
+          print('⚠️ Satellite data is 0, attempting refresh...');
+          await _refreshSatelliteData();
+        }
+      } else {
+        print('⚠️ Satellite data result is null');
       }
     } catch (e) {
-      print('Error getting satellite data: $e');
+      print('❌ Error getting satellite data: $e');
+    }
+  }
+
+  // Force refresh satellite data
+  Future<void> _refreshSatelliteData() async {
+    try {
+      final result = await satelliteChannel.invokeMethod('refreshSatelliteData');
+      if (result != null) {
+        _totalSatellites = result['totalSatellites'] ?? 0;
+        _connectedSatellites = result['connectedSatellites'] ?? 0;
+        print('✅ Satellite data refreshed: $_connectedSatellites/$_totalSatellites');
+      }
+    } catch (e) {
+      print('Error refreshing satellite data: $e');
     }
   }
 
@@ -197,6 +222,19 @@ class LiveDataService {
   // Force refresh data
   Future<void> refreshData() async {
     await _updateAllData();
+  }
+
+  // Force refresh satellite data specifically
+  Future<void> refreshSatelliteData() async {
+    print('🛰️ Force refreshing satellite data...');
+    await _refreshSatelliteData();
+    
+    // If still 0, try again after a delay
+    if (_totalSatellites == 0 && _connectedSatellites == 0) {
+      print('🛰️ Satellite data still 0, trying again after delay...');
+      await Future.delayed(const Duration(seconds: 2));
+      await _refreshSatelliteData();
+    }
   }
 
   // Dispose resources
