@@ -13,12 +13,12 @@ class ConfigService {
     'uploadTimer': 10,
     'retryCounter': 10,
     'angleThreshold': 45.0,
-    'overSpeedingThreshold': 60.0,
+    'overSpeedingThreshold': 70.0,  // Updated to 70 km/h
     'travelStartTimer': 20,
     'travelStopTimer': 20,
     'movingTimer': 60,
     'stopTimer': 130,
-    'distanceThreshold': 1000.0,
+    'distanceThreshold': 500.0,     // Updated to 500m
     'heartbeatTimer': 30,
     'liveStatusUpdateTimer': 30,
   };

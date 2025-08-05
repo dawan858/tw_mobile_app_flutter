@@ -95,8 +95,8 @@ class BackgroundService : Service() {
     private var gpsTimer: Int = 5
     private var uploadTimer: Int = 10
     private var angleThreshold: Float = 45f
-    private var overSpeedingThreshold: Float = 60f
-    private var distanceThreshold: Float = 1000f
+    private var overSpeedingThreshold: Float = 70f  // Updated to 70 km/h
+    private var distanceThreshold: Float = 500f     // Updated to 500m
     private var movingTimer: Int = 60
     private var stopTimer: Int = 130
     
@@ -144,6 +144,12 @@ class BackgroundService : Service() {
 
                 if (newIgStatus != oldStatus) {
                     Log.d(TAG, "🔄 igStatus updated: $oldStatus -> $newIgStatus")
+                    Log.d(TAG, "🚗 IGNITION STATE CHANGE DETECTED:")
+                    Log.d(TAG, "   - Old Status: $oldStatus (${if (oldStatus == 1) "ACC_ON" else "ACC_OFF"})")
+                    Log.d(TAG, "   - New Status: $newIgStatus (${if (newIgStatus == 1) "ACC_ON" else "ACC_OFF"})")
+                    Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+                    Log.d(TAG, "   - Source: CarPowerManager callback")
+                    
                     updateNotificationWithAccState(isAccOn)
                     
                     // Log the ignition status change
@@ -157,8 +163,8 @@ class BackgroundService : Service() {
 
                     // Save a new location point with ignition change reason and sync
                     if (lastLocation != null) {
-                        // Set ignition change reason
-                        val ignitionReason = if (newIgStatus == 1) "Ignition On" else "Ignition Off"
+                        // Set ignition change reason using the updated method
+                        val ignitionReason = calculateEnhancedReason(lastLocation!!, true, newIgStatus)
                         Log.d(TAG, "🚗 Saving ignition change location with reason: $ignitionReason, igStatus: $newIgStatus")
                         saveLocationDataWithReason(lastLocation!!, ignitionReason)
                         // Trigger immediate sync
@@ -173,7 +179,7 @@ class BackgroundService : Service() {
                             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                                 val freshLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                                 if (freshLocation != null) {
-                                    val ignitionReason = if (newIgStatus == 1) "Ignition On" else "Ignition Off"
+                                    val ignitionReason = calculateEnhancedReason(freshLocation, true, newIgStatus)
                                     Log.d(TAG, "🚗 Saving ignition change with fresh location, reason: $ignitionReason")
                                     saveLocationDataWithReason(freshLocation, ignitionReason)
                                     syncExecutor.execute {
@@ -583,6 +589,9 @@ class BackgroundService : Service() {
             setupLocationUpdates()
             startPeriodicSync()
             
+            // NEW: Check configuration integrity after startup
+            checkAndFixConfiguration()
+            
             // NEW: Start configuration reload timer
             startConfigurationReloadTimer()
             
@@ -957,11 +966,16 @@ class BackgroundService : Service() {
         Log.d(TAG, "IMEI Available: $isImeiAvailable")
         Log.d(TAG, "IMEI: $imei")
         
-        // Handle IMEI if provided by MainActivity
-        if (isImeiAvailable && imei != null && imei.isNotEmpty()) {
-            Log.d(TAG, "=== HANDLING IMEI FROM MAIN ACTIVITY ===")
-            handleImeiFromMainActivity(imei)
-        }
+                    // Handle IMEI if provided by MainActivity
+            if (isImeiAvailable && imei != null && imei.isNotEmpty()) {
+                Log.d(TAG, "=== HANDLING IMEI FROM MAIN ACTIVITY ===")
+                handleImeiFromMainActivity(imei)
+            }
+            
+            // CRITICAL: Always load configuration regardless of how service was started
+            Log.d(TAG, "🔄 FORCING CONFIGURATION LOAD ON SERVICE START")
+            loadConfiguration()
+            checkAndFixConfiguration()
         
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
@@ -1012,22 +1026,63 @@ class BackgroundService : Service() {
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
                 handleCarPowerStart(intent)
+                
+                // CRITICAL: Force configuration reload for car power triggered start
+                Log.d(TAG, "🔄 CAR POWER TRIGGERED: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
             }
             isWakeUpFromSleep -> {
                 Log.d(TAG, "🚗 Waking up from sleep state")
                 handleWakeUpFromSleep(isBackgroundOnly)
+                
+                // CRITICAL: Force configuration reload for wake-up from sleep
+                Log.d(TAG, "🔄 WAKE-UP FROM SLEEP: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
             }
             isSleepKeepAlive -> {
                 Log.d(TAG, "🚗 Sleep keep-alive")
                 handleSleepKeepAlive()
+                
+                // CRITICAL: Force configuration reload for sleep keep-alive
+                Log.d(TAG, "🔄 SLEEP KEEP-ALIVE: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
             }
             wasSleeping -> {
                 Log.d(TAG, "🚗 Service restart during sleep - resuming sleep management")
                 handleServiceRestartDuringSleep()
+                
+                // CRITICAL: Force configuration reload for service restart during sleep
+                Log.d(TAG, "🔄 SERVICE RESTART DURING SLEEP: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
             }
             isBackgroundOnly -> {
                 Log.d(TAG, "🔄 Background-only start mode")
                 handleBackgroundOnlyStart(startedBy)
+                
+                // CRITICAL: Force configuration reload for background mode
+                Log.d(TAG, "🔄 BACKGROUND MODE: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
+            }
+            intent?.action == "FORCE_IGNITION_REASON_UPDATE" -> {
+                Log.d(TAG, "🔄 HANDLING FORCE IGNITION REASON UPDATE")
+                val newIgStatus = intent.getIntExtra("ig_status", 0)
+                forceIgnitionReasonUpdate(newIgStatus)
+            }
+            intent?.action == "TEST_DATA_COLLECTION" -> {
+                Log.d(TAG, "🧪 HANDLING TEST DATA COLLECTION")
+                testDataCollection()
+            }
+            intent?.action == "FORCE_RELOAD_CONFIGURATION" -> {
+                Log.d(TAG, "🔄 HANDLING FORCE RELOAD CONFIGURATION")
+                forceReloadConfigurationAndRestart()
+            }
+            intent?.action == "LONG_INTERVAL_RESTART" -> {
+                Log.d(TAG, "🔄 HANDLING LONG INTERVAL RESTART")
+                ensureServicePersistenceForLongIntervals()
+                
+                // CRITICAL: Force configuration reload for long interval restart
+                Log.d(TAG, "🔄 LONG INTERVAL RESTART: FORCING CONFIGURATION RELOAD")
+                forceReloadConfigurationAndRestart()
             }
             else -> {
                 Log.d(TAG, "🚗 Normal service operation")
@@ -1043,6 +1098,12 @@ class BackgroundService : Service() {
         // --- FIX: Always ensure tracking is started, regardless of how service is started ---
         ensureServiceIsTracking()
         // --- END FIX ---
+        
+        // NEW: Ensure service stays alive and continues collecting data
+        ensureServicePersistence()
+        
+        // NEW: Enhanced persistence for long intervals
+        ensureServicePersistenceForLongIntervals()
         
         return START_STICKY
     }
@@ -1078,12 +1139,17 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "=== HANDLING BACKGROUND-ONLY START ===")
             
+            // CRITICAL: Force configuration reload for background-only mode
+            Log.d(TAG, "🔄 BACKGROUND-ONLY: FORCING CONFIGURATION RELOAD")
+            loadConfiguration()
+            checkAndFixConfiguration()
+            
             showBackgroundOnlyNotification(startedBy)
             startLocationUpdates()
             startPeriodicSync()
             refreshWakeLocks()
             
-            Log.d(TAG, "✅ Background-only service started successfully")
+            Log.d(TAG, "✅ Background-only service started successfully with configuration reload")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error handling background-only start", e)
@@ -1094,6 +1160,11 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "=== HANDLING SERVICE RESTART DURING SLEEP ===")
             
+            // CRITICAL: Force configuration reload for service restart during sleep
+            Log.d(TAG, "🔄 SERVICE RESTART DURING SLEEP: FORCING CONFIGURATION RELOAD")
+            loadConfiguration()
+            checkAndFixConfiguration()
+            
             if (!isCarPowerInitialized) {
                 initializeCarPowerManager()
             }
@@ -1101,7 +1172,7 @@ class BackgroundService : Service() {
             showSleepNotification()
             acquireWakeLock()
             
-            Log.d(TAG, "✅ Service restart during sleep handled")
+            Log.d(TAG, "✅ Service restart during sleep handled with configuration reload")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error handling service restart during sleep", e)
@@ -1114,6 +1185,11 @@ class BackgroundService : Service() {
             Log.d(TAG, "Started by: $startedBy")
             Log.d(TAG, "Auto started: $isAutoStarted")
             
+            // CRITICAL: Force configuration reload for normal service start
+            Log.d(TAG, "🔄 NORMAL SERVICE START: FORCING CONFIGURATION RELOAD")
+            loadConfiguration()
+            checkAndFixConfiguration()
+            
             if (isAutoStarted) {
                 showBackgroundOnlyNotification(startedBy)
             } else {
@@ -1123,7 +1199,7 @@ class BackgroundService : Service() {
             startLocationUpdates()
             startPeriodicSync()
             
-            Log.d(TAG, "✅ Normal service start completed")
+            Log.d(TAG, "✅ Normal service start completed with configuration reload")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error handling normal service start", e)
@@ -1160,6 +1236,11 @@ class BackgroundService : Service() {
         try {
             Log.d(TAG, "=== HANDLING WAKE-UP FROM SLEEP ===")
             Log.d(TAG, "Background only mode: $isBackgroundOnly")
+            
+            // CRITICAL: Force configuration reload for wake-up from sleep
+            Log.d(TAG, "🔄 WAKE-UP FROM SLEEP: FORCING CONFIGURATION RELOAD")
+            loadConfiguration()
+            checkAndFixConfiguration()
             
             updateWakeUpTimestamp()
             refreshWakeLocks()
@@ -1236,8 +1317,13 @@ class BackgroundService : Service() {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             val isSleeping = prefs.getBoolean("flutter.is_sleeping", false)
             
+            // CRITICAL: Always schedule restart regardless of sleep state
+            Log.d(TAG, "🚨 Service being destroyed - scheduling immediate restart")
+            scheduleServiceRestart()
+            
             if (isSleeping) {
                 Log.d(TAG, "🚗 Service destroyed during sleep - scheduling restart")
+                // Additional restart for sleep state
                 scheduleServiceRestart()
                 return
             }
@@ -1254,13 +1340,22 @@ class BackgroundService : Service() {
             Log.d(TAG, "✅ Service cleanup completed")
         } catch (e: Exception) {
             Log.e(TAG, "Error during service cleanup", e)
+            // Even if cleanup fails, still schedule restart
+            scheduleServiceRestart()
         }
     }
 
     private fun scheduleServiceRestart() {
         try {
+            Log.d(TAG, "🔄 Scheduling service restart...")
+            
+            // Method 1: Use AlarmManager for immediate restart
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(this, BackgroundService::class.java)
+            val intent = Intent(this, BackgroundService::class.java).apply {
+                putExtra("started_by", "service_restart")
+                putExtra("auto_started", true)
+                putExtra("background_only", true)
+            }
             val pendingIntent = PendingIntent.getService(
                 this,
                 999,
@@ -1268,7 +1363,7 @@ class BackgroundService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             
-            val triggerTime = SystemClock.elapsedRealtime() + 30000
+            val triggerTime = SystemClock.elapsedRealtime() + 5000 // Restart in 5 seconds
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(
@@ -1284,9 +1379,58 @@ class BackgroundService : Service() {
                 )
             }
             
-            Log.d(TAG, "✅ Service restart scheduled")
+            // Method 2: Also schedule a backup restart using WorkManager or delayed intent
+            val backupIntent = Intent(this, ServiceRestartReceiver::class.java).apply {
+                action = "com.trackingWorld.tracking.RESTART_SERVICE"
+            }
+            val backupPendingIntent = PendingIntent.getBroadcast(
+                this,
+                998,
+                backupIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Schedule backup restart in 10 seconds
+            val backupTriggerTime = SystemClock.elapsedRealtime() + 10000
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    backupTriggerTime,
+                    backupPendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    backupTriggerTime,
+                    backupPendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Service restart scheduled (primary + backup)")
+            
+            // Method 3: Set a flag in SharedPreferences to indicate service needs restart
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putBoolean("flutter.service_needs_restart", true)
+                putLong("flutter.service_destroyed_time", System.currentTimeMillis())
+                apply()
+            }
+            
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to schedule service restart: ${e.message}")
+            
+            // Fallback: Try to start service directly
+            try {
+                val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                    putExtra("started_by", "fallback_restart")
+                    putExtra("auto_started", true)
+                    putExtra("background_only", true)
+                }
+                startService(serviceIntent)
+                Log.d(TAG, "✅ Fallback service restart attempted")
+            } catch (fallbackException: Exception) {
+                Log.e(TAG, "❌ Fallback restart also failed: ${fallbackException.message}")
+            }
         }
     }
 
@@ -1296,18 +1440,58 @@ class BackgroundService : Service() {
     private fun loadConfiguration() {
         try {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            
+            Log.d(TAG, "🔄 LOADING CONFIGURATION FROM SHAREDPREFERENCES:")
+            
+            // Log all available configuration keys
+            val allPrefs = prefs.all
+            Log.d(TAG, "📋 All SharedPreferences keys:")
+            allPrefs.forEach { (key, value) ->
+                if (key.startsWith("flutter.")) {
+                    Log.d(TAG, "   - $key: $value")
+                }
+            }
+            
             val oldGpsTimer = gpsTimer
             val oldUploadTimer = uploadTimer
             val oldAngleThreshold = angleThreshold
             val oldDistanceThreshold = distanceThreshold
             
-            gpsTimer = prefs.getInt("flutter.gpsTimer", 5)
-            uploadTimer = prefs.getInt("flutter.uploadTimer", 10)
-            angleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
-            overSpeedingThreshold = prefs.getFloat("flutter.overSpeedingThreshold", 60f)
-            distanceThreshold = prefs.getFloat("flutter.distanceThreshold", 1000f)
-            movingTimer = prefs.getInt("flutter.movingTimer", 60)
-            stopTimer = prefs.getInt("flutter.stopTimer", 130)
+            // Load configuration with detailed logging
+            val rawGpsTimer = prefs.getInt("flutter.gpsTimer", 5)
+            val rawUploadTimer = prefs.getInt("flutter.uploadTimer", 10)
+            val rawAngleThreshold = prefs.getFloat("flutter.angleThreshold", 45f)
+            val rawOverSpeedingThreshold = prefs.getFloat("flutter.overSpeedingThreshold", 70f)
+            val rawDistanceThreshold = prefs.getFloat("flutter.distanceThreshold", 500f)
+            val rawMovingTimer = prefs.getInt("flutter.movingTimer", 60)
+            val rawStopTimer = prefs.getInt("flutter.stopTimer", 130)
+            
+            Log.d(TAG, "📥 Raw values from SharedPreferences:")
+            Log.d(TAG, "   - flutter.gpsTimer: $rawGpsTimer")
+            Log.d(TAG, "   - flutter.uploadTimer: $rawUploadTimer")
+            Log.d(TAG, "   - flutter.angleThreshold: $rawAngleThreshold")
+            Log.d(TAG, "   - flutter.overSpeedingThreshold: $rawOverSpeedingThreshold")
+            Log.d(TAG, "   - flutter.distanceThreshold: $rawDistanceThreshold")
+            Log.d(TAG, "   - flutter.movingTimer: $rawMovingTimer")
+            Log.d(TAG, "   - flutter.stopTimer: $rawStopTimer")
+            
+            // Assign values
+            gpsTimer = rawGpsTimer
+            uploadTimer = rawUploadTimer
+            angleThreshold = rawAngleThreshold
+            overSpeedingThreshold = rawOverSpeedingThreshold
+            distanceThreshold = rawDistanceThreshold
+            movingTimer = rawMovingTimer
+            stopTimer = rawStopTimer
+            
+            Log.d(TAG, "✅ Assigned configuration values:")
+            Log.d(TAG, "   - gpsTimer: $gpsTimer")
+            Log.d(TAG, "   - uploadTimer: $uploadTimer")
+            Log.d(TAG, "   - angleThreshold: $angleThreshold")
+            Log.d(TAG, "   - overSpeedingThreshold: $overSpeedingThreshold")
+            Log.d(TAG, "   - distanceThreshold: $distanceThreshold")
+            Log.d(TAG, "   - movingTimer: $movingTimer")
+            Log.d(TAG, "   - stopTimer: $stopTimer")
             
             // Log configuration changes
             if (oldGpsTimer != gpsTimer || oldUploadTimer != uploadTimer || 
@@ -1416,19 +1600,44 @@ class BackgroundService : Service() {
             setupEnhancedGnssCallback()
             forceRegisterGnssCallback()
             
+            // CRITICAL: Ensure GPS timer is loaded before creating location request
+            loadConfiguration()
+            
+            Log.d(TAG, "📍 SETTING UP LOCATION UPDATES WITH GPS TIMER: ${gpsTimer}s")
+            
             val locationRequest = LocationRequest.create().apply {
                 priority = LocationRequest.PRIORITY_HIGH_ACCURACY
-                interval = gpsTimer * 1000L
-                fastestInterval = 1000L
-                maxWaitTime = gpsTimer * 2000L
+                interval = gpsTimer * 1000L  // Convert seconds to milliseconds
+                fastestInterval = gpsTimer * 1000L  // Set to same as interval to prevent rapid updates
+                maxWaitTime = gpsTimer * 2000L  // Allow some flexibility
                 smallestDisplacement = 1f
             }
+            
+            Log.d(TAG, "📍 Location Request Configuration:")
+            Log.d(TAG, "   - Interval: ${locationRequest.interval}ms (${locationRequest.interval / 1000}s)")
+            Log.d(TAG, "   - Fastest Interval: ${locationRequest.fastestInterval}ms (${locationRequest.fastestInterval / 1000}s)")
+            Log.d(TAG, "   - Max Wait Time: ${locationRequest.maxWaitTime}ms (${locationRequest.maxWaitTime / 1000}s)")
+            Log.d(TAG, "   - Smallest Displacement: ${locationRequest.smallestDisplacement}m")
 
             locationCallback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
                     Log.e(TAG, "ERROR: onLocationResult called in BackgroundService")
                     locationResult.lastLocation?.let { location ->
                         Log.e(TAG, "ERROR: Location received: lat=${location.latitude}, lon=${location.longitude}, acc=${location.accuracy}")
+                        
+                        // Add more detailed logging
+                        Log.d(TAG, "📍 LOCATION UPDATE RECEIVED:")
+                        Log.d(TAG, "   - Latitude: ${location.latitude}")
+                        Log.d(TAG, "   - Longitude: ${location.longitude}")
+                        Log.d(TAG, "   - Accuracy: ${location.accuracy}m")
+                        Log.d(TAG, "   - Speed: ${location.speed * 3.6} km/h")
+                        Log.d(TAG, "   - Bearing: ${location.bearing}")
+                        Log.d(TAG, "   - Timestamp: ${location.time}")
+                        Log.d(TAG, "   - Current igStatus: $igStatus")
+                        Log.d(TAG, "   - isIgStatusReady: $isIgStatusReady")
+                        Log.d(TAG, "   - Service PID: ${android.os.Process.myPid()}")
+                        Log.d(TAG, "   - Service running: true")
+                        
                         if (location.accuracy > 30) {
                             Log.e(TAG, "ERROR: Skipping inaccurate location: accuracy = ${location.accuracy}m")
                             return
@@ -1439,6 +1648,11 @@ class BackgroundService : Service() {
                         val speed = getEnhancedAccurateSpeed(location)
                         val distance = lastLocation?.distanceTo(location) ?: 0f
 
+                        Log.d(TAG, "🔍 LOCATION PROCESSING:")
+                        Log.d(TAG, "   - Time since last update: ${timeSinceLastUpdate}ms")
+                        Log.d(TAG, "   - Distance from last: ${distance}m")
+                        Log.d(TAG, "   - Speed: ${speed} km/h")
+
                         if (shouldProcessLocationUpdate(location, speed, distance, timeSinceLastUpdate)) {
                             val reason = calculateEnhancedReason(location)
                             Log.e(TAG, "ERROR: Processing location update. Speed: ${String.format("%.1f", speed)} km/h, Reason: $reason")
@@ -1448,8 +1662,12 @@ class BackgroundService : Service() {
                             saveLocationData(correctedLocation)
                             lastLocationUpdateTime = currentTime
                             lastLocation = location
+                            
+                            Log.d(TAG, "✅ Location data saved successfully with reason: $reason")
+                            Log.d(TAG, "✅ Service continues running and collecting data")
                         } else {
                             Log.e(TAG, "ERROR: Location update not processed. speed=$speed, distance=$distance, timeSinceLastUpdate=$timeSinceLastUpdate")
+                            Log.d(TAG, "ℹ️ Location update skipped - conditions not met")
                         }
                     } ?: Log.e(TAG, "ERROR: onLocationResult: lastLocation is null")
                 }
@@ -1604,6 +1822,159 @@ class BackgroundService : Service() {
                 }
             }, 15, 15, TimeUnit.SECONDS)
             
+            // NEW: Add periodic data collection status check (every 60 seconds)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "📊 PERIODIC DATA COLLECTION STATUS CHECK")
+                    
+                    // Check database stats
+                    val db = dbHelper.readableDatabase
+                    val totalCursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
+                    totalCursor.moveToFirst()
+                    val totalRecords = totalCursor.getInt(0)
+                    totalCursor.close()
+                    
+                    val unsyncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 0", null)
+                    unsyncedCursor.moveToFirst()
+                    val unsyncedRecords = unsyncedCursor.getInt(0)
+                    unsyncedCursor.close()
+                    
+                    val syncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 1", null)
+                    syncedCursor.moveToFirst()
+                    val syncedRecords = syncedCursor.getInt(0)
+                    syncedCursor.close()
+                    
+                    Log.d(TAG, "📊 Database Status:")
+                    Log.d(TAG, "   - Total records: $totalRecords")
+                    Log.d(TAG, "   - Unsynced records: $unsyncedRecords")
+                    Log.d(TAG, "   - Synced records: $syncedRecords")
+                    Log.d(TAG, "   - Current igStatus: $igStatus")
+                    Log.d(TAG, "   - isIgStatusReady: $isIgStatusReady")
+                    Log.d(TAG, "   - isCarPowerInitialized: $isCarPowerInitialized")
+                    
+                    if (totalRecords == 0) {
+                        Log.w(TAG, "⚠️ No data collected - checking location updates")
+                        // Check if location updates are working
+                        if (::fusedLocationClient.isInitialized) {
+                            Log.d(TAG, "✅ Location client is initialized")
+                        } else {
+                            Log.e(TAG, "❌ Location client not initialized")
+                        }
+                    } else if (unsyncedRecords > 0) {
+                        Log.w(TAG, "⚠️ $unsyncedRecords unsynced records - sync might not be working")
+                    } else {
+                        Log.d(TAG, "✅ Data collection and sync working properly")
+                    }
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "ERROR: Exception in periodic data collection status check", e)
+                }
+            }, 60, 60, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic data collection test (every 2 minutes)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🧪 PERIODIC DATA COLLECTION TEST")
+                    
+                    // Force a location collection test
+                    testDataCollection()
+                    
+                    Log.d(TAG, "✅ Periodic data collection test completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "ERROR: Exception in periodic data collection test", e)
+                }
+            }, 120, 120, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic service health check (every 30 seconds)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🏥 PERIODIC SERVICE HEALTH CHECK")
+                    
+                    // Check if service is still in foreground
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val notificationManager = getSystemService(NotificationManager::class.java)
+                        val activeNotifications = notificationManager.activeNotifications
+                        val isInForeground = activeNotifications.any { it.id == NOTIFICATION_ID }
+                        
+                        if (!isInForeground) {
+                            Log.w(TAG, "⚠️ Service not in foreground - restarting foreground")
+                            startForeground(NOTIFICATION_ID, createNotification())
+                        } else {
+                            Log.d(TAG, "✅ Service is in foreground")
+                        }
+                    }
+                    
+                    // Check if location updates are active
+                    if (::fusedLocationClient.isInitialized) {
+                        Log.d(TAG, "✅ Location client is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ Location client not initialized - reinitializing")
+                        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                    }
+                    
+                    // Check if CarPowerManager is working
+                    if (isCarPowerInitialized && carPowerManager != null) {
+                        Log.d(TAG, "✅ CarPowerManager is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
+                        initializeCarPowerManager()
+                    }
+                    
+                    // Check wake locks
+                    if (wakeLock?.isHeld == true) {
+                        Log.d(TAG, "✅ Wake lock is held")
+                    } else {
+                        Log.w(TAG, "⚠️ Wake lock not held - reacquiring")
+                        acquireWakeLock()
+                    }
+                    
+                    // Check if sync executor is running
+                    if (!syncExecutor.isShutdown) {
+                        Log.d(TAG, "✅ Sync executor is running")
+                    } else {
+                        Log.w(TAG, "⚠️ Sync executor is shutdown - recreating")
+                        syncExecutor = Executors.newSingleThreadScheduledExecutor()
+                        startPeriodicSync()
+                    }
+                    
+                    // NEW: Detect if app was cleared from background
+                    detectAppClearedAndEnsureService()
+                    
+                    // NEW: Check configuration integrity periodically
+                    checkAndFixConfiguration()
+                    
+                    Log.d(TAG, "✅ Health check completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in health check: $e")
+                }
+            }, 30, 30, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic service persistence check (every 2 minutes)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🔒 PERIODIC SERVICE PERSISTENCE CHECK")
+                    
+                    // Check if service needs restart flag is set
+                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    val needsRestart = prefs.getBoolean("flutter.service_needs_restart", false)
+                    
+                    if (needsRestart) {
+                        Log.w(TAG, "⚠️ Service restart flag detected - clearing flag")
+                        prefs.edit().remove("flutter.service_needs_restart").apply()
+                    }
+                    
+                    // Ensure service is properly registered for auto-start
+                    ensureAutoStartRegistration()
+                    
+                    Log.d(TAG, "✅ Service persistence check completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "ERROR: Exception in periodic service persistence check", e)
+                }
+            }, 120, 120, TimeUnit.SECONDS)
+            
             Log.e(TAG, "ERROR: Periodic sync started with uploadTimer: ${uploadTimer}s")
         } catch (e: Exception) {
             Log.e(TAG, "ERROR: Exception in startPeriodicSync", e)
@@ -1683,7 +2054,14 @@ class BackgroundService : Service() {
         }
     }
 
-    private fun calculateEnhancedReason(location: Location): String {
+    private fun calculateEnhancedReason(location: Location, isIgnitionChange: Boolean = false, ignitionStatus: Int = -1): String {
+        // If this is an ignition state change, prioritize ignition reason
+        if (isIgnitionChange && ignitionStatus != -1) {
+            val ignitionReason = if (ignitionStatus == 1) "Ignition On" else "Ignition Off"
+            Log.d(TAG, "🚗 Ignition state change detected - reason: $ignitionReason")
+            return ignitionReason
+        }
+        
         val speed = getEnhancedAccurateSpeed(location)
         
         Log.d(TAG, "🔍 Reason calculation - Config: Distance=${distanceThreshold}m, Angle=${angleThreshold}°, Speed=${overSpeedingThreshold}km/h")
@@ -1723,35 +2101,68 @@ class BackgroundService : Service() {
                 Log.d(TAG, "✅ Over Speeding reason triggered: ${String.format("%.1f", speed)} km/h > ${overSpeedingThreshold} km/h")
                 "Over Speeding"
             }
-            speed < 3f -> {
-                Log.d(TAG, "✅ Idle reason triggered: speed < 3 km/h")
-                "Idle"
-            }
             speed >= 8f -> {
-                Log.d(TAG, "✅ Move reason triggered: speed >= 8 km/h")
+                Log.d(TAG, "✅ Move reason triggered: speed >= 8 km/h (${String.format("%.1f", speed)} km/h)")
                 "Move"
             }
+            speed < 3f -> {
+                Log.d(TAG, "✅ Idle reason triggered: speed < 3 km/h (${String.format("%.1f", speed)} km/h)")
+                "Idle"
+            }
             else -> {
-                Log.d(TAG, "✅ Idle reason triggered: default case")
+                Log.d(TAG, "✅ Idle reason triggered: default case (${String.format("%.1f", speed)} km/h)")
                 "Idle"
             }
         }
     }
 
     private fun shouldProcessLocationUpdate(location: Location, speed: Float, distance: Float, timeSinceLastUpdate: Long): Boolean {
-        return when {
-            lastLocation == null -> true
-            location.accuracy > 50 -> false
-            timeSinceLastUpdate >= gpsTimer * 1000L -> true
-            distance >= distanceThreshold -> true
-            speed >= overSpeedingThreshold -> true
-            speed >= 8f && distance > 15f -> true
-            else -> false
+        Log.d(TAG, "🔍 LOCATION PROCESSING DECISION:")
+        Log.d(TAG, "   - GPS Timer: ${gpsTimer}s (${gpsTimer * 1000L}ms)")
+        Log.d(TAG, "   - Distance Threshold: ${distanceThreshold}m")
+        Log.d(TAG, "   - Over Speeding Threshold: ${overSpeedingThreshold} km/h")
+        Log.d(TAG, "   - Time since last update: ${timeSinceLastUpdate}ms")
+        Log.d(TAG, "   - Distance from last: ${distance}m")
+        Log.d(TAG, "   - Current speed: ${speed} km/h")
+        Log.d(TAG, "   - Last location: ${if (lastLocation != null) "available" else "null"}")
+        
+        val shouldProcess = when {
+            lastLocation == null -> {
+                Log.d(TAG, "✅ Processing: First location")
+                true
+            }
+            location.accuracy > 50 -> {
+                Log.d(TAG, "❌ Skipping: Poor accuracy (${location.accuracy}m)")
+                false
+            }
+            timeSinceLastUpdate >= gpsTimer * 1000L -> {
+                Log.d(TAG, "✅ Processing: Time threshold met (${timeSinceLastUpdate}ms >= ${gpsTimer * 1000L}ms)")
+                true
+            }
+            distance >= distanceThreshold -> {
+                Log.d(TAG, "✅ Processing: Distance threshold met (${distance}m >= ${distanceThreshold}m)")
+                true
+            }
+            speed >= overSpeedingThreshold -> {
+                Log.d(TAG, "✅ Processing: Over speeding (${speed} km/h >= ${overSpeedingThreshold} km/h)")
+                true
+            }
+            speed >= 8f && distance > 15f -> {
+                Log.d(TAG, "✅ Processing: Moving with distance (${speed} km/h >= 8 km/h && ${distance}m > 15m)")
+                true
+            }
+            else -> {
+                Log.d(TAG, "❌ Skipping: No conditions met")
+                false
+            }
         }
+        
+        Log.d(TAG, "📊 Final decision: ${if (shouldProcess) "PROCESS" else "SKIP"}")
+        return shouldProcess
     }
 
     private fun saveLocationData(location: Location) {
-        val reason = calculateEnhancedReason(location)
+        val reason = calculateEnhancedReason(location, false, -1)
         saveLocationDataWithReason(location, reason)
     }
 
@@ -2542,5 +2953,646 @@ class BackgroundService : Service() {
         super.onTaskRemoved(rootIntent)
         Log.e(TAG, "ERROR: onTaskRemoved called - scheduling service restart")
         scheduleServiceRestart()
+    }
+
+    // NEW METHOD: Get latest reason from database
+    fun getLatestReason(): String {
+        try {
+            val db = dbHelper.readableDatabase
+            val cursor = db.query(
+                "location_data",
+                arrayOf("reason"),
+                null,
+                null,
+                null,
+                null,
+                "createAt DESC",
+                "1"
+            )
+            
+            return if (cursor.moveToFirst()) {
+                val reason = cursor.getString(cursor.getColumnIndexOrThrow("reason"))
+                cursor.close()
+                Log.d(TAG, "Latest reason from database: $reason")
+                reason
+            } else {
+                cursor.close()
+                Log.d(TAG, "No location data found in database")
+                "Unknown"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting latest reason: ${e.message}")
+            return "Unknown"
+        }
+    }
+
+    // NEW METHOD: Force update reason for ignition state change
+    private fun forceIgnitionReasonUpdate(newIgStatus: Int) {
+        try {
+            Log.d(TAG, "🚗 FORCING IGNITION REASON UPDATE")
+            Log.d(TAG, "   - New igStatus: $newIgStatus")
+            Log.d(TAG, "   - Current igStatus: $igStatus")
+            
+            // Update current igStatus
+            val oldStatus = igStatus
+            igStatus = newIgStatus
+            
+            // Save location with ignition reason immediately
+            if (lastLocation != null) {
+                val ignitionReason = calculateEnhancedReason(lastLocation!!, true, newIgStatus)
+                Log.d(TAG, "🚗 Saving forced ignition reason: $ignitionReason")
+                saveLocationDataWithReason(lastLocation!!, ignitionReason)
+                
+                // Trigger immediate sync
+                syncExecutor.execute {
+                    performSyncToServer()
+                }
+            } else {
+                Log.w(TAG, "⚠️ No location available for forced ignition reason update")
+                // Try to get a fresh location
+                try {
+                    val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                    if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                        val freshLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                        if (freshLocation != null) {
+                            val ignitionReason = calculateEnhancedReason(freshLocation, true, newIgStatus)
+                            Log.d(TAG, "🚗 Saving forced ignition reason with fresh location: $ignitionReason")
+                            saveLocationDataWithReason(freshLocation, ignitionReason)
+                            syncExecutor.execute {
+                                performSyncToServer()
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error getting fresh location for forced ignition reason", e)
+                }
+            }
+            
+            Log.d(TAG, "✅ Forced ignition reason update completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in forced ignition reason update", e)
+        }
+    }
+
+    // NEW METHOD: Test data collection and sync
+    private fun testDataCollection() {
+        try {
+            Log.d(TAG, "🧪 TESTING DATA COLLECTION AND SYNC")
+            
+            // Check current status
+            Log.d(TAG, "📊 Current Status:")
+            Log.d(TAG, "   - igStatus: $igStatus")
+            Log.d(TAG, "   - isIgStatusReady: $isIgStatusReady")
+            Log.d(TAG, "   - isCarPowerInitialized: $isCarPowerInitialized")
+            Log.d(TAG, "   - Location client initialized: ${::fusedLocationClient.isInitialized}")
+            
+            // Check database stats
+            val db = dbHelper.readableDatabase
+            val totalCursor = db.rawQuery("SELECT COUNT(*) FROM location_data", null)
+            totalCursor.moveToFirst()
+            val totalRecords = totalCursor.getInt(0)
+            totalCursor.close()
+            
+            val unsyncedCursor = db.rawQuery("SELECT COUNT(*) FROM location_data WHERE sync_status = 0", null)
+            unsyncedCursor.moveToFirst()
+            val unsyncedRecords = unsyncedCursor.getInt(0)
+            unsyncedCursor.close()
+            
+            Log.d(TAG, "📊 Database Stats:")
+            Log.d(TAG, "   - Total records: $totalRecords")
+            Log.d(TAG, "   - Unsynced records: $unsyncedRecords")
+            
+            // Try to get current location and save it
+            if (::fusedLocationClient.isInitialized) {
+                Log.d(TAG, "📍 Requesting current location for test...")
+                
+                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                    if (location != null) {
+                        Log.d(TAG, "✅ Test location received: ${location.latitude}, ${location.longitude}")
+                        
+                        // Save test location
+                        val reason = calculateEnhancedReason(location, false, -1)
+                        saveLocationDataWithReason(location, reason)
+                        
+                        Log.d(TAG, "✅ Test location saved with reason: $reason")
+                        
+                        // Trigger immediate sync
+                        syncExecutor.execute {
+                            Log.d(TAG, "🔄 Triggering immediate sync for test data")
+                            performSyncToServer()
+                        }
+                        
+                    } else {
+                        Log.w(TAG, "⚠️ No test location available")
+                    }
+                }.addOnFailureListener { e ->
+                    Log.e(TAG, "❌ Error getting test location: $e")
+                }
+            } else {
+                Log.e(TAG, "❌ Location client not initialized")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error in test data collection: $e")
+        }
+    }
+
+    // NEW METHOD: Ensure service persistence and continuous data collection
+    private fun ensureServicePersistence() {
+        try {
+            Log.d(TAG, "🔒 Ensuring service persistence and continuous data collection")
+            
+            // Set a flag to indicate service should continue running
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putBoolean("flutter.service_should_continue", true)
+                putLong("flutter.service_start_time", System.currentTimeMillis())
+                putString("flutter.service_status", "persistent")
+                apply()
+            }
+            
+            // Ensure location updates are active
+            if (::fusedLocationClient.isInitialized) {
+                Log.d(TAG, "✅ Location client is initialized")
+            } else {
+                Log.w(TAG, "⚠️ Location client not initialized - reinitializing")
+                fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+            }
+            
+            // Ensure CarPowerManager is working
+            if (isCarPowerInitialized && carPowerManager != null) {
+                Log.d(TAG, "✅ CarPowerManager is initialized")
+            } else {
+                Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
+                initializeCarPowerManager()
+            }
+            
+            // Ensure wake locks are held
+            if (wakeLock?.isHeld == true) {
+                Log.d(TAG, "✅ Wake lock is held")
+            } else {
+                Log.w(TAG, "⚠️ Wake lock not held - reacquiring")
+                acquireWakeLock()
+            }
+            
+            // Ensure sync executor is running
+            if (!syncExecutor.isShutdown) {
+                Log.d(TAG, "✅ Sync executor is running")
+            } else {
+                Log.w(TAG, "⚠️ Sync executor is shutdown - recreating")
+                syncExecutor = Executors.newSingleThreadScheduledExecutor()
+                startPeriodicSync()
+            }
+            
+            // Schedule periodic health checks
+            schedulePeriodicHealthChecks()
+            
+            Log.d(TAG, "✅ Service persistence ensured")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error ensuring service persistence: $e")
+        }
+    }
+
+    // NEW METHOD: Schedule periodic health checks
+    private fun schedulePeriodicHealthChecks() {
+        try {
+            Log.d(TAG, "🏥 Scheduling periodic health checks")
+            
+            // Health check every 30 seconds
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🏥 PERIODIC HEALTH CHECK")
+                    
+                    // Check if service is still in foreground
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val notificationManager = getSystemService(NotificationManager::class.java)
+                        val activeNotifications = notificationManager.activeNotifications
+                        val isInForeground = activeNotifications.any { it.id == NOTIFICATION_ID }
+                        
+                        if (!isInForeground) {
+                            Log.w(TAG, "⚠️ Service not in foreground - restarting foreground")
+                            startForeground(NOTIFICATION_ID, createNotification())
+                        }
+                    }
+                    
+                    // Check if location updates are active
+                    if (::fusedLocationClient.isInitialized) {
+                        Log.d(TAG, "✅ Location client is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ Location client not initialized - reinitializing")
+                        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                    }
+                    
+                    // Check if CarPowerManager is working
+                    if (isCarPowerInitialized && carPowerManager != null) {
+                        Log.d(TAG, "✅ CarPowerManager is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
+                        initializeCarPowerManager()
+                    }
+                    
+                    // Check wake locks
+                    if (wakeLock?.isHeld == true) {
+                        Log.d(TAG, "✅ Wake lock is held")
+                    } else {
+                        Log.w(TAG, "⚠️ Wake lock not held - reacquiring")
+                        acquireWakeLock()
+                    }
+                    
+                    // Check if sync executor is running
+                    if (!syncExecutor.isShutdown) {
+                        Log.d(TAG, "✅ Sync executor is running")
+                    } else {
+                        Log.w(TAG, "⚠️ Sync executor is shutdown - recreating")
+                        syncExecutor = Executors.newSingleThreadScheduledExecutor()
+                        startPeriodicSync()
+                    }
+                    
+                    // NEW: Detect if app was cleared from background
+                    detectAppClearedAndEnsureService()
+                    
+                    // NEW: Check configuration integrity periodically
+                    checkAndFixConfiguration()
+                    
+                    Log.d(TAG, "✅ Health check completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in health check: $e")
+                }
+            }, 30, 30, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic data collection test (every 2 minutes)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🧪 PERIODIC DATA COLLECTION TEST")
+                    
+                    // Force a location collection test
+                    testDataCollection()
+                    
+                    Log.d(TAG, "✅ Periodic data collection test completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "ERROR: Exception in periodic data collection test", e)
+                }
+            }, 120, 120, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic service health check (every 30 seconds)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🏥 PERIODIC SERVICE HEALTH CHECK")
+                    
+                    // Check if service is still in foreground
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val notificationManager = getSystemService(NotificationManager::class.java)
+                        val activeNotifications = notificationManager.activeNotifications
+                        val isInForeground = activeNotifications.any { it.id == NOTIFICATION_ID }
+                        
+                        if (!isInForeground) {
+                            Log.w(TAG, "⚠️ Service not in foreground - restarting foreground")
+                            startForeground(NOTIFICATION_ID, createNotification())
+                        } else {
+                            Log.d(TAG, "✅ Service is in foreground")
+                        }
+                    }
+                    
+                    // Check if location updates are active
+                    if (::fusedLocationClient.isInitialized) {
+                        Log.d(TAG, "✅ Location client is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ Location client not initialized - reinitializing")
+                        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                    }
+                    
+                    // Check if CarPowerManager is working
+                    if (isCarPowerInitialized && carPowerManager != null) {
+                        Log.d(TAG, "✅ CarPowerManager is initialized")
+                    } else {
+                        Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
+                        initializeCarPowerManager()
+                    }
+                    
+                    // Check wake locks
+                    if (wakeLock?.isHeld == true) {
+                        Log.d(TAG, "✅ Wake lock is held")
+                    } else {
+                        Log.w(TAG, "⚠️ Wake lock not held - reacquiring")
+                        acquireWakeLock()
+                    }
+                    
+                    // Check if sync executor is running
+                    if (!syncExecutor.isShutdown) {
+                        Log.d(TAG, "✅ Sync executor is running")
+                    } else {
+                        Log.w(TAG, "⚠️ Sync executor is shutdown - recreating")
+                        syncExecutor = Executors.newSingleThreadScheduledExecutor()
+                        startPeriodicSync()
+                    }
+                    
+                    // NEW: Detect if app was cleared from background
+                    detectAppClearedAndEnsureService()
+                    
+                    // NEW: Check configuration integrity periodically
+                    checkAndFixConfiguration()
+                    
+                    Log.d(TAG, "✅ Health check completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in health check: $e")
+                }
+            }, 30, 30, TimeUnit.SECONDS)
+            
+            // NEW: Add periodic service persistence check (every 2 minutes)
+            syncExecutor.scheduleAtFixedRate({
+                try {
+                    Log.d(TAG, "🔒 PERIODIC SERVICE PERSISTENCE CHECK")
+                    
+                    // Check if service needs restart flag is set
+                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    val needsRestart = prefs.getBoolean("flutter.service_needs_restart", false)
+                    
+                    if (needsRestart) {
+                        Log.w(TAG, "⚠️ Service restart flag detected - clearing flag")
+                        prefs.edit().remove("flutter.service_needs_restart").apply()
+                    }
+                    
+                    // Ensure service is properly registered for auto-start
+                    ensureAutoStartRegistration()
+                    
+                    Log.d(TAG, "✅ Service persistence check completed")
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "ERROR: Exception in periodic service persistence check", e)
+                }
+            }, 120, 120, TimeUnit.SECONDS)
+            
+            Log.e(TAG, "ERROR: Periodic sync started with uploadTimer: ${uploadTimer}s")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error scheduling health checks: $e")
+        }
+    }
+
+    // NEW METHOD: Detect app cleared from background and ensure service continues
+    private fun detectAppClearedAndEnsureService() {
+        try {
+            Log.d(TAG, "🔍 Detecting if app was cleared from background")
+            
+            // Check if MainActivity is still running
+            val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val runningTasks = activityManager.getRunningTasks(10)
+            val isMainActivityRunning = runningTasks.any { task ->
+                task.topActivity?.className?.contains("MainActivity") == true
+            }
+            
+            Log.d(TAG, "📱 MainActivity running: $isMainActivityRunning")
+            
+            if (!isMainActivityRunning) {
+                Log.w(TAG, "⚠️ App cleared from background - ensuring service continues")
+                
+                // Set a flag to indicate app was cleared
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                prefs.edit().apply {
+                    putBoolean("flutter.app_cleared_from_background", true)
+                    putLong("flutter.app_cleared_time", System.currentTimeMillis())
+                    apply()
+                }
+                
+                // Ensure service continues running
+                ensureServicePersistence()
+                
+                // Force a location collection test
+                testDataCollection()
+                
+                Log.d(TAG, "✅ Service ensured to continue after app cleared")
+            } else {
+                Log.d(TAG, "✅ App still in foreground")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error detecting app cleared: $e")
+        }
+    }
+
+    // NEW METHOD: Ensure auto-start registration
+    private fun ensureAutoStartRegistration() {
+        try {
+            Log.d(TAG, "🔒 Ensuring auto-start registration...")
+            
+            // Check if we have all necessary permissions
+            val hasBootPermission = checkSelfPermission(android.Manifest.permission.RECEIVE_BOOT_COMPLETED) == PackageManager.PERMISSION_GRANTED
+            val hasWakeLockPermission = checkSelfPermission(android.Manifest.permission.WAKE_LOCK) == PackageManager.PERMISSION_GRANTED
+            val hasForegroundPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                checkSelfPermission(android.Manifest.permission.FOREGROUND_SERVICE) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            
+            Log.d(TAG, "📋 Permission Status:")
+            Log.d(TAG, "   - RECEIVE_BOOT_COMPLETED: $hasBootPermission")
+            Log.d(TAG, "   - WAKE_LOCK: $hasWakeLockPermission")
+            Log.d(TAG, "   - FOREGROUND_SERVICE: $hasForegroundPermission")
+            
+            if (!hasBootPermission) {
+                Log.w(TAG, "⚠️ Missing RECEIVE_BOOT_COMPLETED permission")
+            }
+            
+            if (!hasWakeLockPermission) {
+                Log.w(TAG, "⚠️ Missing WAKE_LOCK permission")
+            }
+            
+            // Set a flag to indicate service is running and should auto-restart
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putBoolean("flutter.service_should_auto_start", true)
+                putLong("flutter.service_last_alive", System.currentTimeMillis())
+                putString("flutter.service_status", "running")
+                apply()
+            }
+            
+            Log.d(TAG, "✅ Auto-start registration ensured")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error ensuring auto-start registration: $e")
+        }
+    }
+
+    // NEW METHOD: Force reload configuration and restart services
+    private fun forceReloadConfigurationAndRestart() {
+        try {
+            Log.d(TAG, "🔄 FORCE RELOADING CONFIGURATION AND RESTARTING SERVICES")
+            
+            // Load configuration
+            loadConfiguration()
+            
+            // Restart location updates with new GPS timer
+            restartLocationUpdatesWithNewInterval()
+            
+            // Restart sync with new upload timer
+            restartPeriodicSyncWithNewInterval()
+            
+            Log.d(TAG, "✅ Configuration reloaded and services restarted")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error force reloading configuration: ${e.message}")
+        }
+    }
+
+    // NEW METHOD: Check and fix configuration issues
+    private fun checkAndFixConfiguration() {
+        try {
+            Log.d(TAG, "🔍 CHECKING CONFIGURATION INTEGRITY")
+            
+            // Check if configuration values are reasonable
+            val isGpsTimerValid = gpsTimer in 1..60
+            val isUploadTimerValid = uploadTimer in 5..300
+            val isDistanceThresholdValid = distanceThreshold in 10f..10000f
+            val isOverSpeedingThresholdValid = overSpeedingThreshold in 10f..200f
+            
+            Log.d(TAG, "📊 Configuration Validation:")
+            Log.d(TAG, "   - GPS Timer: $gpsTimer (valid: $isGpsTimerValid)")
+            Log.d(TAG, "   - Upload Timer: $uploadTimer (valid: $isUploadTimerValid)")
+            Log.d(TAG, "   - Distance Threshold: $distanceThreshold (valid: $isDistanceThresholdValid)")
+            Log.d(TAG, "   - Over Speeding Threshold: $overSpeedingThreshold (valid: $isOverSpeedingThresholdValid)")
+            
+            // If any configuration is invalid, force reload
+            if (!isGpsTimerValid || !isUploadTimerValid || !isDistanceThresholdValid || !isOverSpeedingThresholdValid) {
+                Log.w(TAG, "⚠️ Invalid configuration detected - forcing reload")
+                forceReloadConfigurationAndRestart()
+                return
+            }
+            
+            // Check if location request interval matches GPS timer
+            if (::fusedLocationClient.isInitialized) {
+                Log.d(TAG, "📍 Checking location request interval...")
+                // Force restart location updates to ensure correct interval
+                restartLocationUpdatesWithNewInterval()
+            }
+            
+            Log.d(TAG, "✅ Configuration integrity check completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error checking configuration integrity: $e")
+        }
+    }
+
+    // NEW METHOD: Enhanced service persistence for long intervals
+    private fun ensureServicePersistenceForLongIntervals() {
+        try {
+            Log.d(TAG, "🔒 ENHANCED SERVICE PERSISTENCE FOR LONG INTERVALS")
+            
+            // Set multiple persistence flags
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putBoolean("flutter.service_should_continue", true)
+                putBoolean("flutter.service_persistent", true)
+                putBoolean("flutter.service_auto_restart", true)
+                putLong("flutter.service_start_time", System.currentTimeMillis())
+                putLong("flutter.service_last_alive", System.currentTimeMillis())
+                putString("flutter.service_status", "persistent_long_interval")
+                putInt("flutter.service_restart_count", 0)
+                apply()
+            }
+            
+            // Schedule multiple restart mechanisms
+            scheduleMultipleRestartMechanisms()
+            
+            // Ensure wake locks are held
+            acquireWakeLock()
+            
+            // Ensure foreground service is active
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForeground(NOTIFICATION_ID, createNotification())
+            }
+            
+            Log.d(TAG, "✅ Enhanced service persistence configured")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error ensuring enhanced service persistence: $e")
+        }
+    }
+
+    // NEW METHOD: Schedule multiple restart mechanisms
+    private fun scheduleMultipleRestartMechanisms() {
+        try {
+            Log.d(TAG, "🔄 SCHEDULING MULTIPLE RESTART MECHANISMS")
+            
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            
+            // Mechanism 1: Immediate restart (5 seconds)
+            val immediateIntent = Intent(this, BackgroundService::class.java).apply {
+                putExtra("started_by", "immediate_restart")
+                putExtra("auto_started", true)
+                putExtra("background_only", true)
+            }
+            val immediatePendingIntent = PendingIntent.getService(
+                this, 997, immediateIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Mechanism 2: Backup restart (30 seconds)
+            val backupIntent = Intent(this, BackgroundService::class.java).apply {
+                putExtra("started_by", "backup_restart")
+                putExtra("auto_started", true)
+                putExtra("background_only", true)
+            }
+            val backupPendingIntent = PendingIntent.getService(
+                this, 998, backupIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Mechanism 3: Long interval restart (5 minutes)
+            val longIntervalIntent = Intent(this, BackgroundService::class.java).apply {
+                putExtra("started_by", "long_interval_restart")
+                putExtra("auto_started", true)
+                putExtra("background_only", true)
+            }
+            val longIntervalPendingIntent = PendingIntent.getService(
+                this, 999, longIntervalIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Schedule all mechanisms
+            val currentTime = SystemClock.elapsedRealtime()
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 5000, // 5 seconds
+                    immediatePendingIntent
+                )
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 30000, // 30 seconds
+                    backupPendingIntent
+                )
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 300000, // 5 minutes
+                    longIntervalPendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 5000,
+                    immediatePendingIntent
+                )
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 30000,
+                    backupPendingIntent
+                )
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    currentTime + 300000,
+                    longIntervalPendingIntent
+                )
+            }
+            
+            Log.d(TAG, "✅ Multiple restart mechanisms scheduled")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error scheduling multiple restart mechanisms: $e")
+        }
     }
 }

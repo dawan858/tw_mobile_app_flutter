@@ -918,55 +918,17 @@ class SyncService {
   }
 
   Future<void> queueLocationData(Map<String, dynamic> data) async {
-    try {
-      // Get the most up-to-date igStatus directly from native BackgroundService (no SharedPreferences)
-      int igStatusFromNative = 0;
-      try {
-        const serviceChannel = MethodChannel('com.example.twtracking/service');
-        igStatusFromNative = await serviceChannel.invokeMethod('getCurrentIgStatus');
-        print('Read igStatus directly from native BackgroundService for new location: $igStatusFromNative');
-      } catch (e) {
-        print('❌ Error getting igStatus from native service for new location: $e');
-        // Fallback to SharedPreferences if method channel fails
-        final prefs = await SharedPreferences.getInstance();
-        igStatusFromNative = prefs.getInt('current_ig_status') ?? 0;
-        print('Fallback to SharedPreferences igStatus for new location: $igStatusFromNative');
-      }
-
-      // Use the igStatus from native service (no default fallback to 0)
-      data['igStatus'] = igStatusFromNative;
-      
-      print('Queueing new location with igStatus: ${data['igStatus']} (from native: $igStatusFromNative)');
-
-      // Check if entry already exists to prevent duplicates
-      final exists = await _dbHelper.locationEntryExists(data);
-      if (!exists) {
-        await _dbHelper.insertLocationData(data);
-        print('Location data queued successfully with igStatus: ${data['igStatus']}');
-        
-        // Check if this is an ignition change event for immediate sync
-        final isIgnitionEvent = data['reason'] == 'Ignition On' || data['reason'] == 'Ignition Off';
-        
-        // Try to sync immediately if we have connection (prioritize ignition events)
-        if (await _hasInternetConnection()) {
-          if (isIgnitionEvent) {
-            print('🚗 Ignition event detected - triggering immediate sync');
-            // Force immediate sync for ignition events
-            _startSync();
-          } else {
-            _startSync();
-          }
-        }
-      } else {
-        print('Duplicate location entry detected, skipping insert');
-      }
-    } catch (e) {
-      print('Error queueing location data: $e');
-      await _dbHelper.insertExceptionLog(
-        main: 'Queue Error',
-        details: e.toString(),
-      );
-    }
+    // REMOVED: This method is no longer needed
+    // Native BackgroundService handles all data collection and queuing
+    // Flutter should only read data from the database, not add new data
+    
+    print('⚠️ queueLocationData called - this method is deprecated');
+    print('   - Native BackgroundService is the single source of truth for data collection');
+    print('   - Use getUnsyncedData() to read data from database');
+    print('   - Use _startSync() to sync existing data to server');
+    
+    // Don't queue any data - let native service handle it
+    return;
   }
 
   Future<void> forcSync() async {
@@ -1012,6 +974,9 @@ class SyncService {
       print('Fallback to SharedPreferences for stats - igStatus: $currentIgStatus');
     }
     
+    // NEW: Get native service status instead of Flutter service status
+    final nativeServiceStatus = await getNativeServiceStatus();
+    
     // NEW: Add enhanced server monitoring information
     final currentPhaseInterval = _getCurrentRetryInterval();
     final nextPhaseInterval = _currentPhase < _retryPhases.length - 1 
@@ -1026,6 +991,10 @@ class SyncService {
       'currentIgStatus': currentIgStatus,
       'igStatusLastUpdated': DateTime.fromMillisecondsSinceEpoch(igStatusTimestamp).toString(),
       'igStatusSource': 'BackgroundService (direct)',
+      // NEW: Native service status
+      'nativeServiceRunning': nativeServiceStatus['isRunning'] ?? false,
+      'nativeServiceConfiguration': nativeServiceStatus['configuration'] ?? {},
+      'nativeServiceSource': nativeServiceStatus['source'] ?? 'Unknown',
       // NEW: Enhanced server monitoring stats
       'isServerDown': _isServerDown,
       'isMonitoringServer': _isMonitoringServer,
@@ -1307,6 +1276,100 @@ class SyncService {
         'error': e.toString(),
         'hasMismatches': true,
       };
+    }
+  }
+
+  // NEW METHOD: Get data from native BackgroundService for UI display
+  Future<List<Map<String, dynamic>>> getDataFromNativeService({int limit = 50}) async {
+    try {
+      print('📊 Getting data from native BackgroundService database for UI display');
+      
+      // Get data directly from the database (same database used by native service)
+      final data = await _dbHelper.getUnsyncedData(limit: limit);
+      
+      print('✅ Retrieved ${data.length} records from native service database');
+      return data;
+    } catch (e) {
+      print('❌ Error getting data from native service: $e');
+      return [];
+    }
+  }
+
+  // NEW METHOD: Get current status from native BackgroundService
+  Future<Map<String, dynamic>> getNativeServiceStatus() async {
+    try {
+      print('📊 Getting status from native BackgroundService');
+      
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      
+      // Get service status
+      final isRunning = await serviceChannel.invokeMethod('isBackgroundServiceRunning');
+      
+      // Get current configuration
+      final config = await serviceChannel.invokeMethod('getConfiguration');
+      
+      // Get current igStatus
+      final currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
+      
+      return {
+        'isRunning': isRunning,
+        'configuration': config,
+        'currentIgStatus': currentIgStatus,
+        'source': 'Native BackgroundService',
+      };
+    } catch (e) {
+      print('❌ Error getting native service status: $e');
+      return {
+        'isRunning': false,
+        'configuration': {},
+        'currentIgStatus': 0,
+        'source': 'Error',
+        'error': e.toString(),
+      };
+    }
+  }
+
+  // NEW METHOD: Get latest reason from native BackgroundService for UI display
+  Future<String> getLatestReasonFromNativeService() async {
+    try {
+      print('📊 Getting latest reason from native BackgroundService for UI display');
+      
+      // Get the most recent record from the database
+      final db = await _dbHelper.database;
+      final result = await db.query(
+        'location_data',
+        columns: ['reason'],
+        orderBy: 'createAt DESC',
+        limit: 1,
+      );
+      
+      if (result.isNotEmpty) {
+        final latestReason = result.first['reason'] as String? ?? 'Unknown';
+        print('✅ Latest reason from native service: $latestReason');
+        return latestReason;
+      } else {
+        print('⚠️ No location data found in database');
+        return 'Unknown';
+      }
+    } catch (e) {
+      print('❌ Error getting latest reason from native service: $e');
+      return 'Unknown';
+    }
+  }
+
+  // NEW METHOD: Force configuration reload in native BackgroundService
+  Future<bool> forceConfigurationReload() async {
+    try {
+      print('🔄 Forcing configuration reload in native BackgroundService');
+      
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      final result = await serviceChannel.invokeMethod('forceReloadConfiguration');
+      
+      print('✅ Configuration reload result: $result');
+      return result == true;
+    } catch (e) {
+      print('❌ Error forcing configuration reload: $e');
+      return false;
     }
   }
 }

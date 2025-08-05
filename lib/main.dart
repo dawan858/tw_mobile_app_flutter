@@ -199,6 +199,9 @@ class _GPSTrackerState extends State<GPSTracker> {
     // Load current igStatus from SharedPreferences (set by native side)
     _loadCurrentIgStatus();
     
+    // Load latest reason from native BackgroundService
+    _loadLatestReasonFromNativeService();
+    
     // Initialize device admin manager
     DeviceAdminManager.initialize();
     DeviceAdminManager.onDeviceAdminStatusChanged = (bool isGranted) {
@@ -412,6 +415,14 @@ class _GPSTrackerState extends State<GPSTracker> {
       if (currentIgStatus != _lastIgStatus) {
         print('🔄 Ignition state changed in foreground: $_lastIgStatus -> $currentIgStatus');
         
+        // Force ignition reason update in native BackgroundService
+        try {
+          await serviceChannel.invokeMethod('forceIgnitionReasonUpdate', {'igStatus': currentIgStatus});
+          print('✅ Forced ignition reason update triggered for igStatus: $currentIgStatus');
+        } catch (e) {
+          print('❌ Error forcing ignition reason update: $e');
+        }
+        
         // Send location data with ignition change reason
         final ignitionReason = currentIgStatus == 1 ? "Ignition On" : "Ignition Off";
         await _sendLocationDataWithReason(ignitionReason);
@@ -437,66 +448,12 @@ class _GPSTrackerState extends State<GPSTracker> {
           _time = DateTime.now().millisecondsSinceEpoch;
           _localPrimaryId = (_localPrimaryId + 1) % 100000;
           
-          // Update reason based on movement
-          _updateReason(position);
+          // REMOVED: _updateReason(position) - Native BackgroundService handles all reason logic
+          // Reason will be determined by native service when data is saved
         });
       }
     }, onError: (error) {
       print('Error getting location: $error');
-    });
-  }
-
-  void _updateReason(Position position) {
-    final prefs = SharedPreferences.getInstance();
-    prefs.then((prefs) {
-      // Handle all possible types for backward compatibility
-      double angleThreshold = _getDoubleValue(prefs, 'flutter.angleThreshold', 45.0);
-      double overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
-      double distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
-      
-      print('🔍 Reason calculation - Config: Distance=${distanceThreshold}m, Angle=${angleThreshold}°, Speed=${overSpeedingThreshold}km/h');
-      
-      if (position.speed * 3.6 > overSpeedingThreshold) {
-        _reason = "Over Speeding";
-        print('✅ Over Speeding reason triggered: ${(position.speed * 3.6).toStringAsFixed(1)} km/h > ${overSpeedingThreshold} km/h');
-      } else if (_currentPosition != null) {
-        // Check for distance-based reason first
-        final distance = Geolocator.distanceBetween(
-          _currentPosition!.latitude, 
-          _currentPosition!.longitude, 
-          position.latitude, 
-          position.longitude
-        );
-        
-        print('📏 Distance calculation: ${distance.toStringAsFixed(2)}m (threshold: ${distanceThreshold}m)');
-        print('📍 Last position: ${_currentPosition!.latitude}, ${_currentPosition!.longitude}');
-        print('📍 Current position: ${position.latitude}, ${position.longitude}');
-        
-        if (distance >= distanceThreshold) {
-          _reason = "Distance";
-          print('✅ Distance reason triggered: ${distance.toStringAsFixed(2)}m >= ${distanceThreshold}m');
-        } else {
-          print('ℹ️ Distance below threshold: ${distance.toStringAsFixed(2)}m < ${distanceThreshold}m');
-          
-          final bearingChange = (_bearing - _currentPosition!.heading).abs();
-          final normalizedBearingChange = bearingChange > 180 ? 360 - bearingChange : bearingChange;
-          
-          print('🧭 Bearing change: ${normalizedBearingChange.toStringAsFixed(2)}° (threshold: ${angleThreshold}°)');
-          
-          if (position.speed * 3.6 >= 5 && normalizedBearingChange > angleThreshold) {
-            _reason = "Turn";
-            print('✅ Turn reason triggered: ${normalizedBearingChange.toStringAsFixed(2)}° > ${angleThreshold}°');
-          } else if (position.speed * 3.6 > 1) {
-            _reason = "Move";
-            print('✅ Move reason triggered: speed > 1 km/h');
-          } else {
-            _reason = "Idle";
-            print('✅ Idle reason triggered: low speed');
-          }
-        }
-      } else {
-        print('📍 First position - no previous position for distance calculation');
-      }
     });
   }
 
@@ -916,6 +873,23 @@ class _GPSTrackerState extends State<GPSTracker> {
       print('📥 Loaded current igStatus from SharedPreferences: $currentIgStatus');
     } catch (e) {
       print('❌ Error loading current igStatus: $e');
+    }
+  }
+
+  // Load latest reason from native BackgroundService
+  Future<void> _loadLatestReasonFromNativeService() async {
+    try {
+      final reason = await serviceChannel.invokeMethod('getLatestReason');
+      if (reason != null && reason.isNotEmpty) {
+        setState(() {
+          _reason = reason;
+        });
+        print('📥 Loaded latest reason from native service: $_reason');
+      } else {
+        print('📥 No latest reason found from native service.');
+      }
+    } catch (e) {
+      print('❌ Error loading latest reason from native service: $e');
     }
   }
 

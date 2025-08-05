@@ -4,6 +4,7 @@ import 'verification_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'services/sync_service.dart';
 
 class WelcomeScreen extends StatefulWidget {
   final String imei;
@@ -18,6 +19,52 @@ class WelcomeScreen extends StatefulWidget {
 class _WelcomeScreenState extends State<WelcomeScreen> {
   int _versionTapCount = 0;
   DateTime? _lastTapTime;
+
+  // Handle configuration reload
+  Future<void> _handleConfigurationReload() async {
+    try {
+      print('🔄 Manual configuration reload triggered from UI');
+      
+      // Show loading indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Reloading configuration...'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      
+      // Force configuration reload
+      final syncService = SyncService();
+      final success = await syncService.forceConfigurationReload();
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configuration reloaded successfully!'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to reload configuration'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Error in configuration reload: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
 
   void _handleVersionTap() {
     final now = DateTime.now();
@@ -140,9 +187,29 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                         alignment: Alignment.bottomLeft,
                         child: Padding(
                           padding: EdgeInsets.only(left: 40, bottom: 8),
-                          child: GestureDetector(
-                            onTap: widget.onInfoTap,
-                            child: Icon(Icons.info, color: const Color(0xFF3e4095), size: 45),
+                          child: Row(
+                            children: [
+                              GestureDetector(
+                                onTap: widget.onInfoTap,
+                                child: Icon(Icons.info, color: const Color(0xFF3e4095), size: 45),
+                              ),
+                              const SizedBox(width: 16),
+                              GestureDetector(
+                                onTap: _handleConfigurationReload,
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF3e4095).withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    Icons.refresh,
+                                    color: const Color(0xFF3e4095),
+                                    size: 30,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),

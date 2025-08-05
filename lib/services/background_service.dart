@@ -175,17 +175,19 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 int gpsTimer = 5; // Default 5 seconds
 int uploadTimer = 10; // Default 10 seconds
 double angleThreshold = 45.0; // Default 45 degrees
-double overSpeedingThreshold = 60.0; // Default 60 km/h
-double distanceThreshold = 1000.0; // Default 1000 meters
+double overSpeedingThreshold = 70.0; // Default 70 km/h (updated)
+double distanceThreshold = 500.0; // Default 500 meters (updated)
 int movingTimer = 60; // Default 60 seconds
 int stopTimer = 130; // Default 130 seconds
 
 // Add configuration reload timer
 Timer? _configReloadTimer;
+int _testCounter = 0; // Counter for testing data collection
+int _configReloadCounter = 0; // Counter for configuration reload
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
-  print('=== FLUTTER BACKGROUND SERVICE STARTED ===');
+  print('=== FLUTTER BACKGROUND SERVICE STARTED (UI COORDINATOR ONLY) ===');
   
   DartPluginRegistrant.ensureInitialized();
   await loadConfiguration();
@@ -211,268 +213,146 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
-  Position? lastPosition;
-  int _lastIgStatus = 0; // Track previous igStatus for ignition change detection
-
-  // Switched back to Timer.periodic for reliable, time-based updates.
-  Timer.periodic(Duration(seconds: gpsTimer), (timer) async {
+  // REMOVED: Location data collection - Native BackgroundService handles this
+  // REMOVED: Timer.periodic location tracking - No longer needed
+  
+  // Only handle UI-related tasks and service coordination
+  Timer.periodic(const Duration(seconds: 30), (timer) async {
     try {
       // Reload configuration before each cycle to ensure we have latest values
       await loadConfiguration();
       
-      // 1. Check igStatus from native to ensure ignition is ON
-      int currentIgStatus = 0;
+      // Check if native BackgroundService is running
       try {
         const serviceChannel = MethodChannel('com.example.twtracking/service');
-        currentIgStatus = await serviceChannel.invokeMethod('getCurrentIgStatus');
-      } catch (e) {
-        print('⚠️ Could not get igStatus from native, assuming OFF. Error: $e');
-        return; // Don't proceed if we can't get a reliable status
-      }
-      
-      // 2. Check for ignition state change and update tracking
-      bool ignitionChanged = false;
-      if (currentIgStatus != _lastIgStatus) {
-        print('🔄 Ignition state changed: $_lastIgStatus -> $currentIgStatus');
-        ignitionChanged = true;
-        _lastIgStatus = currentIgStatus;
-      }
-      
-      // 3. If ignition is off and we haven't just detected a change, skip this cycle.
-      if (currentIgStatus == 0 && !ignitionChanged) {
-        print('ℹ️ Ignition is off (igStatus: 0). Skipping timer-based location save.');
-        return;
-      }
-
-      // 3. Get current position
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-      );
-
-      // 4. Determine reason using configuration values
-      String reason = "Timer";
-      
-      // Check if this is an ignition change cycle
-      if (ignitionChanged) {
-        reason = currentIgStatus == 1 ? "Ignition On" : "Ignition Off";
-        print('🚗 Ignition change cycle detected - reason: $reason');
+        final isNativeServiceRunning = await serviceChannel.invokeMethod('isBackgroundServiceRunning');
         
-        // For ignition off events, we should also check if the Kotlin service is handling this
-        // to avoid duplicate ignition off events
-        if (currentIgStatus == 0) {
-          print('🚗 Ignition OFF detected in Flutter service - ensuring proper handling');
-        }
-      } else if (lastPosition == null) {
-        reason = "Initial Position";
-        print('📍 First position - reason: $reason');
-      } else {
-        // Check for distance-based reason first using configured threshold
-        final distance = Geolocator.distanceBetween(
-          lastPosition!.latitude, 
-          lastPosition!.longitude, 
-          position.latitude, 
-          position.longitude
-        );
+        print('🔍 Native BackgroundService status check: $isNativeServiceRunning');
         
-        print('📏 Distance calculation: ${distance.toStringAsFixed(2)}m (threshold: ${distanceThreshold}m)');
-        print('📍 Last position: ${lastPosition!.latitude}, ${lastPosition!.longitude}');
-        print('📍 Current position: ${position.latitude}, ${position.longitude}');
-        
-        if (distance >= distanceThreshold) {
-          reason = "Distance";
-          print('✅ Distance reason triggered: ${distance.toStringAsFixed(2)}m >= ${distanceThreshold}m');
-        } else {
-          print('ℹ️ Distance below threshold: ${distance.toStringAsFixed(2)}m < ${distanceThreshold}m');
+        if (!isNativeServiceRunning) {
+          print('⚠️ Native BackgroundService not running, attempting to start it');
+          await serviceChannel.invokeMethod('startBackgroundService');
           
-          // Check for turn detection if vehicle is moving using configured threshold
-          if (position.speed * 3.6 >= 5) { // speed >= 5 km/h
-            final bearingChange = (position.heading ?? 0) - (lastPosition!.heading ?? 0);
-            final normalizedBearingChange = bearingChange.abs() > 180 ? 360 - bearingChange.abs() : bearingChange.abs();
-            
-            print('🧭 Bearing change: ${normalizedBearingChange.toStringAsFixed(2)}° (threshold: ${angleThreshold}°)');
-            
-            if (normalizedBearingChange >= angleThreshold) {
-              reason = "Turn";
-              print('✅ Turn reason triggered: ${normalizedBearingChange.toStringAsFixed(2)}° >= ${angleThreshold}°');
-            } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
-              reason = "Movement";
-              print('✅ Movement reason triggered: speed > 1 m/s');
-            }
-          } else if (position.speed > 1) { // speed is m/s. > 1 m/s is ~3.6 km/h
-            reason = "Movement";
-            print('✅ Movement reason triggered: speed > 1 m/s');
+          // Wait a moment and check again
+          await Future.delayed(const Duration(seconds: 2));
+          final isRunningAfterStart = await serviceChannel.invokeMethod('isBackgroundServiceRunning');
+          print('🔍 Native BackgroundService status after start attempt: $isRunningAfterStart');
+        } else {
+          print('✅ Native BackgroundService is running');
+          
+          // Get native service status for debugging
+          try {
+            final nativeStatus = await serviceChannel.invokeMethod('getNativeServiceStatus');
+            print('📊 Native service status: $nativeStatus');
+          } catch (e) {
+            print('❌ Error getting native service status: $e');
           }
         }
+      } catch (e) {
+        print('❌ Error checking native service status: $e');
       }
-
-      // 5. Queue data for sync
-      final prefs = await SharedPreferences.getInstance();
-      final imei = prefs.getString('flutter.imei') ?? 'unknown';
-      final now = DateTime.now();
-
-      final data = {
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'accuracy': position.accuracy,
-        'altitude': position.altitude,
-        'speed': position.speed,
-        'bearing': position.heading,
-        'imei': imei,
-        'timestamp': position.timestamp?.toIso8601String() ?? now.toIso8601String(),
-        'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
-        'gmtSettings': "GMT+${now.timeZoneOffset.inHours}:00",
-        'igStatus': currentIgStatus,
-        'localPrimaryId': now.millisecondsSinceEpoch % 100000,
-        'name': 'A100',
-        'phoneNo': 'unknown',
-        'provider': 'fused',
-        'reason': reason,
-        'versionNo': 'v1.0.0', // Placeholder
-        'sync_status': 0,
-        'createAt':  DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(now),
-      };
-
-      await SyncService().queueLocationData(data);
-      print('✅ Location data saved via timer. Reason: $reason, igStatus: $currentIgStatus, IgnitionChanged: $ignitionChanged, Config: GPS=${gpsTimer}s, Distance=${distanceThreshold}m, Angle=${angleThreshold}°');
       
-      lastPosition = position;
-
+      // Check database for data collection
+      try {
+        final dbHelper = DatabaseHelper();
+        final stats = await dbHelper.getDatabaseStats();
+        print('📊 Database stats: ${stats['totalRecords']} total, ${stats['unsyncedRecords']} unsynced, ${stats['syncedRecords']} synced');
+        
+        if (stats['totalRecords'] == 0) {
+          print('⚠️ No data in database - native service might not be collecting data');
+        } else if (stats['unsyncedRecords'] > 0) {
+          print('⚠️ ${stats['unsyncedRecords']} unsynced records - sync service might not be working');
+        }
+      } catch (e) {
+        print('❌ Error checking database stats: $e');
+      }
+      
+      // Update UI with current status (no data collection)
+      print('✅ Flutter service coordinator running - Native service handles data collection');
+      
+      // Test data collection every 5 minutes
+      _testCounter++;
+      if (_testCounter >= 10) { // Every 5 minutes (30s * 10 = 5 minutes)
+        _testCounter = 0;
+        try {
+          print('🧪 Testing data collection...');
+          const serviceChannel = MethodChannel('com.example.twtracking/service');
+          await serviceChannel.invokeMethod('testDataCollection');
+          print('✅ Data collection test triggered');
+        } catch (e) {
+          print('❌ Error testing data collection: $e');
+        }
+      }
+      
+      // Force configuration reload every 10 minutes
+      _configReloadCounter++;
+      if (_configReloadCounter >= 20) { // Every 10 minutes (30s * 20 = 10 minutes)
+        _configReloadCounter = 0;
+        try {
+          print('🔄 Forcing configuration reload...');
+          const serviceChannel = MethodChannel('com.example.twtracking/service');
+          await serviceChannel.invokeMethod('forceReloadConfiguration');
+          print('✅ Configuration reload triggered');
+        } catch (e) {
+          print('❌ Error forcing configuration reload: $e');
+        }
+      }
+      
     } catch (e) {
-      print('❌ Error in periodic location timer: $e');
+      print('❌ Error in Flutter service coordinator: $e');
     }
   });
 }
 
-Future<void> _queueLocationData(Position position, String reason, double accurateSpeed) async {
-  await _queueLocationDataWithReason(position, reason, accurateSpeed);
-}
+// REMOVED: _queueLocationData method - No longer needed
+// REMOVED: _queueLocationDataWithReason method - No longer needed
 
-Future<void> _queueLocationDataWithReason(Position position, String reason, double accurateSpeed) async {
+// REMOVED: testDistanceCalculation method - No longer needed
+
+// Load configuration from SharedPreferences (kept for service coordination)
+Future<void> loadConfiguration() async {
   try {
-    print('=== QUEUING LOCATION DATA ===');
-    
     final prefs = await SharedPreferences.getInstance();
-    final imei = prefs.getString('imei') ?? 'unknown';
     
-    // Use the accurate speed we calculated
-    final speedToSave = accurateSpeed < 0 ? 0.0 : accurateSpeed;
-    
-    final locationData = {
-      'latitude': position.latitude,
-      'longitude': position.longitude,
-      'accuracy': position.accuracy,
-      'altitude': position.altitude,
-      'speed': speedToSave, // Use enhanced accurate speed
-      'bearing': position.heading ?? 0.0, // Handle null heading
-      'imei': imei,
-      'timestamp': DateTime.now().toIso8601String(),
-      'deviceRDT': DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(DateTime.now()),
-      'gmtSettings': "GMT+${DateTime.now().timeZoneOffset.inHours}:00 ${DateTime.now().year}",
-      'igStatus': 0, // Default to ACC OFF, will be updated by sync service
-      'localPrimaryId': DateTime.now().millisecondsSinceEpoch % 100000,
-      'name': (await DeviceInfoPlugin().androidInfo).model,
-      'phoneNo': (await DeviceInfoPlugin().androidInfo).serialNumber,
-      'provider': 'fused',
-      'reason': reason,
-      'versionNo': 'v${(await PackageInfo.fromPlatform()).version}',
-    };
+    // Load configuration values with defaults and handle type conversion
+    gpsTimer = _getIntValue(prefs, 'flutter.gpsTimer', 5);
+    uploadTimer = _getIntValue(prefs, 'flutter.uploadTimer', 10);
+    angleThreshold = _getDoubleValue(prefs, 'flutter.angleThreshold', 45.0);
+    overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
+    distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
+    movingTimer = _getIntValue(prefs, 'flutter.movingTimer', 60);
+    stopTimer = _getIntValue(prefs, 'flutter.stopTimer', 130);
 
-    print('Enhanced location data:');
-    print('Lat: ${locationData['latitude']}, Lng: ${locationData['longitude']}');
-    print('Speed: ${locationData['speed']}, Reason: ${locationData['reason']}');
-    print('Accuracy: ${position.accuracy.toStringAsFixed(1)}m');
-
-    // Queue the data for sync
-    await SyncService().queueLocationData(locationData);
-    print('Location data queued successfully with enhanced speed: ${speedToSave.toStringAsFixed(1)} km/h');
-    
+    print('Configuration loaded for service coordination:');
+    print('GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
+    print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
   } catch (e) {
-    print('Error queueing location data: $e');
-    print('Stack trace: ${StackTrace.current}');
+    print('Error loading configuration: $e');
   }
 }
 
-// Load configuration from SharedPreferences
-  Future<void> loadConfiguration() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      
-      // Load configuration values with defaults and handle type conversion
-      gpsTimer = _getIntValue(prefs, 'flutter.gpsTimer', 5);
-      uploadTimer = _getIntValue(prefs, 'flutter.uploadTimer', 10);
-      angleThreshold = _getDoubleValue(prefs, 'flutter.angleThreshold', 45.0);
-      overSpeedingThreshold = _getDoubleValue(prefs, 'flutter.overSpeedingThreshold', 60.0);
-      distanceThreshold = _getDoubleValue(prefs, 'flutter.distanceThreshold', 1000.0);
-      movingTimer = _getIntValue(prefs, 'flutter.movingTimer', 60);
-      stopTimer = _getIntValue(prefs, 'flutter.stopTimer', 130);
+int _getIntValue(SharedPreferences prefs, String key, int defaultValue) {
+  try {
+    return prefs.getInt(key) ?? defaultValue;
+  } catch (e) {
+    // If getInt fails, try to parse as string
+    final stringValue = prefs.getString(key);
+    if (stringValue != null) {
+      return int.tryParse(stringValue) ?? defaultValue;
+    }
+    return defaultValue;
+  }
+}
 
-      print('Enhanced configuration loaded:');
-      print('GPS Timer: ${gpsTimer}s, Speed Threshold: ${overSpeedingThreshold} km/h');
-      print('Distance Threshold: ${distanceThreshold}m, Angle Threshold: ${angleThreshold}°');
-    } catch (e) {
-      print('Error loading configuration: $e');
+double _getDoubleValue(SharedPreferences prefs, String key, double defaultValue) {
+  try {
+    return prefs.getDouble(key) ?? defaultValue;
+  } catch (e) {
+    // If getDouble fails, try to parse as string
+    final stringValue = prefs.getString(key);
+    if (stringValue != null) {
+      return double.tryParse(stringValue) ?? defaultValue;
     }
+    return defaultValue;
   }
-  
-  int _getIntValue(SharedPreferences prefs, String key, int defaultValue) {
-    try {
-      return prefs.getInt(key) ?? defaultValue;
-    } catch (e) {
-      // If getInt fails, try to parse as string
-      final stringValue = prefs.getString(key);
-      if (stringValue != null) {
-        return int.tryParse(stringValue) ?? defaultValue;
-      }
-      return defaultValue;
-    }
-  }
-  
-  double _getDoubleValue(SharedPreferences prefs, String key, double defaultValue) {
-    try {
-      return prefs.getDouble(key) ?? defaultValue;
-    } catch (e) {
-      // If getDouble fails, try to parse as string
-      final stringValue = prefs.getString(key);
-      if (stringValue != null) {
-        return double.tryParse(stringValue) ?? defaultValue;
-      }
-      return defaultValue;
-    }
-  }
-
-  // NEW: Test distance calculation with sample coordinates
-  Future<void> testDistanceCalculation() async {
-    try {
-      print('🧪 === TESTING DISTANCE CALCULATION ===');
-      
-      // Load current configuration
-      await loadConfiguration();
-      print('📊 Current configuration:');
-      print('   - Distance threshold: ${distanceThreshold}m');
-      print('   - Angle threshold: ${angleThreshold}°');
-      print('   - Speed threshold: ${overSpeedingThreshold} km/h');
-      
-      // Test coordinates that should trigger distance reason
-      final lat1 = 31.3025483;
-      final lon1 = 74.0778433;
-      final lat2 = 31.3115483; // ~1000m north
-      final lon2 = 74.0778433;
-      
-      final distance = Geolocator.distanceBetween(lat1, lon1, lat2, lon2);
-      print('📏 Test distance calculation:');
-      print('   - Point 1: $lat1, $lon1');
-      print('   - Point 2: $lat2, $lon2');
-      print('   - Calculated distance: ${distance.toStringAsFixed(2)}m');
-      print('   - Distance threshold: ${distanceThreshold}m');
-      print('   - Should trigger distance reason: ${distance >= distanceThreshold}');
-      
-      if (distance >= distanceThreshold) {
-        print('✅ Distance calculation test PASSED - should trigger "Distance" reason');
-      } else {
-        print('❌ Distance calculation test FAILED - distance below threshold');
-      }
-      
-    } catch (e) {
-      print('❌ Error in distance calculation test: $e');
-    }
-  }
+}

@@ -81,7 +81,7 @@ class MainActivity : FlutterActivity() {
         
         registerTerminationReceiver()
         registerLogUploadReceiver()
-        // Don't start tracking service here - let permission flow control it
+        // BackgroundService is auto-started and persistent - no need to start manually
     }
 
     private fun checkAndRequestBatteryOptimization() {
@@ -111,8 +111,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startTrackingService() {
-        Log.d(TAG, "Starting tracking service from MainActivity")
-        val serviceIntent = Intent(this, GpsTrackingService::class.java)
+        Log.d(TAG, "Starting BackgroundService (primary tracking service)")
+        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+            putExtra("started_by", "MainActivity")
+            putExtra("auto_started", false)
+            putExtra("background_only", false)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
@@ -137,7 +141,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         Log.d(TAG, "MainActivity onResume")
-        startTrackingService()
+        // REMOVED: startTrackingService() - BackgroundService is auto-started and persistent
         
         // Check if device admin was granted while user was in settings
         try {
@@ -190,15 +194,30 @@ class MainActivity : FlutterActivity() {
                     startTrackingService()
                     result.success(true)
                 }
+                "startBackgroundService" -> {
+                    Log.d(TAG, "Starting BackgroundService (primary tracking service)")
+                    val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                        putExtra("started_by", "MainActivity")
+                        putExtra("auto_started", false)
+                        putExtra("background_only", false)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent)
+                    } else {
+                        startService(serviceIntent)
+                    }
+                    result.success(true)
+                }
                 "stopService" -> {
-                    Log.d(TAG, "Stopping GPS tracking service from Flutter")
-                    val serviceIntent = Intent(this, GpsTrackingService::class.java)
+                    Log.d(TAG, "Stopping BackgroundService from Flutter")
+                    val serviceIntent = Intent(this, BackgroundService::class.java)
                     stopService(serviceIntent)
                     result.success(true)
                 }
                 "isServiceRunning" -> {
-                    // Check if GpsTrackingService is running (legacy)
-                    val isRunning = isServiceRunning(GpsTrackingService::class.java)
+                    // Check if BackgroundService is running (primary service)
+                    val isRunning = isServiceRunning(BackgroundService::class.java)
+                    Log.d(TAG, "BackgroundService running status: $isRunning")
                     result.success(isRunning)
                 }
                 "isBackgroundServiceRunning" -> {
@@ -246,8 +265,8 @@ class MainActivity : FlutterActivity() {
                                 "gpsTimer" to 5,
                                 "uploadTimer" to 10,
                                 "angleThreshold" to 45f,
-                                "overSpeedingThreshold" to 60f,
-                                "distanceThreshold" to 1000f,
+                                "overSpeedingThreshold" to 70f,  // Updated to 70 km/h
+                                "distanceThreshold" to 500f,     // Updated to 500m
                                 "movingTimer" to 60,
                                 "stopTimer" to 130,
                                 "igStatus" to 0,
@@ -299,25 +318,36 @@ class MainActivity : FlutterActivity() {
                             if (currentIgStatus != -1) {
                                 Log.d(TAG, "✅ Current igStatus from BackgroundService: $currentIgStatus")
                                 result.success(currentIgStatus)
-                                return@setMethodCallHandler
+                            } else {
+                                Log.w(TAG, "⚠️ No igStatus found in SharedPreferences")
+                                result.success(0)
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "⚠️ Could not get igStatus from BackgroundService: ${e.message}")
-                        }
-                        
-                        // Fallback to MainActivity's CarPowerManager
-                        if (::carPowerManager.isInitialized) {
-                            val currentIgStatus = carPowerManager.getCurrentIgStatus()
-                            Log.d(TAG, "✅ Current igStatus from CarPowerManager: $currentIgStatus")
-                            result.success(currentIgStatus)
-                        } else {
-                            Log.w(TAG, "⚠️ CarPowerManager not initialized, returning default igStatus: 0")
-                            result.success(0) // Default to ACC OFF
+                            Log.e(TAG, "❌ Error getting igStatus from BackgroundService: $e")
+                            result.success(0)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error getting current igStatus via service channel", e)
-                        Log.w(TAG, "⚠️ Returning default igStatus: 0 due to error")
-                        result.success(0) // Default to ACC OFF on error
+                        Log.e(TAG, "❌ Error in getCurrentIgStatus: $e")
+                        result.error("IGSTATUS_ERROR", "Failed to get igStatus", e.message)
+                    }
+                }
+                "getLatestReason" -> {
+                    try {
+                        Log.d(TAG, "🔄 Getting latest reason from BackgroundService database")
+                        
+                        // Get the latest reason from BackgroundService database
+                        val backgroundService = getBackgroundServiceInstance()
+                        if (backgroundService != null) {
+                            val latestReason = backgroundService.getLatestReason()
+                            Log.d(TAG, "✅ Latest reason from BackgroundService: $latestReason")
+                            result.success(latestReason)
+                        } else {
+                            Log.w(TAG, "⚠️ BackgroundService not running, returning default reason")
+                            result.success("Unknown")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting latest reason: $e")
+                        result.error("REASON_ERROR", "Failed to get latest reason", e.message)
                     }
                 }
                 "getCarPowerManagerStatus" -> {
@@ -481,6 +511,101 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error sending igStatus directly", e)
                         result.error("DIRECT_IGSTATUS_ERROR", "Failed to send igStatus directly", e.message)
+                    }
+                }
+                "forceIgnitionReasonUpdate" -> {
+                    try {
+                        Log.d(TAG, "🔄 Forcing ignition reason update from Flutter")
+                        val newIgStatus = call.argument<Int>("igStatus") ?: 0
+                        
+                        // Send intent to BackgroundService to force ignition reason update
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "FORCE_IGNITION_REASON_UPDATE"
+                            putExtra("ig_status", newIgStatus)
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Forced ignition reason update triggered for igStatus: $newIgStatus")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error forcing ignition reason update: $e")
+                        result.error("FORCE_IGNITION_ERROR", "Failed to force ignition reason update", e.message)
+                    }
+                }
+                "forceReloadConfiguration" -> {
+                    try {
+                        Log.d(TAG, "🔄 Forcing configuration reload in BackgroundService")
+                        
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "FORCE_RELOAD_CONFIGURATION"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Configuration reload triggered")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error forcing configuration reload: $e")
+                        result.error("CONFIG_RELOAD_ERROR", "Failed to force configuration reload", e.message)
+                    }
+                }
+                "getNativeServiceStatus" -> {
+                    try {
+                        Log.d(TAG, "🔄 Getting detailed native service status")
+                        
+                        // Check if BackgroundService is running
+                        val isRunning = isServiceRunning(BackgroundService::class.java)
+                        
+                        // Get current igStatus from SharedPreferences
+                        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                        val currentIgStatus = prefs.getInt("current_ig_status", -1)
+                        val igStatusTimestamp = prefs.getLong("ig_status_timestamp", 0)
+                        
+                        // Get CarPowerManager status
+                        val carPowerStatus = if (::carPowerManager.isInitialized) {
+                            mapOf(
+                                "isInitialized" to true,
+                                "currentIgStatus" to carPowerManager.getCurrentIgStatus(),
+                                "isProperlyInitialized" to carPowerManager.isProperlyInitialized()
+                            )
+                        } else {
+                            mapOf(
+                                "isInitialized" to false,
+                                "currentIgStatus" to -1,
+                                "isProperlyInitialized" to false
+                            )
+                        }
+                        
+                        val status = mapOf(
+                            "isRunning" to isRunning,
+                            "currentIgStatus" to currentIgStatus,
+                            "igStatusTimestamp" to igStatusTimestamp,
+                            "carPowerManager" to carPowerStatus,
+                            "timestamp" to System.currentTimeMillis()
+                        )
+                        
+                        Log.d(TAG, "✅ Native service status: $status")
+                        result.success(status)
+                        
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting native service status: $e")
+                        result.error("STATUS_ERROR", "Failed to get native service status", e.message)
+                    }
+                }
+                "testDataCollection" -> {
+                    try {
+                        Log.d(TAG, "🧪 Testing data collection and sync")
+                        
+                        // Send intent to BackgroundService to test data collection
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "TEST_DATA_COLLECTION"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Data collection test triggered")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error testing data collection: $e")
+                        result.error("TEST_ERROR", "Failed to test data collection", e.message)
                     }
                 }
                 else -> {
