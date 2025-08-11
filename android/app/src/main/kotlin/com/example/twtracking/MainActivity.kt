@@ -350,6 +350,40 @@ class MainActivity : FlutterActivity() {
                         result.error("REASON_ERROR", "Failed to get latest reason", e.message)
                     }
                 }
+                "resetReasonTimingTracking" -> {
+                    try {
+                        Log.d(TAG, "🔄 Resetting reason timing tracking from Flutter")
+                        val backgroundService = getBackgroundServiceInstance()
+                        if (backgroundService != null) {
+                            backgroundService.resetReasonTimingTracking()
+                            Log.d(TAG, "✅ Reason timing tracking reset successfully")
+                            result.success(true)
+                        } else {
+                            Log.w(TAG, "⚠️ BackgroundService not running, cannot reset timing tracking")
+                            result.success(false)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error resetting reason timing tracking: $e")
+                        result.error("RESET_TIMING_ERROR", "Failed to reset reason timing tracking", e.message)
+                    }
+                }
+                "getReasonTimingStatus" -> {
+                    try {
+                        Log.d(TAG, "📊 Getting reason timing status from BackgroundService")
+                        val backgroundService = getBackgroundServiceInstance()
+                        if (backgroundService != null) {
+                            val status = backgroundService.getReasonTimingStatus()
+                            Log.d(TAG, "✅ Reason timing status retrieved successfully")
+                            result.success(status)
+                        } else {
+                            Log.w(TAG, "⚠️ BackgroundService not running, returning empty status")
+                            result.success(mapOf<String, Any>())
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting reason timing status: $e")
+                        result.error("TIMING_STATUS_ERROR", "Failed to get reason timing status", e.message)
+                    }
+                }
                 "getCarPowerManagerStatus" -> {
                     try {
                         Log.d(TAG, "🔍 Getting CarPowerManager status from service channel")
@@ -606,6 +640,76 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error testing data collection: $e")
                         result.error("TEST_ERROR", "Failed to test data collection", e.message)
+                    }
+                }
+                "getIgnitionStateTrackingStatus" -> {
+                    try {
+                        Log.d(TAG, "🔄 Getting ignition state tracking status")
+                        
+                        // Send intent to BackgroundService to get ignition state tracking status
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "GET_IGNITION_STATE_TRACKING_STATUS"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Ignition state tracking status request triggered")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting ignition state tracking status: $e")
+                        result.error("IGNITION_STATUS_ERROR", "Failed to get ignition state tracking status", e.message)
+                    }
+                }
+                "triggerIgnitionStateChange" -> {
+                    try {
+                        Log.d(TAG, "🔄 Triggering manual ignition state change")
+                        val newStatus = call.argument<Int>("newStatus") ?: 0
+                        
+                        // Send intent to BackgroundService to trigger ignition state change
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "TRIGGER_IGNITION_STATE_CHANGE"
+                            putExtra("new_status", newStatus)
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Manual ignition state change triggered for status: $newStatus")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error triggering ignition state change: $e")
+                        result.error("IGNITION_CHANGE_ERROR", "Failed to trigger ignition state change", e.message)
+                    }
+                }
+                "clearIgnitionStateTracking" -> {
+                    try {
+                        Log.d(TAG, "🔄 Clearing ignition state tracking")
+                        
+                        // Send intent to BackgroundService to clear ignition state tracking
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "CLEAR_IGNITION_STATE_TRACKING"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Ignition state tracking clear triggered")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error clearing ignition state tracking: $e")
+                        result.error("CLEAR_IGNITION_ERROR", "Failed to clear ignition state tracking", e.message)
+                    }
+                }
+                "getTimingStatus" -> {
+                    try {
+                        Log.d(TAG, "🔄 Getting timing status")
+                        
+                        // Send intent to BackgroundService to get timing status
+                        val serviceIntent = Intent(this, BackgroundService::class.java).apply {
+                            action = "GET_TIMING_STATUS"
+                        }
+                        startService(serviceIntent)
+                        
+                        Log.d(TAG, "✅ Timing status request triggered")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error getting timing status: $e")
+                        result.error("TIMING_STATUS_ERROR", "Failed to get timing status", e.message)
                     }
                 }
                 else -> {

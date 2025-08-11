@@ -117,6 +117,26 @@ class BackgroundService : Service() {
     private var serviceStartAttempts = 0
     private val MAX_START_ATTEMPTS = 3
     private var lastIgStatus = 0 // Track previous igStatus for ignition change detection
+    
+    // NEW: Enhanced ignition state tracking for server communication
+    private var previousIgnitionState = 0 // Track the previous ignition state
+    private var ignitionOnDetected = false // Flag to track if ignition on was detected
+    private var ignitionOffDetected = false // Flag to track if ignition off was detected
+    private var lastIgnitionChangeTime = 0L // Timestamp of last ignition change
+    private var shouldSendData = true // Flag to control data transmission based on ignition state
+    private var pendingIgnitionOnReason = false // Flag to ensure first record after ignition on has "Ignition On" reason
+    private var pendingIgnitionOffReason = false // Flag to ensure ignition off is properly recorded
+    private var ignitionStateChangeBuffer = mutableListOf<Pair<String, Long>>() // Buffer for ignition state changes
+    private var lastProcessedIgnitionChange = "" // Track last processed ignition change to prevent duplicates
+
+    // NEW: Reason timing tracking variables
+    private var lastIdleSyncTime: Long = 0
+    private var lastMoveSyncTime: Long = 0
+    private var lastOverSpeedingSyncTime: Long = 0
+    private var lastSyncedReason: String? = null
+    private val idleConsecutiveTimeout: Long = 120000L // 120 seconds in milliseconds
+    private val moveConsecutiveTimeout: Long = 30000L // 30 seconds in milliseconds
+    private val overSpeedingConsecutiveTimeout: Long = 45000L // 45 seconds in milliseconds
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -140,6 +160,19 @@ class BackgroundService : Service() {
                 
                 Log.d(TAG, "🚗 ACC Callback Received. isAccOn: $isAccOn, newIgStatus: $newIgStatus, oldStatus: $oldStatus")
 
+                // NEW: Check for engine start scenario
+                val isEngineStartInProgress = carPowerManager?.isCurrentlyInEngineStart() ?: false
+                
+                if (isEngineStartInProgress) {
+                    Log.d(TAG, "🚗 ENGINE START IN PROGRESS - Maintaining current igStatus: $igStatus")
+                    dbHelper.insertIgnitionLog(
+                        "Engine start in progress - ignoring temporary power fluctuation",
+                        "Maintaining igStatus: $igStatus during engine start",
+                        "engine_start_progress"
+                    )
+                    return@post
+                }
+
                 igStatus = newIgStatus // Always update to the latest from the source of truth
 
                 if (newIgStatus != oldStatus) {
@@ -149,6 +182,9 @@ class BackgroundService : Service() {
                     Log.d(TAG, "   - New Status: $newIgStatus (${if (newIgStatus == 1) "ACC_ON" else "ACC_OFF"})")
                     Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
                     Log.d(TAG, "   - Source: CarPowerManager callback")
+                    
+                    // NEW: Enhanced ignition state change handling
+                    handleIgnitionStateChange(oldStatus, newIgStatus)
                     
                     updateNotificationWithAccState(isAccOn)
                     
@@ -161,36 +197,9 @@ class BackgroundService : Service() {
                         if (newIgStatus == 1) "acc_on" else "acc_off"
                     )
 
-                    // Save a new location point with ignition change reason and sync
-                    if (lastLocation != null) {
-                        // Set ignition change reason using the updated method
-                        val ignitionReason = calculateEnhancedReason(lastLocation!!, true, newIgStatus)
-                        Log.d(TAG, "🚗 Saving ignition change location with reason: $ignitionReason, igStatus: $newIgStatus")
-                        saveLocationDataWithReason(lastLocation!!, ignitionReason)
-                        // Trigger immediate sync
-                        syncExecutor.execute {
-                            performSyncToServer()
-                        }
-                    } else {
-                        Log.w(TAG, "⚠️ No location available, igStatus changed but not synced yet")
-                        // Try to get a fresh location for ignition change
-                        try {
-                            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                                val freshLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                                if (freshLocation != null) {
-                                    val ignitionReason = calculateEnhancedReason(freshLocation, true, newIgStatus)
-                                    Log.d(TAG, "🚗 Saving ignition change with fresh location, reason: $ignitionReason")
-                                    saveLocationDataWithReason(freshLocation, ignitionReason)
-                                    syncExecutor.execute {
-                                        performSyncToServer()
-                                    }
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error getting fresh location for ignition change", e)
-                        }
-                    }
+                    // NEW: Let handleIgnitionStateChange handle all ignition-related location saving
+                    // No duplicate location saving here - handleIgnitionStateChange will handle it
+                    Log.d(TAG, "🚗 Ignition state change handled by handleIgnitionStateChange method")
                     
                     // Update lastIgStatus for future change detection
                     lastIgStatus = oldStatus
@@ -1022,6 +1031,27 @@ class BackgroundService : Service() {
             intent?.action == "REFRESH_SATELLITE_DATA" -> {
                 Log.d(TAG, "🛰️ HANDLING REFRESH SATELLITE DATA")
                 refreshSatelliteData()
+            }
+            intent?.action == "GET_IGNITION_STATE_TRACKING_STATUS" -> {
+                Log.d(TAG, "📊 HANDLING GET IGNITION STATE TRACKING STATUS")
+                val status = getIgnitionStateTrackingStatus()
+                Log.d(TAG, "✅ Ignition state tracking status retrieved")
+            }
+            intent?.action == "TRIGGER_IGNITION_STATE_CHANGE" -> {
+                Log.d(TAG, "🚗 HANDLING TRIGGER IGNITION STATE CHANGE")
+                val newStatus = intent.getIntExtra("new_status", 0)
+                triggerIgnitionStateChange(newStatus)
+                Log.d(TAG, "✅ Ignition state change triggered for status: $newStatus")
+            }
+            intent?.action == "CLEAR_IGNITION_STATE_TRACKING" -> {
+                Log.d(TAG, "🧹 HANDLING CLEAR IGNITION STATE TRACKING")
+                clearIgnitionStateTracking()
+                Log.d(TAG, "✅ Ignition state tracking cleared")
+            }
+            intent?.action == "GET_TIMING_STATUS" -> {
+                Log.d(TAG, "📊 HANDLING GET TIMING STATUS")
+                val status = getTimingStatus()
+                Log.d(TAG, "✅ Timing status retrieved")
             }
             isCarPowerTriggered -> {
                 Log.d(TAG, "🚗 CAR POWER TRIGGERED START")
@@ -2054,7 +2084,98 @@ class BackgroundService : Service() {
         }
     }
 
+    // NEW: Check if we should save data based on reason timing rules
+    private fun shouldSaveDataBasedOnReason(reason: String): Boolean {
+        val currentTime = System.currentTimeMillis()
+        
+        // NEW: Always save ignition events (highest priority)
+        if (reason == "Ignition On" || reason == "Ignition Off") {
+            Log.e(TAG, "ERROR: ✅ ALWAYS SAVING IGNITION EVENT - Reason: $reason")
+            Log.e(TAG, "ERROR:    - Ignition events have highest priority")
+            Log.e(TAG, "ERROR:    - No timing restrictions for ignition events")
+            return true
+        }
+        
+        // Always save critical events (except Over Speeding which has timing rules)
+        if (reason == "Distance" || reason == "Turn") {
+            Log.d(TAG, "✅ Allowing save for critical reason: $reason")
+            return true
+        }
+        
+        // Apply timing rules for Idle and Move reasons
+        when (reason) {
+            "Idle" -> {
+                if (lastIdleSyncTime > 0) {
+                    val timeSinceLastSync = currentTime - lastIdleSyncTime
+                    if (timeSinceLastSync < idleConsecutiveTimeout) {
+                        Log.d(TAG, "⏳ Skipping Idle save - last sync was ${timeSinceLastSync / 1000}s ago (need ${idleConsecutiveTimeout / 1000}s)")
+                        return false
+                    } else {
+                        Log.d(TAG, "✅ Allowing Idle save - ${timeSinceLastSync / 1000}s since last sync (threshold: ${idleConsecutiveTimeout / 1000}s)")
+                        lastIdleSyncTime = currentTime
+                        return true
+                    }
+                } else {
+                    Log.d(TAG, "✅ First Idle save - allowing")
+                    lastIdleSyncTime = currentTime
+                    return true
+                }
+            }
+            "Move" -> {
+                if (lastMoveSyncTime > 0) {
+                    val timeSinceLastSync = currentTime - lastMoveSyncTime
+                    if (timeSinceLastSync < moveConsecutiveTimeout) {
+                        Log.d(TAG, "⏳ Skipping Move save - last sync was ${timeSinceLastSync / 1000}s ago (need ${moveConsecutiveTimeout / 1000}s)")
+                        return false
+                    } else {
+                        Log.d(TAG, "✅ Allowing Move save - ${timeSinceLastSync / 1000}s since last sync (threshold: ${moveConsecutiveTimeout / 1000}s)")
+                        lastMoveSyncTime = currentTime
+                        return true
+                    }
+                } else {
+                    Log.d(TAG, "✅ First Move save - allowing")
+                    lastMoveSyncTime = currentTime
+                    return true
+                }
+            }
+            "Over Speeding" -> {
+                if (lastOverSpeedingSyncTime > 0) {
+                    val timeSinceLastSync = currentTime - lastOverSpeedingSyncTime
+                    if (timeSinceLastSync < overSpeedingConsecutiveTimeout) {
+                        Log.d(TAG, "⏳ Skipping Over Speeding save - last sync was ${timeSinceLastSync / 1000}s ago (need ${overSpeedingConsecutiveTimeout / 1000}s)")
+                        return false
+                    } else {
+                        Log.d(TAG, "✅ Allowing Over Speeding save - ${timeSinceLastSync / 1000}s since last sync (threshold: ${overSpeedingConsecutiveTimeout / 1000}s)")
+                        lastOverSpeedingSyncTime = currentTime
+                        return true
+                    }
+                } else {
+                    Log.d(TAG, "✅ First Over Speeding save - allowing")
+                    lastOverSpeedingSyncTime = currentTime
+                    return true
+                }
+            }
+            else -> {
+                Log.d(TAG, "✅ Allowing save for other reason: $reason")
+                return true
+            }
+        }
+    }
+
     private fun calculateEnhancedReason(location: Location, isIgnitionChange: Boolean = false, ignitionStatus: Int = -1): String {
+        // NEW: Check for pending ignition reasons first (highest priority)
+        if (pendingIgnitionOnReason) {
+            Log.e(TAG, "ERROR: 🚗 PENDING IGNITION ON REASON DETECTED - Using 'Ignition On'")
+            pendingIgnitionOnReason = false // Clear the flag after using it
+            return "Ignition On"
+        }
+        
+        if (pendingIgnitionOffReason) {
+            Log.e(TAG, "ERROR: 🚗 PENDING IGNITION OFF REASON DETECTED - Using 'Ignition Off'")
+            pendingIgnitionOffReason = false // Clear the flag after using it
+            return "Ignition Off"
+        }
+        
         // If this is an ignition state change, prioritize ignition reason
         if (isIgnitionChange && ignitionStatus != -1) {
             val ignitionReason = if (ignitionStatus == 1) "Ignition On" else "Ignition Off"
@@ -2170,6 +2291,22 @@ class BackgroundService : Service() {
         try {
             if (!isIgStatusReady) {
                 Log.w(TAG, "⚠️ Discarding location point because igStatus is not ready yet.")
+                return
+            }
+
+            // NEW: Check if data should be sent based on ignition state
+            if (!shouldSendData && reason != "Ignition Off") {
+                Log.e(TAG, "ERROR: 🚫 DATA TRANSMISSION DISABLED - Ignition is OFF")
+                Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
+                Log.e(TAG, "ERROR:    - Should send data: $shouldSendData")
+                Log.e(TAG, "ERROR:    - Reason: $reason")
+                Log.e(TAG, "ERROR:    - Only 'Ignition Off' reason allowed when ignition is OFF")
+                return
+            }
+
+            // NEW: Check if we should save based on reason timing rules
+            if (!shouldSaveDataBasedOnReason(reason)) {
+                Log.d(TAG, "⏭️ Skipping save for reason: $reason (timing rule applied)")
                 return
             }
 
@@ -2986,6 +3123,30 @@ class BackgroundService : Service() {
         }
     }
 
+    // NEW METHOD: Reset reason timing tracking for testing
+    fun resetReasonTimingTracking() {
+        Log.d(TAG, "🔄 Resetting reason timing tracking...")
+        lastIdleSyncTime = 0
+        lastMoveSyncTime = 0
+        lastSyncedReason = null
+        Log.d(TAG, "✅ Reason timing tracking reset")
+    }
+
+    // NEW METHOD: Get reason timing status for debugging
+    fun getReasonTimingStatus(): Map<String, Any> {
+        val currentTime = System.currentTimeMillis()
+        return mapOf(
+            "lastIdleSyncTime" to lastIdleSyncTime,
+            "lastMoveSyncTime" to lastMoveSyncTime,
+            "lastSyncedReason" to (lastSyncedReason ?: "null"),
+            "idleConsecutiveTimeout" to idleConsecutiveTimeout,
+            "moveConsecutiveTimeout" to moveConsecutiveTimeout,
+            "currentTime" to currentTime,
+            "timeSinceLastIdle" to (if (lastIdleSyncTime > 0) currentTime - lastIdleSyncTime else 0),
+            "timeSinceLastMove" to (if (lastMoveSyncTime > 0) currentTime - lastMoveSyncTime else 0)
+        )
+    }
+
     // NEW METHOD: Force update reason for ignition state change
     private fun forceIgnitionReasonUpdate(newIgStatus: Int) {
         try {
@@ -3593,6 +3754,324 @@ class BackgroundService : Service() {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error scheduling multiple restart mechanisms: $e")
+        }
+    }
+
+    // NEW METHOD: Get engine start analysis from BackgroundService
+    fun getEngineStartAnalysis(): Map<String, Any> {
+        val analysis = mutableMapOf<String, Any>()
+        
+        // Get analysis from CarPowerManager
+        val carPowerAnalysis = carPowerManager?.getEngineStartAnalysis() ?: mapOf<String, Any>()
+        analysis.putAll(carPowerAnalysis)
+        
+        // Add BackgroundService specific info
+        analysis["serviceIgStatus"] = igStatus
+        analysis["serviceLastIgStatus"] = lastIgStatus
+        analysis["serviceIsIgStatusReady"] = isIgStatusReady
+        analysis["serviceIsCarPowerAvailable"] = isCarPowerAvailable
+        
+        // Add power state history if available
+        val powerStateHistory = carPowerManager?.getPowerStateHistory() ?: listOf<Map<String, Any>>()
+        analysis["powerStateHistory"] = powerStateHistory
+        
+        Log.d(TAG, "📊 Engine start analysis: $analysis")
+        
+        return analysis
+    }
+
+    // NEW METHOD: Simulate engine start scenario from service
+    fun simulateEngineStartScenario() {
+        try {
+            Log.d(TAG, "🧪 SIMULATING ENGINE START SCENARIO FROM SERVICE")
+            
+            carPowerManager?.simulateEngineStartScenario()
+            
+            // Log the simulation
+            dbHelper.insertIgnitionLog(
+                "Engine start scenario simulation initiated",
+                "Testing power diversion during engine start",
+                "engine_start_simulation"
+            )
+            
+            Log.d(TAG, "✅ Engine start scenario simulation completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error simulating engine start scenario", e)
+        }
+    }
+
+    // NEW: Get ignition state tracking status for debugging
+    fun getIgnitionStateTrackingStatus(): Map<String, Any> {
+        val status = mutableMapOf<String, Any>()
+        
+        status["currentIgStatus"] = igStatus
+        status["previousIgnitionState"] = previousIgnitionState
+        status["ignitionOnDetected"] = ignitionOnDetected
+        status["ignitionOffDetected"] = ignitionOffDetected
+        status["shouldSendData"] = shouldSendData
+        status["pendingIgnitionOnReason"] = pendingIgnitionOnReason
+        status["pendingIgnitionOffReason"] = pendingIgnitionOffReason
+        status["lastIgnitionChangeTime"] = lastIgnitionChangeTime
+        status["ignitionStateChangeBufferSize"] = ignitionStateChangeBuffer.size
+        status["lastProcessedIgnitionChange"] = lastProcessedIgnitionChange
+        
+        // Add timing information
+        status["lastIdleSyncTime"] = lastIdleSyncTime
+        status["lastMoveSyncTime"] = lastMoveSyncTime
+        status["lastOverSpeedingSyncTime"] = lastOverSpeedingSyncTime
+        status["idleConsecutiveTimeout"] = idleConsecutiveTimeout
+        status["moveConsecutiveTimeout"] = moveConsecutiveTimeout
+        status["overSpeedingConsecutiveTimeout"] = overSpeedingConsecutiveTimeout
+        
+        if (ignitionStateChangeBuffer.isNotEmpty()) {
+            val lastChange = ignitionStateChangeBuffer.last()
+            status["lastBufferedChange"] = "${lastChange.first} at ${lastChange.second}"
+        }
+        
+        Log.e(TAG, "ERROR: 📊 IGNITION STATE TRACKING STATUS:")
+        status.forEach { (key, value) ->
+            Log.e(TAG, "ERROR:    - $key: $value")
+        }
+        
+        return status
+    }
+
+    // NEW: Enhanced ignition state change handling
+    private fun handleIgnitionStateChange(oldStatus: Int, newStatus: Int) {
+        try {
+            val currentTime = System.currentTimeMillis()
+            val oldStatusName = if (oldStatus == 1) "ACC_ON" else "ACC_OFF"
+            val newStatusName = if (newStatus == 1) "ACC_ON" else "ACC_OFF"
+            
+            // NEW: Debouncing to prevent duplicate ignition events
+            val timeSinceLastChange = currentTime - lastIgnitionChangeTime
+            if (timeSinceLastChange < 2000) { // 2 second debounce
+                Log.e(TAG, "ERROR: 🚫 IGNITION EVENT DEBOUNCED")
+                Log.e(TAG, "ERROR:    - Time since last change: ${timeSinceLastChange}ms")
+                Log.e(TAG, "ERROR:    - Debounce threshold: 2000ms")
+                Log.e(TAG, "ERROR:    - Skipping duplicate ignition event")
+                return
+            }
+            
+            Log.e(TAG, "ERROR: 🚗 ENHANCED IGNITION STATE CHANGE HANDLING")
+            Log.e(TAG, "ERROR:    - Previous state: $previousIgnitionState")
+            Log.e(TAG, "ERROR:    - Old status: $oldStatus ($oldStatusName)")
+            Log.e(TAG, "ERROR:    - New status: $newStatus ($newStatusName)")
+            Log.e(TAG, "ERROR:    - Time since last change: ${timeSinceLastChange}ms")
+            
+            // NEW: Check for duplicate ignition change
+            val currentChange = "${oldStatus}_${newStatus}"
+            if (currentChange == lastProcessedIgnitionChange) {
+                Log.e(TAG, "ERROR: 🚫 DUPLICATE IGNITION CHANGE DETECTED")
+                Log.e(TAG, "ERROR:    - Current change: $currentChange")
+                Log.e(TAG, "ERROR:    - Last processed: $lastProcessedIgnitionChange")
+                Log.e(TAG, "ERROR:    - Skipping duplicate ignition change")
+                return
+            }
+            
+            // Update tracking variables
+            previousIgnitionState = oldStatus
+            lastIgnitionChangeTime = currentTime
+            lastProcessedIgnitionChange = currentChange
+            
+            // Handle ignition ON transition (0 -> 1)
+            if (oldStatus == 0 && newStatus == 1) {
+                Log.e(TAG, "ERROR: 🚗 IGNITION ON DETECTED (0 -> 1)")
+                ignitionOnDetected = true
+                ignitionOffDetected = false
+                shouldSendData = true
+                pendingIgnitionOnReason = true
+                pendingIgnitionOffReason = false
+                
+                // Buffer the ignition on event
+                ignitionStateChangeBuffer.add(Pair("Ignition On", currentTime))
+                
+                Log.e(TAG, "ERROR:    - Data transmission ENABLED")
+                Log.e(TAG, "ERROR:    - Pending ignition on reason: true")
+                Log.e(TAG, "ERROR:    - Next location will have 'Ignition On' reason")
+                
+                // NEW: Save ignition ON record immediately if location is available
+                if (lastLocation != null) {
+                    Log.e(TAG, "ERROR:    - Saving immediate ignition ON record")
+                    saveLocationDataWithReason(lastLocation!!, "Ignition On")
+                    syncExecutor.execute {
+                        performSyncToServer()
+                    }
+                } else {
+                    Log.e(TAG, "ERROR:    - No location available for ignition ON record")
+                    // Try to get a fresh location for ignition ON
+                    try {
+                        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                            val freshLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                            if (freshLocation != null) {
+                                Log.e(TAG, "ERROR:    - Saving ignition ON record with fresh location")
+                                saveLocationDataWithReason(freshLocation, "Ignition On")
+                                syncExecutor.execute {
+                                    performSyncToServer()
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ERROR: ❌ Error getting fresh location for ignition ON: ${e.message}")
+                    }
+                }
+                
+            }
+            // Handle ignition OFF transition (1 -> 0)
+            else if (oldStatus == 1 && newStatus == 0) {
+                Log.e(TAG, "ERROR: 🚗 IGNITION OFF DETECTED (1 -> 0)")
+                ignitionOffDetected = true
+                ignitionOnDetected = false
+                shouldSendData = false
+                pendingIgnitionOffReason = true
+                pendingIgnitionOnReason = false
+                
+                // Buffer the ignition off event
+                ignitionStateChangeBuffer.add(Pair("Ignition Off", currentTime))
+                
+                Log.e(TAG, "ERROR:    - Data transmission DISABLED")
+                Log.e(TAG, "ERROR:    - Pending ignition off reason: true")
+                Log.e(TAG, "ERROR:    - Next location will have 'Ignition Off' reason")
+                
+                // Immediately save ignition off record if location is available
+                if (lastLocation != null) {
+                    Log.e(TAG, "ERROR:    - Saving immediate ignition off record")
+                    saveLocationDataWithReason(lastLocation!!, "Ignition Off")
+                    syncExecutor.execute {
+                        performSyncToServer()
+                    }
+                }
+            }
+            
+            // Log the state change buffer
+            Log.e(TAG, "ERROR:    - Ignition state change buffer size: ${ignitionStateChangeBuffer.size}")
+            if (ignitionStateChangeBuffer.isNotEmpty()) {
+                val lastChange = ignitionStateChangeBuffer.last()
+                Log.e(TAG, "ERROR:    - Last buffered change: ${lastChange.first} at ${lastChange.second}")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "ERROR: ❌ Exception in handleIgnitionStateChange: ${e.message}")
+        }
+    }
+
+    // NEW: Manually trigger ignition state change for testing
+    fun triggerIgnitionStateChange(newStatus: Int) {
+        try {
+            Log.e(TAG, "ERROR: 🧪 MANUALLY TRIGGERING IGNITION STATE CHANGE")
+            Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
+            Log.e(TAG, "ERROR:    - New status: $newStatus")
+            
+            val oldStatus = igStatus
+            igStatus = newStatus
+            
+            // Trigger the enhanced ignition state change handling
+            handleIgnitionStateChange(oldStatus, newStatus)
+            
+            // Update notification
+            val isAccOn = (newStatus == 1)
+            updateNotificationWithAccState(isAccOn)
+            
+            Log.e(TAG, "ERROR: ✅ Manual ignition state change completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "ERROR: ❌ Exception in manual ignition state change: ${e.message}")
+        }
+    }
+
+    // NEW: Clear ignition state tracking for testing
+    fun clearIgnitionStateTracking() {
+        try {
+            Log.e(TAG, "ERROR: 🧹 CLEARING IGNITION STATE TRACKING")
+            
+            previousIgnitionState = 0
+            ignitionOnDetected = false
+            ignitionOffDetected = false
+            lastIgnitionChangeTime = 0L
+            shouldSendData = true
+            pendingIgnitionOnReason = false
+            pendingIgnitionOffReason = false
+            ignitionStateChangeBuffer.clear()
+            lastProcessedIgnitionChange = ""
+            
+            // Clear timing variables
+            lastIdleSyncTime = 0L
+            lastMoveSyncTime = 0L
+            lastOverSpeedingSyncTime = 0L
+            
+            Log.e(TAG, "ERROR: ✅ Ignition state tracking cleared")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "ERROR: ❌ Exception clearing ignition state tracking: ${e.message}")
+        }
+    }
+
+    // NEW: Get detailed timing status for debugging
+    fun getTimingStatus(): Map<String, Any> {
+        val currentTime = System.currentTimeMillis()
+        val status = mutableMapOf<String, Any>()
+        
+        // Idle timing
+        val idleTimeSinceLastSync = if (lastIdleSyncTime > 0) currentTime - lastIdleSyncTime else 0L
+        status["idle"] = mapOf(
+            "lastSyncTime" to lastIdleSyncTime,
+            "timeSinceLastSync" to idleTimeSinceLastSync,
+            "timeSinceLastSyncSeconds" to (idleTimeSinceLastSync / 1000),
+            "timeout" to idleConsecutiveTimeout,
+            "timeoutSeconds" to (idleConsecutiveTimeout / 1000),
+            "canSave" to (idleTimeSinceLastSync >= idleConsecutiveTimeout || lastIdleSyncTime == 0L)
+        )
+        
+        // Move timing
+        val moveTimeSinceLastSync = if (lastMoveSyncTime > 0) currentTime - lastMoveSyncTime else 0L
+        status["move"] = mapOf(
+            "lastSyncTime" to lastMoveSyncTime,
+            "timeSinceLastSync" to moveTimeSinceLastSync,
+            "timeSinceLastSyncSeconds" to (moveTimeSinceLastSync / 1000),
+            "timeout" to moveConsecutiveTimeout,
+            "timeoutSeconds" to (moveConsecutiveTimeout / 1000),
+            "canSave" to (moveTimeSinceLastSync >= moveConsecutiveTimeout || lastMoveSyncTime == 0L)
+        )
+        
+        // Over Speeding timing
+        val overSpeedingTimeSinceLastSync = if (lastOverSpeedingSyncTime > 0) currentTime - lastOverSpeedingSyncTime else 0L
+        status["overSpeeding"] = mapOf(
+            "lastSyncTime" to lastOverSpeedingSyncTime,
+            "timeSinceLastSync" to overSpeedingTimeSinceLastSync,
+            "timeSinceLastSyncSeconds" to (overSpeedingTimeSinceLastSync / 1000),
+            "timeout" to overSpeedingConsecutiveTimeout,
+            "timeoutSeconds" to (overSpeedingConsecutiveTimeout / 1000),
+            "canSave" to (overSpeedingTimeSinceLastSync >= overSpeedingConsecutiveTimeout || lastOverSpeedingSyncTime == 0L)
+        )
+        
+        Log.e(TAG, "ERROR: 📊 TIMING STATUS:")
+        status.forEach { (key, value) ->
+            Log.e(TAG, "ERROR:    - $key: $value")
+        }
+        
+        return status
+    }
+
+    // NEW METHOD: Reset engine start detection from service
+    fun resetEngineStartDetection() {
+        try {
+            Log.d(TAG, "🔄 RESETTING ENGINE START DETECTION FROM SERVICE")
+            
+            carPowerManager?.resetEngineStartDetection()
+            
+            // Log the reset
+            dbHelper.insertIgnitionLog(
+                "Engine start detection reset",
+                "Manual reset of engine start detection state",
+                "engine_start_reset"
+            )
+            
+            Log.d(TAG, "✅ Engine start detection reset completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error resetting engine start detection", e)
         }
     }
 }

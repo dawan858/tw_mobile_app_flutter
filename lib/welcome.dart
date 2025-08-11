@@ -193,22 +193,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                                 onTap: widget.onInfoTap,
                                 child: Icon(Icons.info, color: const Color(0xFF3e4095), size: 45),
                               ),
-                              const SizedBox(width: 16),
-                              GestureDetector(
-                                onTap: _handleConfigurationReload,
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF3e4095).withOpacity(0.1),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Icon(
-                                    Icons.refresh,
-                                    color: const Color(0xFF3e4095),
-                                    size: 30,
-                                  ),
-                                ),
-                              ),
+                             
                             ],
                           ),
                         ),

@@ -368,8 +368,8 @@ class SyncService {
     print('🔄 Starting full sync of all pending data...');
     
     try {
-      // Get all unsynced data
-      final allUnsyncedData = await _dbHelper.getUnsyncedData(limit: 1000); // Get all data
+      // Get filtered unsynced data based on reason timing rules
+      final allUnsyncedData = await _getFilteredUnsyncedData(limit: 1000); // Get filtered data
       
       if (allUnsyncedData.isEmpty) {
         print('ℹ️ No pending data to sync');
@@ -682,11 +682,11 @@ class SyncService {
         }
       }
 
-      // NEW: Use prioritized data when server is down
+      // NEW: Use filtered data based on reason timing rules
       final adaptiveBatchSize = _getAdaptiveBatchSize();
       final unsyncedData = _isServerDown 
           ? await _getPrioritizedUnsyncedData(limit: adaptiveBatchSize)
-          : await _dbHelper.getUnsyncedData(limit: adaptiveBatchSize);
+          : await _getFilteredUnsyncedData(limit: adaptiveBatchSize);
           
       if (unsyncedData.isEmpty) {
         print('No unsynced data to upload');
@@ -947,6 +947,11 @@ class SyncService {
     final igStatusTestResults = await testIgStatusFunctionality();
     print('igStatus test results: $igStatusTestResults');
     
+    // Test reason timing functionality
+    print('=== TESTING REASON TIMING FUNCTIONALITY ===');
+    final reasonTimingTestResults = await testReasonTimingFunctionality();
+    print('Reason timing test results: $reasonTimingTestResults');
+    
     // Then run normal sync
     await _startSync();
   }
@@ -1009,6 +1014,14 @@ class SyncService {
           : null,
       'monitoringInterval': '${_serverMonitoringInterval.inSeconds} seconds',
       'normalSyncInterval': '${_normalSyncInterval.inMinutes} minutes',
+      // NEW: Reason timing information
+      'idleConsecutiveTimeout': '${_idleConsecutiveTimeout.inSeconds} seconds',
+      'moveConsecutiveTimeout': '${_moveConsecutiveTimeout.inSeconds} seconds',
+      'lastIdleSyncTime': _lastIdleSyncTime?.toIso8601String(),
+      'lastMoveSyncTime': _lastMoveSyncTime?.toIso8601String(),
+      'lastSyncedReason': _lastSyncedReason,
+      // NEW: Native timing information
+      'nativeTimingStatus': await getNativeReasonTimingStatus(),
     };
   }
 
@@ -1096,6 +1109,114 @@ class SyncService {
     );
     
     print('✅ Server down detection forced');
+  }
+
+  // NEW: Reset reason timing tracking for testing
+  Future<void> resetReasonTimingTracking() async {
+    print('🔄 Resetting reason timing tracking...');
+    _lastIdleSyncTime = null;
+    _lastMoveSyncTime = null;
+    _lastSyncedReason = null;
+    
+    await _dbHelper.insertExceptionLog(
+      main: 'Reset Reason Timing',
+      details: 'Reason timing tracking reset for testing purposes',
+    );
+    
+    print('✅ Reason timing tracking reset');
+  }
+
+  // NEW: Test reason timing functionality
+  Future<Map<String, dynamic>> testReasonTimingFunctionality() async {
+    final results = <String, dynamic>{};
+    
+    try {
+      print('🧪 === TESTING REASON TIMING FUNCTIONALITY ===');
+      
+      // Test 1: Check current timing settings
+      results['idleTimeout'] = '${_idleConsecutiveTimeout.inSeconds} seconds';
+      results['moveTimeout'] = '${_moveConsecutiveTimeout.inSeconds} seconds';
+      results['lastIdleSync'] = _lastIdleSyncTime?.toIso8601String();
+      results['lastMoveSync'] = _lastMoveSyncTime?.toIso8601String();
+      
+      // Test 2: Get native service timing status
+      try {
+        const serviceChannel = MethodChannel('com.example.twtracking/service');
+        final nativeTimingStatus = await serviceChannel.invokeMethod('getReasonTimingStatus');
+        results['nativeTimingStatus'] = nativeTimingStatus;
+        print('✅ Native timing status: $nativeTimingStatus');
+      } catch (e) {
+        print('❌ Error getting native timing status: $e');
+        results['nativeTimingError'] = e.toString();
+      }
+      
+      // Test 3: Get some unsynced data to analyze
+      final unsyncedData = await _dbHelper.getUnsyncedData(limit: 10);
+      results['totalUnsyncedRecords'] = unsyncedData.length;
+      
+      // Test 4: Analyze reasons in unsynced data
+      final reasons = <String, int>{};
+      for (final record in unsyncedData) {
+        final reason = record['reason'] as String? ?? 'Unknown';
+        reasons[reason] = (reasons[reason] ?? 0) + 1;
+      }
+      results['reasonDistribution'] = reasons;
+      
+      // Test 5: Test filtered data
+      final filteredData = await _getFilteredUnsyncedData(limit: 5);
+      results['filteredDataCount'] = filteredData.length;
+      results['filteredReasons'] = filteredData.map((r) => r['reason']).toList();
+      
+      print('✅ Reason timing functionality test completed');
+      
+    } catch (e) {
+      print('❌ Error during reason timing test: $e');
+      results['error'] = e.toString();
+    }
+    
+    return results;
+  }
+
+  // NEW: Reset reason timing tracking in native service
+  Future<bool> resetNativeReasonTimingTracking() async {
+    try {
+      print('🔄 Resetting reason timing tracking in native BackgroundService');
+      
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      final result = await serviceChannel.invokeMethod('resetReasonTimingTracking');
+      
+      print('✅ Native reason timing tracking reset result: $result');
+      return result == true;
+    } catch (e) {
+      print('❌ Error resetting native reason timing tracking: $e');
+      return false;
+    }
+  }
+
+  // NEW: Get native reason timing status
+  Future<Map<String, dynamic>> getNativeReasonTimingStatus() async {
+    try {
+      print('📊 Getting reason timing status from native BackgroundService');
+      
+      const serviceChannel = MethodChannel('com.example.twtracking/service');
+      final status = await serviceChannel.invokeMethod('getReasonTimingStatus');
+      
+      print('✅ Native reason timing status: $status');
+      return Map<String, dynamic>.from(status);
+    } catch (e) {
+      print('❌ Error getting native reason timing status: $e');
+      return {
+        'error': e.toString(),
+        'lastIdleSyncTime': 0,
+        'lastMoveSyncTime': 0,
+        'lastSyncedReason': 'error',
+        'idleConsecutiveTimeout': 120000,
+        'moveConsecutiveTimeout': 30000,
+        'currentTime': 0,
+        'timeSinceLastIdle': 0,
+        'timeSinceLastMove': 0,
+      };
+    }
   }
 
   // NEW: Check if server is actually down by testing connectivity
@@ -1371,5 +1492,168 @@ class SyncService {
       print('❌ Error forcing configuration reload: $e');
       return false;
     }
+  }
+
+  // NEW: Reason-based timing checks
+  static const Duration _idleConsecutiveTimeout = Duration(seconds: 120); // 120 seconds for consecutive idle
+  static const Duration _moveConsecutiveTimeout = Duration(seconds: 30); // 30 seconds for consecutive move
+  
+  // Track last sync times for different reasons
+  DateTime? _lastIdleSyncTime;
+  DateTime? _lastMoveSyncTime;
+  String? _lastSyncedReason;
+
+  // NEW: Check if we should sync based on reason timing rules
+  Future<bool> _shouldSyncBasedOnReason(String currentReason) async {
+    try {
+      // Get the most recent unsynced record with the same reason
+      final db = await _dbHelper.database;
+      final recentRecords = await db.rawQuery('''
+        SELECT reason, createAt FROM location_data 
+        WHERE sync_status = 0 AND reason = ? 
+        ORDER BY createAt DESC 
+        LIMIT 2
+      ''', [currentReason]);
+      
+      if (recentRecords.length < 2) {
+        // Not enough records to check for consecutive reasons
+        print('📊 Not enough records for consecutive check: ${recentRecords.length} records with reason: $currentReason');
+        return true; // Allow sync
+      }
+      
+      // Check if we have consecutive records with the same reason
+      final firstRecord = recentRecords[0];
+      final secondRecord = recentRecords[1];
+      
+      if (firstRecord['reason'] == secondRecord['reason']) {
+        // We have consecutive records with the same reason
+        print('📊 Found consecutive $currentReason records');
+        
+        // Parse the timestamps
+        DateTime? firstTime;
+        DateTime? secondTime;
+        
+        try {
+          firstTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(firstRecord['createAt'] as String);
+          secondTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(secondRecord['createAt'] as String);
+        } catch (e) {
+          print('❌ Error parsing timestamps: $e');
+          return true; // Allow sync if we can't parse timestamps
+        }
+        
+        final timeDifference = firstTime.difference(secondTime);
+        print('📊 Time difference between consecutive $currentReason records: ${timeDifference.inSeconds} seconds');
+        
+        // Apply timing rules based on reason
+        if (currentReason == 'Idle') {
+          if (timeDifference.inSeconds >= _idleConsecutiveTimeout.inSeconds) {
+            print('✅ Idle consecutive timeout reached (${_idleConsecutiveTimeout.inSeconds}s), allowing sync');
+            _lastIdleSyncTime = DateTime.now();
+            return true;
+          } else {
+            print('⏳ Idle consecutive timeout not reached yet (${timeDifference.inSeconds}s < ${_idleConsecutiveTimeout.inSeconds}s), skipping sync');
+            return false;
+          }
+        } else if (currentReason == 'Move') {
+          if (timeDifference.inSeconds >= _moveConsecutiveTimeout.inSeconds) {
+            print('✅ Move consecutive timeout reached (${_moveConsecutiveTimeout.inSeconds}s), allowing sync');
+            _lastMoveSyncTime = DateTime.now();
+            return true;
+          } else {
+            print('⏳ Move consecutive timeout not reached yet (${timeDifference.inSeconds}s < ${_moveConsecutiveTimeout.inSeconds}s), skipping sync');
+            return false;
+          }
+        }
+      }
+      
+      // Different reasons or not enough consecutive records
+      print('📊 Different reasons or not consecutive, allowing sync');
+      return true;
+      
+    } catch (e) {
+      print('❌ Error checking reason timing: $e');
+      return true; // Allow sync on error
+    }
+  }
+
+  // NEW: Get filtered unsynced data based on reason timing rules
+  Future<List<Map<String, dynamic>>> _getFilteredUnsyncedData({int limit = 50}) async {
+    try {
+      final db = await _dbHelper.database;
+      
+      // Get all unsynced data
+      final allUnsyncedData = await db.query(
+        'location_data',
+        where: 'sync_status = ?',
+        whereArgs: [0],
+        orderBy: 'createAt ASC',
+        limit: limit * 2, // Get more data to filter from
+      );
+      
+      if (allUnsyncedData.isEmpty) {
+        return [];
+      }
+      
+      final filteredData = <Map<String, dynamic>>[];
+      
+      for (final record in allUnsyncedData) {
+        final reason = record['reason'] as String? ?? 'Unknown';
+        
+        // Skip reason-based timing checks for critical events
+        if (reason == 'Ignition On' || reason == 'Ignition Off' || reason == 'Distance') {
+          filteredData.add(record);
+          continue;
+        }
+        
+        // Apply timing rules for Idle and Move reasons
+        if (reason == 'Idle' || reason == 'Move') {
+          final shouldSync = await _shouldSyncBasedOnReason(reason);
+          if (shouldSync) {
+            filteredData.add(record);
+          } else {
+            print('⏭️ Skipping $reason record due to timing rule');
+          }
+        } else {
+          // For other reasons (Timer, etc.), allow sync
+          filteredData.add(record);
+        }
+        
+        // Stop if we have enough filtered data
+        if (filteredData.length >= limit) {
+          break;
+        }
+      }
+      
+      print('📊 Filtered data: ${filteredData.length} records (from ${allUnsyncedData.length} total)');
+      return filteredData;
+      
+    } catch (e) {
+      print('❌ Error getting filtered unsynced data: $e');
+      // Fallback to regular unsynced data
+      return await _dbHelper.getUnsyncedData(limit: limit);
+    }
+  }
+
+  // NEW: Check if we should sync based on last sync time for specific reasons
+  bool _shouldSyncBasedOnLastSyncTime(String reason) {
+    final now = DateTime.now();
+    
+    if (reason == 'Idle' && _lastIdleSyncTime != null) {
+      final timeSinceLastSync = now.difference(_lastIdleSyncTime!);
+      if (timeSinceLastSync < _idleConsecutiveTimeout) {
+        print('⏳ Idle sync skipped - last sync was ${timeSinceLastSync.inSeconds}s ago (need ${_idleConsecutiveTimeout.inSeconds}s)');
+        return false;
+      }
+    }
+    
+    if (reason == 'Move' && _lastMoveSyncTime != null) {
+      final timeSinceLastSync = now.difference(_lastMoveSyncTime!);
+      if (timeSinceLastSync < _moveConsecutiveTimeout) {
+        print('⏳ Move sync skipped - last sync was ${timeSinceLastSync.inSeconds}s ago (need ${_moveConsecutiveTimeout.inSeconds}s)');
+        return false;
+      }
+    }
+    
+    return true;
   }
 }
