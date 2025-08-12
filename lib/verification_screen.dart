@@ -11,6 +11,25 @@ class VerificationScreen extends StatefulWidget {
 class _VerificationScreenState extends State<VerificationScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _obscureText = true;
+  bool _showError = false;
+  static const String _correctPassword = "0000";
+
+  void _validatePassword() {
+    if (_passwordController.text == _correctPassword) {
+      setState(() {
+        _showError = false;
+      });
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const SettingsScreen(),
+        ),
+      );
+    } else {
+      setState(() {
+        _showError = true;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -80,17 +99,41 @@ class _VerificationScreenState extends State<VerificationScreen> {
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(borderRadius),
-                        borderSide: BorderSide(color: Color(0xFF3e4095), width: 2),
+                        borderSide: BorderSide(
+                          color: _showError ? Colors.red : Color(0xFF3e4095), 
+                          width: 2
+                        ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(borderRadius),
-                        borderSide: BorderSide(color: Color(0xFF3e4095), width: 2),
+                        borderSide: BorderSide(
+                          color: _showError ? Colors.red : Color(0xFF3e4095), 
+                          width: 2
+                        ),
+                      ),
+                      errorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(borderRadius),
+                        borderSide: BorderSide(color: Colors.red, width: 2),
+                      ),
+                      focusedErrorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(borderRadius),
+                        borderSide: BorderSide(color: Colors.red, width: 2),
                       ),
                       contentPadding: EdgeInsets.symmetric(vertical: isTablet ? 20.0 : 14.0, horizontal: 0),
                       filled: true,
                       fillColor: Colors.transparent,
                     ),
                   ),
+                  if (_showError) ...[
+                    SizedBox(height: 8),
+                    Text(
+                      "Incorrect password. Please try again.",
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontSize: isTablet ? 16.0 : 12.0,
+                      ),
+                    ),
+                  ],
                   SizedBox(height: verticalSpacing),
                   SizedBox(
                     width: double.infinity,
@@ -102,13 +145,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
                           borderRadius: BorderRadius.circular(buttonHeight / 2),
                         ),
                       ),
-                      onPressed: () {
-                        Navigator.of(context).pushReplacement(
-                          MaterialPageRoute(
-                            builder: (_) => const SettingsScreen(),
-                          ),
-                        );
-                      },
+                      onPressed: _validatePassword,
                       child: Text(
                         "NEXT",
                         style: TextStyle(fontSize: buttonFontSize, color: Colors.white),
