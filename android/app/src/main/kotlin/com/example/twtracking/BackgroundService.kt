@@ -2028,6 +2028,9 @@ class BackgroundService : Service() {
             // NEW: Use force update method for more reliable igStatus detection
             carPowerManager?.forceUpdateIgStatus()
             
+            // NEW: Check and correct shouldSendData flag if it's out of sync
+            checkAndCorrectShouldSendDataFlag()
+            
             // Get current power state from CarPowerManager
             val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
             val expectedIgStatus = if (currentPowerState) 1 else 0
@@ -2084,17 +2087,86 @@ class BackgroundService : Service() {
         }
     }
 
-    // NEW: Check if we should save data based on reason timing rules
+    /**
+     * ENHANCED: Check if we should save data based on reason timing rules AND igStatus validation
+     * 
+     * This method implements a dual-check system to prevent missing ignition events:
+     * 1. Primary check: Reason-based logic (existing functionality)
+     * 2. Secondary check: igStatus validation (new safety mechanism)
+     * 
+     * Key Benefits:
+     * - Prevents missing ignition events due to reason/igStatus desync
+     * - Ensures data transmission even when reason tag gets updated later
+     * - Provides fallback mechanism for critical ignition state changes
+     * - Logs all mismatches for monitoring and debugging
+     * 
+     * @param reason The reason for data collection (e.g., "Ignition On", "Timer", "Distance")
+     * @return true if data should be saved, false otherwise
+     */
     private fun shouldSaveDataBasedOnReason(reason: String): Boolean {
         val currentTime = System.currentTimeMillis()
         
-        // NEW: Always save ignition events (highest priority)
-        if (reason == "Ignition On" || reason == "Ignition Off") {
-            Log.e(TAG, "ERROR: ✅ ALWAYS SAVING IGNITION EVENT - Reason: $reason")
-            Log.e(TAG, "ERROR:    - Ignition events have highest priority")
-            Log.e(TAG, "ERROR:    - No timing restrictions for ignition events")
+            // ENHANCED: Dual-check system for ignition events (reason + igStatus)
+    if (reason == "Ignition On" || reason == "Ignition Off") {
+        // Additional safety check: Validate reason against current igStatus
+        val expectedIgStatus = if (reason == "Ignition On") 1 else 0
+        
+        if (igStatus == expectedIgStatus) {
+            // Reason and igStatus match - this is a valid ignition event
+            Log.e(TAG, "ERROR: ✅ VALID IGNITION EVENT - Reason: $reason, igStatus: $igStatus")
+            Log.e(TAG, "ERROR:    - Reason and igStatus match perfectly")
+            Log.e(TAG, "ERROR:    - No timing restrictions for valid ignition events")
+            return true
+        } else {
+            // Reason and igStatus mismatch - CORRECT THE REASON based on actual igStatus
+            val correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
+            
+            Log.e(TAG, "ERROR: 🚨 IGNITION EVENT MISMATCH DETECTED!")
+            Log.e(TAG, "ERROR:    - Original Reason: $reason (expects igStatus: $expectedIgStatus)")
+            Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
+            Log.e(TAG, "ERROR:    - CORRECTED Reason: $correctedReason")
+            Log.e(TAG, "ERROR:    - This suggests a missed ignition state change")
+            
+            // Log the mismatch for monitoring and debugging
+            logIgnitionMismatch(reason, igStatus, expectedIgStatus)
+            
+            // CRITICAL: Update the reason to match the actual igStatus
+            // This ensures data consistency and prevents confusion
+            Log.e(TAG, "ERROR: 🚨 CORRECTING REASON FROM '$reason' TO '$correctedReason'")
+            Log.e(TAG, "ERROR:    - Reason now matches actual igStatus: $igStatus")
+            Log.e(TAG, "ERROR:    - This ensures no ignition events are missed")
+            
+            // Return true to allow saving, but the reason will be corrected before saving
             return true
         }
+    }
+        
+                 // ENHANCED: Additional safety check for non-ignition events
+         // If reason is "Ignition Off" but igStatus is 1, this indicates a missed ignition ON event
+         if (reason == "Ignition Off" && igStatus == 1) {
+             Log.e(TAG, "ERROR: 🚨 CRITICAL IGNITION STATE MISMATCH!")
+             Log.e(TAG, "ERROR:    - Reason: $reason (expects igStatus: 0)")
+             Log.e(TAG, "ERROR:    - Current igStatus: $igStatus (indicates ignition is ON)")
+             Log.e(TAG, "ERROR:    - This suggests ignition ON was missed - forcing data transmission")
+             Log.e(TAG, "ERROR:    - Data will be sent to prevent missing ignition events")
+             
+             // Log the mismatch for monitoring
+             logIgnitionMismatch(reason, igStatus, 0)
+             return true
+         }
+         
+         // If reason is "Ignition On" but igStatus is 0, this indicates a missed ignition OFF event
+         if (reason == "Ignition On" && igStatus == 0) {
+             Log.e(TAG, "ERROR: 🚨 CRITICAL IGNITION STATE MISMATCH!")
+             Log.e(TAG, "ERROR:    - Reason: $reason (expects igStatus: 1)")
+             Log.e(TAG, "ERROR:    - Current igStatus: $igStatus (indicates ignition is OFF)")
+             Log.e(TAG, "ERROR:    - This suggests ignition OFF was missed - forcing data transmission")
+             Log.e(TAG, "ERROR:    - Data will be sent to prevent missing ignition events")
+             
+             // Log the mismatch for monitoring
+             logIgnitionMismatch(reason, igStatus, 1)
+             return true
+         }
         
         // Always save critical events (except Over Speeding which has timing rules)
         if (reason == "Distance" || reason == "Turn") {
@@ -2294,19 +2366,78 @@ class BackgroundService : Service() {
                 return
             }
 
-            // NEW: Check if data should be sent based on ignition state
-            if (!shouldSendData && reason != "Ignition Off") {
-                Log.e(TAG, "ERROR: 🚫 DATA TRANSMISSION DISABLED - Ignition is OFF")
-                Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
-                Log.e(TAG, "ERROR:    - Should send data: $shouldSendData")
-                Log.e(TAG, "ERROR:    - Reason: $reason")
-                Log.e(TAG, "ERROR:    - Only 'Ignition Off' reason allowed when ignition is OFF")
-                return
+            // ENHANCED: Correct ignition reason if there's a mismatch with igStatus
+            // PRIORITY 1: First data point must have correct ignition reason based on igStatus
+            var correctedReason = reason
+            if (reason == "Ignition On" || reason == "Ignition Off") {
+                val expectedIgStatus = if (reason == "Ignition On") 1 else 0
+                if (igStatus != expectedIgStatus) {
+                    // Correct the reason to match the actual igStatus
+                    correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
+                    Log.e(TAG, "ERROR: 🔧 REASON CORRECTED IN saveLocationDataWithReason:")
+                    Log.e(TAG, "ERROR:    - Original: $reason → Corrected: $correctedReason")
+                    Log.e(TAG, "ERROR:    - igStatus: $igStatus (actual state)")
+                }
+            }
+            
+            // NEW: Additional safety check - if reason is still ignition-related but igStatus doesn't match
+            // This handles cases where the original reason might be something else but should be ignition
+            if ((reason != "Ignition On" && reason != "Ignition Off") && 
+                (reason.contains("ignition", ignoreCase = true) || reason.contains("Ignition", ignoreCase = true))) {
+                
+                // Force correct ignition reason based on actual igStatus
+                correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
+                Log.e(TAG, "ERROR: 🔧 FORCED IGNITION REASON CORRECTION:")
+                Log.e(TAG, "ERROR:    - Original reason: $reason (contains ignition reference)")
+                Log.e(TAG, "ERROR:    - Forced correction: $correctedReason (based on igStatus: $igStatus)")
+                Log.e(TAG, "ERROR:    - This ensures ignition state consistency")
+            }
+            
+            // NEW: Check and correct shouldSendData flag before data transmission check
+            checkAndCorrectShouldSendDataFlag()
+
+            // ENHANCED: Check if data should be sent based on ignition state with igStatus override
+            if (!shouldSendData && correctedReason != "Ignition Off") {
+                // CRITICAL: Check if shouldSendData flag is out of sync with actual igStatus
+                if (igStatus == 1 && shouldSendData == false) {
+                    // 🚨 CRITICAL: shouldSendData flag is FALSE but igStatus is 1 (ignition ON)
+                    // This indicates a missed ignition ON event - OVERRIDE the flag
+                    Log.e(TAG, "ERROR: 🚨 CRITICAL FLAG MISMATCH DETECTED!")
+                    Log.e(TAG, "ERROR:    - shouldSendData: $shouldSendData (indicates ignition OFF)")
+                    Log.e(TAG, "ERROR:    - Current igStatus: $igStatus (indicates ignition ON)")
+                    Log.e(TAG, "ERROR:    - This suggests ignition ON was missed - OVERRIDING FLAG")
+                    
+                    // Override the shouldSendData flag to match actual igStatus
+                    shouldSendData = true
+                    
+                    Log.e(TAG, "ERROR: 🔧 OVERRIDING shouldSendData: false → true")
+                    Log.e(TAG, "ERROR:    - Data transmission will now be ENABLED")
+                    Log.e(TAG, "ERROR:    - This prevents missing data during quick ignition changes")
+                    
+                    // Continue with data transmission
+                } else if (igStatus == 0 && shouldSendData == false) {
+                    // Normal case: ignition is OFF and flag is correct
+                    Log.e(TAG, "ERROR: 🚫 DATA TRANSMISSION DISABLED - Ignition is OFF")
+                    Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
+                    Log.e(TAG, "ERROR:    - Should send data: $shouldSendData")
+                    Log.e(TAG, "ERROR:    - Corrected Reason: $correctedReason")
+                    Log.e(TAG, "ERROR:    - Only 'Ignition Off' reason allowed when ignition is OFF")
+                    return
+                } else {
+                    // Unexpected case - log and continue
+                    Log.e(TAG, "ERROR: ⚠️ UNEXPECTED shouldSendData/igStatus combination:")
+                    Log.e(TAG, "ERROR:    - shouldSendData: $shouldSendData")
+                    Log.e(TAG, "ERROR:    - igStatus: $igStatus")
+                    Log.e(TAG, "ERROR:    - correctedReason: $correctedReason")
+                    Log.e(TAG, "ERROR:    - Continuing with data transmission for safety")
+                }
             }
 
-            // NEW: Check if we should save based on reason timing rules
-            if (!shouldSaveDataBasedOnReason(reason)) {
-                Log.d(TAG, "⏭️ Skipping save for reason: $reason (timing rule applied)")
+            // PRIORITY 2: After ignition reason correction, apply normal timing rules for all reasons
+            // This ensures other reasons (Idle, Move, Turn, Over Speeding, Distance) follow their configs
+            if (!shouldSaveDataBasedOnReason(correctedReason)) {
+                Log.d(TAG, "⏭️ Skipping save for corrected reason: $correctedReason (timing rule applied)")
+                Log.d(TAG, "📋 Note: Reason corrected to match igStatus, but timing rule prevents save")
                 return
             }
 
@@ -2319,7 +2450,13 @@ class BackgroundService : Service() {
             // Allow saving with IMEI = "unknown" (buffer until IMEI is available)
             val currentIgStatus = this.igStatus
             
-            Log.d(TAG, "💾 Saving location data with reason: $reason, igStatus: $currentIgStatus")
+            Log.d(TAG, "💾 Saving location data with reason: $correctedReason, igStatus: $currentIgStatus")
+            if (reason != correctedReason) {
+                Log.e(TAG, "ERROR: 📝 FINAL REASON CORRECTION:")
+                Log.e(TAG, "ERROR:    - Original reason: $reason")
+                Log.e(TAG, "ERROR:    - Corrected reason: $correctedReason")
+                Log.e(TAG, "ERROR:    - igStatus: $currentIgStatus")
+            }
             
             val values = ContentValues().apply {
                 put("latitude", location.latitude)
@@ -2337,7 +2474,7 @@ class BackgroundService : Service() {
                 put("name", Build.MODEL)
                 put("phoneNo", "unknown")
                 put("provider", "fused")
-                put("reason", reason)
+                put("reason", correctedReason)  // Use the corrected reason
                 put("versionNo", "v ${getAppVersion()}")
                 put("sync_status", 0)
                 put("createAt", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
@@ -2346,7 +2483,10 @@ class BackgroundService : Service() {
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
             
-            Log.e(TAG, "ERROR: 💾 SAVED LOCATION DATA - ID: $id, IMEI: $imei, Reason: $reason, Speed: ${String.format("%.1f", fixedSpeed)} km/h")
+            Log.e(TAG, "ERROR: 💾 SAVED LOCATION DATA - ID: $id, IMEI: $imei, Reason: $correctedReason, Speed: ${String.format("%.1f", fixedSpeed)} km/h")
+            if (reason != correctedReason) {
+                Log.e(TAG, "ERROR: 📝 REASON WAS CORRECTED: $reason → $correctedReason (igStatus: $currentIgStatus)")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "ERROR: Exception in saveLocationData: ${e.message}")
         }
@@ -4072,6 +4212,73 @@ class BackgroundService : Service() {
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error resetting engine start detection", e)
+        }
+    }
+
+    // NEW: Check and correct shouldSendData flag if it's out of sync with igStatus
+    private fun checkAndCorrectShouldSendDataFlag() {
+        try {
+            // Check if shouldSendData flag matches actual igStatus
+            val expectedShouldSendData = (igStatus == 1)
+            
+            if (shouldSendData != expectedShouldSendData) {
+                Log.e(TAG, "ERROR: 🚨 SHOULD_SEND_DATA FLAG MISMATCH DETECTED!")
+                Log.e(TAG, "ERROR:    - shouldSendData: $shouldSendData")
+                Log.e(TAG, "ERROR:    - igStatus: $igStatus")
+                Log.e(TAG, "ERROR:    - Expected shouldSendData: $expectedShouldSendData")
+                
+                // Correct the flag
+                val oldFlag = shouldSendData
+                shouldSendData = expectedShouldSendData
+                
+                Log.e(TAG, "ERROR: 🔧 CORRECTING shouldSendData: $oldFlag → $shouldSendData")
+                Log.e(TAG, "ERROR:    - Flag now matches actual ignition state")
+                
+                // Log this correction for monitoring
+                logIgnitionMismatch(
+                    if (igStatus == 1) "Flag Correction - Ignition On" else "Flag Correction - Ignition Off",
+                    igStatus,
+                    if (oldFlag) 1 else 0
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error checking/correcting shouldSendData flag: ${e.message}")
+        }
+    }
+
+    // NEW: Log ignition mismatches for monitoring and debugging
+    private fun logIgnitionMismatch(reason: String, currentIgStatus: Int, expectedIgStatus: Int) {
+        try {
+            val mismatchType = when {
+                reason == "Ignition On" && currentIgStatus == 0 -> "MISSED_IGNITION_ON"
+                reason == "Ignition Off" && currentIgStatus == 1 -> "MISSED_IGNITION_OFF"
+                else -> "UNKNOWN_MISMATCH"
+            }
+            
+            val details = "Reason: $reason, Expected igStatus: $expectedIgStatus, Current igStatus: $currentIgStatus, Type: $mismatchType"
+            
+            Log.e(TAG, "ERROR: 🚨 IGNITION MISMATCH LOGGED:")
+            Log.e(TAG, "ERROR:    - $details")
+            
+            // Save to database for monitoring (if database is available)
+            try {
+                val db = dbHelper.writableDatabase
+                val values = ContentValues().apply {
+                    put("main", "Ignition Mismatch Detected")
+                    put("details", details)
+                    put("created_at", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss.SSS")))
+                }
+                
+                // Insert into exception_logs table if it exists
+                db.insert("exception_logs", null, values)
+                Log.d(TAG, "✅ Ignition mismatch logged to database")
+                
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Could not log ignition mismatch to database: ${e.message}")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error logging ignition mismatch: ${e.message}")
         }
     }
 }
