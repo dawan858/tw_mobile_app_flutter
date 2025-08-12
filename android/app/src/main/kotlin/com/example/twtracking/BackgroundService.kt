@@ -1,46 +1,44 @@
 package com.example.twtracking
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
-import android.content.Intent
-import android.os.Build
-import android.os.IBinder
-import android.os.Looper
-import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.*
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.app.ActivityCompat
-import android.util.Log
-import android.os.PowerManager
+import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
-import android.location.Location
-import android.location.LocationManager
-import android.location.GnssStatus
-import okhttp3.*
-import org.json.JSONObject
-import java.io.IOException
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.location.GnssStatus
+import android.location.Location
+import android.location.LocationManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.gson.Gson
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import android.content.ContentValues
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.ExecutorService
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.IntentFilter
-import kotlin.math.abs
-import kotlin.math.sqrt
-import android.app.AlarmManager
-import android.os.SystemClock
-import com.google.gson.Gson
-import android.os.Handler
-import java.util.Timer
-import io.flutter.plugin.common.MethodChannel
 
 class BackgroundService : Service() {
     companion object {
@@ -64,10 +62,6 @@ class BackgroundService : Service() {
     private val CHANNEL_ID = "tracking_service"
     private val NOTIFICATION_ID = 888
     private var wakeLock: PowerManager.WakeLock? = null
-    private var cpuWakeLock: PowerManager.WakeLock? = null
-    private var screenWakeLock: PowerManager.WakeLock? = null
-    private var wifiWakeLock: PowerManager.WakeLock? = null
-    private var gpsWakeLock: PowerManager.WakeLock? = null
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -76,22 +70,11 @@ class BackgroundService : Service() {
     private val serverUrl = "http://twca.trackingworld.com.pk:3000/api/location"
     private lateinit var dbHelper: LocationDatabaseHelper
     private var syncExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-    private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var isSyncing = false
     private var lastLocation: Location? = null
     private lateinit var gnssStatusCallback: GnssStatus.Callback
     private var lastLocationUpdateTime: Long = 0
-    private var isMoving: Boolean = false
-    private var lastMovementTime: Long = 0
-    private var lastStopTime: Long = 0
 
-    // Enhanced stationary detection
-    private val recentLocations = mutableListOf<Location>()
-    private val maxLocationBuffer = 5
-    private var stationaryStartTime: Long = 0
-    private var consecutiveStationaryCount = 0
-
-    // Configuration parameters with defaults
     private var gpsTimer: Int = 5
     private var uploadTimer: Int = 10
     private var angleThreshold: Float = 45f
@@ -113,9 +96,6 @@ class BackgroundService : Service() {
     }
 
     private var igStatus = 0 // Initialize to 0 (ACC off)
-    private var isCarPowerAvailable = false
-    private var serviceStartAttempts = 0
-    private val MAX_START_ATTEMPTS = 3
     private var lastIgStatus = 0 // Track previous igStatus for ignition change detection
     
     // NEW: Enhanced ignition state tracking for server communication
@@ -141,47 +121,47 @@ class BackgroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val accStateListener: (Boolean) -> Unit = { isAccOn ->
-        mainHandler.post {
+
+//        mainHandler.post {
             try {
                 val newIgStatus = if (isAccOn) 1 else 0
-                val oldStatus = igStatus
-
-                if (!isIgStatusReady) {
+                val oldStatus = if (isAccOn) 0 else 1
                     Log.d(TAG, "✅ igStatus is now ready. Initial igStatus: $newIgStatus")
-                    isIgStatusReady = true
-                    
-                    // Log the start of continuous monitoring
-                    dbHelper.insertIgnitionLog(
-                        "Continuously monitoring the igStatus",
-                        "Monitoring service active, checking every 5 seconds",
-                        "monitoring"
-                    )
-                }
+
+//                if (!isIgStatusReady) {
+//        Log.e("accStateListener: ","${isAccOn}")
+//                    isIgStatusReady = true
+//
+//                    // Log the start of continuous monitoring
+//                    dbHelper.insertIgnitionLog(
+//                        "Continuously monitoring the igStatus",
+//                        "Monitoring service active, checking every 5 seconds",
+//                        "monitoring"
+//                    )
+//                }
                 
-                Log.d(TAG, "🚗 ACC Callback Received. isAccOn: $isAccOn, newIgStatus: $newIgStatus, oldStatus: $oldStatus")
+//                Log.d(TAG, "🚗 ACC Callback Received. isAccOn: $isAccOn, newIgStatus: $newIgStatus, oldStatus: $oldStatus")
 
                 // NEW: Check for engine start scenario
-                val isEngineStartInProgress = carPowerManager?.isCurrentlyInEngineStart() ?: false
-                
-                if (isEngineStartInProgress) {
-                    Log.d(TAG, "🚗 ENGINE START IN PROGRESS - Maintaining current igStatus: $igStatus")
-                    dbHelper.insertIgnitionLog(
-                        "Engine start in progress - ignoring temporary power fluctuation",
-                        "Maintaining igStatus: $igStatus during engine start",
-                        "engine_start_progress"
-                    )
-                    return@post
-                }
 
-                igStatus = newIgStatus // Always update to the latest from the source of truth
+//                if (igStatus==1) {
+//                    Log.d(TAG, "🚗 ENGINE START IN PROGRESS - Maintaining current igStatus: $igStatus")
+//                    dbHelper.insertIgnitionLog(
+//                        "Engine start in progress - ignoring temporary power fluctuation",
+//                        "Maintaining igStatus: $igStatus during engine start",
+//                        "engine_start_progress"
+//                    )
+//                }
 
-                if (newIgStatus != oldStatus) {
-                    Log.d(TAG, "🔄 igStatus updated: $oldStatus -> $newIgStatus")
-                    Log.d(TAG, "🚗 IGNITION STATE CHANGE DETECTED:")
-                    Log.d(TAG, "   - Old Status: $oldStatus (${if (oldStatus == 1) "ACC_ON" else "ACC_OFF"})")
-                    Log.d(TAG, "   - New Status: $newIgStatus (${if (newIgStatus == 1) "ACC_ON" else "ACC_OFF"})")
-                    Log.d(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
-                    Log.d(TAG, "   - Source: CarPowerManager callback")
+//                igStatus = newIgStatus // Always update to the latest from the source of truth
+
+//                if (newIgStatus != oldStatus) {
+                    Log.e(TAG, "🔄 igStatus updated: $oldStatus -> $newIgStatus")
+                    Log.e(TAG, "🚗 IGNITION STATE CHANGE DETECTED:")
+                    Log.e(TAG, "   - Old Status: $oldStatus (${if (oldStatus == 1) "ACC_ON" else "ACC_OFF"})")
+                    Log.e(TAG, "   - New Status: $newIgStatus (${if (newIgStatus == 1) "ACC_ON" else "ACC_OFF"})")
+                    Log.e(TAG, "   - Timestamp: ${System.currentTimeMillis()}")
+                    Log.e(TAG, "   - Source: CarPowerManager callback")
                     
                     // NEW: Enhanced ignition state change handling
                     handleIgnitionStateChange(oldStatus, newIgStatus)
@@ -203,13 +183,13 @@ class BackgroundService : Service() {
                     
                     // Update lastIgStatus for future change detection
                     lastIgStatus = oldStatus
-                } else {
-                    Log.d(TAG, "ℹ️ igStatus value confirmed: $newIgStatus")
-                }
+//                } else {
+//                    Log.d(TAG, "ℹ️ igStatus value confirmed: $newIgStatus")
+//                }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error in accStateListener", e)
             }
-        }
+//        }
     }
 
     inner class LocationDatabaseHelper(context: Context) : SQLiteOpenHelper(context, "location_tracking.db", null, 5) {
@@ -436,7 +416,7 @@ class BackgroundService : Service() {
                 }
                 
                 val id = db.insert("ignition_logs", null, values)
-                Log.d(TAG, "Inserted ignition log: $message (ID: $id)")
+                Log.e(TAG, "Inserted ignition log: $message (ID: $id)")
                 
                 // Notify Flutter to upload the log to endpoint
                 try {
@@ -446,7 +426,7 @@ class BackgroundService : Service() {
                     intent.putExtra("logType", logType)
                     intent.putExtra("timestamp", timestamp)
                     sendBroadcast(intent)
-                    Log.d(TAG, "Broadcast sent for ignition log upload: $message")
+                    Log.e(TAG, "Broadcast sent for ignition log upload: $message")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error sending ignition log upload broadcast: ${e.message}")
                 }
@@ -560,6 +540,7 @@ class BackgroundService : Service() {
         }
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "=== BACKGROUND SERVICE ONCREATE (INDEPENDENT) ===")
@@ -606,7 +587,7 @@ class BackgroundService : Service() {
             
             // NEW: Force update igStatus after initialization
             Handler().postDelayed({
-                forceUpdateIgStatusOnStart()
+//                forceUpdateIgStatusOnStart()
             }, 2000) // Wait 2 seconds for CarPowerManager to initialize
             
             Log.d(TAG, "✅ Service onCreate completed successfully (INDEPENDENT)")
@@ -621,64 +602,66 @@ class BackgroundService : Service() {
      */
     private fun initializeCarPowerManager() {
         try {
-            Log.d(TAG, "=== INITIALIZING SERVICE-OWNED CAR POWER MANAGER ===")
-            Log.d(TAG, "   - Service context: ${this.javaClass.simpleName}")
-            Log.d(TAG, "   - Thread: ${Thread.currentThread().name}")
-            
+            Log.e(TAG, "=== INITIALIZING SERVICE-OWNED CAR POWER MANAGER === ${carPowerManager==null}")
+            Log.e(TAG, "   - Service context: ${this.javaClass.simpleName}")
+            Log.e(TAG, "   - Thread: ${Thread.currentThread().name}")
+
             // Initialize CarPowerManager with simple callback
+            if(carPowerManager!=null) return
+
             carPowerManager = CarPowerManager(this)
             carPowerManager?.setAccStateCallback(accStateListener)
-            
+
             // Set up ignition log callback
             carPowerManager?.setIgnitionLogCallback { message, details, logType ->
                 try {
-                    dbHelper.insertIgnitionLog(message, details, logType)
+//                    dbHelper.insertIgnitionLog(message, details, logType)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in ignition log callback: ${e.message}")
                 }
             }
-            
+
             // Initialize CarPowerManager
             carPowerManager?.initialize()
-            
+
             // Check initialization status after a delay
             Handler().postDelayed({
                 try {
                     Log.d(TAG, "🔄 CHECKING CAR POWER MANAGER INITIALIZATION STATUS:")
-                    
+
                     val isProperlyInitialized = carPowerManager?.isProperlyInitialized() ?: false
                     val detailedStatus = carPowerManager?.getDetailedStatus()
-                    
+
                     Log.d(TAG, "   - isProperlyInitialized: $isProperlyInitialized")
                     detailedStatus?.forEach { (key, value) ->
                         Log.d(TAG, "   - $key: $value")
                     }
-                    
+
                     if (isProperlyInitialized) {
                         val initialState = carPowerManager?.getCurrentAccState() ?: false
                         val initialIgStatus = if (initialState) 1 else 0
-                        
+
                         Log.d(TAG, "🚗 GETTING INITIAL STATE:")
                         Log.d(TAG, "   - ACC ON: $initialState")
                         Log.d(TAG, "   - igStatus: $initialIgStatus")
-                        
+
                         if (igStatus != initialIgStatus) {
                             val oldStatus = igStatus
                             igStatus = initialIgStatus
                             Log.d(TAG, "🔄 Initial igStatus updated: $oldStatus → $initialIgStatus")
                             storeAccStateForFlutter(initialIgStatus)
                         }
-                        
+
                         isCarPowerInitialized = true
                         Log.d(TAG, "✅ Service-owned CarPowerManager properly initialized. Final igStatus: $igStatus")
-                        
+
                     } else {
                         Log.w(TAG, "⚠️ CarPowerManager not properly initialized, using fallback")
                         isCarPowerInitialized = false
                         // Don't override igStatus - preserve the actual detected state
                         Log.w(TAG, "⚠️ CarPowerManager not initialized, but preserving current igStatus: $igStatus")
                     }
-                    
+
                 } catch (e: Exception) {
                     Log.e(TAG, "❌ Error checking CarPowerManager initialization status", e)
                     isCarPowerInitialized = false
@@ -686,7 +669,7 @@ class BackgroundService : Service() {
                     Log.w(TAG, "⚠️ Error checking CarPowerManager, but preserving current igStatus: $igStatus")
                 }
             }, 3000) // Wait 3 seconds for initialization (increased from 1 second)
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to initialize service-owned CarPowerManager: ${e.message}")
             Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
@@ -694,28 +677,6 @@ class BackgroundService : Service() {
             isCarPowerInitialized = false
             // Don't override igStatus - preserve the actual detected state
             Log.w(TAG, "⚠️ Failed to initialize CarPowerManager, but preserving current igStatus: $igStatus")
-        }
-    }
-
-    // NEW METHOD: Trigger immediate sync with current igStatus
-    private fun triggerImmediateSync(newIgStatus: Int) {
-        try {
-            Log.d(TAG, "🔄 TRIGGERING IMMEDIATE SYNC with igStatus: $newIgStatus")
-            
-            // Update any pending location records with new igStatus
-            updatePendingRecordsWithIgStatus(newIgStatus)
-            
-            // Trigger sync service
-            val syncIntent = Intent(this, BackgroundService::class.java).apply {
-                action = "SYNC_IMMEDIATE"
-                putExtra("ig_status", newIgStatus)
-            }
-            startService(syncIntent)
-            
-            Log.d(TAG, "✅ Immediate sync triggered")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error triggering immediate sync", e)
         }
     }
 
@@ -811,27 +772,6 @@ class BackgroundService : Service() {
         }
     }
 
-    private fun handleSleepStateChange(isSleeping: Boolean) {
-        try {
-            if (isSleeping) {
-                Log.d(TAG, "🚗 Service handling sleep transition")
-                stopLocationUpdates()
-                scheduleSleepWakeUpChecks()
-                storeSleepState(true)
-                showSleepNotification()
-            } else {
-                Log.d(TAG, "🚗 Service handling wake transition")
-                refreshWakeLocks()
-                startLocationUpdates()
-                cancelSleepWakeUpChecks()
-                storeSleepState(false)
-                showWakeUpNotification()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling sleep state change", e)
-        }
-    }
-
     private fun showSleepNotification() {
         try {
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -850,27 +790,6 @@ class BackgroundService : Service() {
             Log.d(TAG, "Sleep notification shown")
         } catch (e: Exception) {
             Log.e(TAG, "Error showing sleep notification", e)
-        }
-    }
-
-    private fun showWakeUpNotification() {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("GPS Tracking - Wake Up")
-                .setContentText("Service resumed after AVN wake-up")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .build()
-
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.notify(NOTIFICATION_ID, notification)
-            
-            Log.d(TAG, "Wake-up notification shown")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error showing wake-up notification", e)
         }
     }
 
@@ -929,6 +848,7 @@ class BackgroundService : Service() {
     // FIX: Add missing parameter to showBackgroundOnlyNotification
     private fun showBackgroundOnlyNotification(startedBy: String = "unknown") {
         try {
+            Log.e("showBackgroundOnlyNotification", startedBy)
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("GPS Tracking - Background Mode")
                 .setContentText("Service auto-started by system")
@@ -985,7 +905,9 @@ class BackgroundService : Service() {
             Log.d(TAG, "🔄 FORCING CONFIGURATION LOAD ON SERVICE START")
             loadConfiguration()
             checkAndFixConfiguration()
-        
+        initializeCarPowerManager()
+
+
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val wasSleeping = prefs.getBoolean("flutter.is_sleeping", false)
         
@@ -1122,7 +1044,7 @@ class BackgroundService : Service() {
         
         if (!isCarPowerInitialized) {
             Log.w(TAG, "CarPowerManager not initialized, retrying...")
-            initializeCarPowerManager()
+//            initializeCarPowerManager()
         }
 
         // --- FIX: Always ensure tracking is started, regardless of how service is started ---
@@ -1196,7 +1118,7 @@ class BackgroundService : Service() {
             checkAndFixConfiguration()
             
             if (!isCarPowerInitialized) {
-                initializeCarPowerManager()
+//                initializeCarPowerManager()
             }
             
             showSleepNotification()
@@ -1348,7 +1270,7 @@ class BackgroundService : Service() {
             val isSleeping = prefs.getBoolean("flutter.is_sleeping", false)
             
             // CRITICAL: Always schedule restart regardless of sleep state
-            Log.d(TAG, "🚨 Service being destroyed - scheduling immediate restart")
+            Log.e(TAG, "🚨 Service being destroyed - scheduling immediate restart")
             scheduleServiceRestart()
             
             if (isSleeping) {
@@ -1948,7 +1870,7 @@ class BackgroundService : Service() {
                         Log.d(TAG, "✅ CarPowerManager is initialized")
                     } else {
                         Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
-                        initializeCarPowerManager()
+//                        initializeCarPowerManager()
                     }
                     
                     // Check wake locks
@@ -2026,7 +1948,7 @@ class BackgroundService : Service() {
             carPowerManager?.testCurrentPowerState()
             
             // NEW: Use force update method for more reliable igStatus detection
-            carPowerManager?.forceUpdateIgStatus()
+//            carPowerManager?.forceUpdateIgStatus()
             
             // Get current power state from CarPowerManager
             val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
@@ -2463,50 +2385,6 @@ class BackgroundService : Service() {
             .build()
     }
 
-    private fun updateNotification(title: String, content: String) {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(title)
-                .setContentText(content)
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .build()
-
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.notify(NOTIFICATION_ID, notification)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating notification", e)
-        }
-    }
-
-    private fun scheduleSleepWakeUpChecks() {
-        try {
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(this, SleepWakeUpReceiver::class.java).apply {
-                action = "com.trackingWorld.tracking.SLEEP_WAKE_UP_CHECK"
-            }
-            
-            val pendingIntent = PendingIntent.getBroadcast(
-                this, 0, intent, 
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            
-            alarmManager.setRepeating(
-                AlarmManager.RTC_WAKEUP,
-                System.currentTimeMillis() + 30000,
-                30000,
-                pendingIntent
-            )
-            
-            Log.d(TAG, "Sleep wake-up checks scheduled")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error scheduling sleep checks", e)
-        }
-    }
-
     private fun cancelSleepWakeUpChecks() {
         try {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -2546,54 +2424,6 @@ class BackgroundService : Service() {
             prefs.edit().putLong("flutter.last_wake_up_time", System.currentTimeMillis()).apply()
         } catch (e: Exception) {
             Log.e(TAG, "Error updating wake-up timestamp", e)
-        }
-    }
-
-    // NEW METHOD: Handle immediate sync requests
-    private fun handleImmediateSync(igStatus: Int, reason: String) {
-        try {
-            Log.d(TAG, "=== HANDLING IMMEDIATE SYNC ===")
-            Log.d(TAG, "igStatus: $igStatus, Reason: $reason")
-            
-            // Update current igStatus
-            this.igStatus = igStatus
-            
-            // Store consistently
-            storeAccStateForFlutter(igStatus)
-            
-            // Update notification
-            updateNotificationWithAccState(igStatus == 1)
-            
-            // Force sync to server immediately
-            forceSyncToServer(igStatus, reason)
-            
-            Log.d(TAG, "✅ Immediate sync completed for igStatus: $igStatus")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling immediate sync", e)
-        }
-    }
-
-    // NEW METHOD: Force sync to server with current igStatus
-    private fun forceSyncToServer(igStatus: Int, reason: String) {
-        try {
-            Log.d(TAG, "🔄 Force syncing to server - igStatus: $igStatus, Reason: $reason")
-            
-            // Update all unsynced records with current igStatus
-            updateUnsyncedRecordsIgStatus(igStatus)
-            
-            // Trigger immediate sync
-            syncExecutor.execute {
-                try {
-                    Log.d(TAG, "Starting forced sync to server...")
-                    performSyncToServer()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in forced sync", e)
-                }
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error forcing sync to server", e)
         }
     }
 
@@ -2659,7 +2489,7 @@ class BackgroundService : Service() {
                     }
 
                     // Log the igStatus being sent to server
-                    val igStatusBeingSent = dataToSend["igStatus"] as? Int ?: 0
+                    val igStatusBeingSent = dataToSend["igStatus"] as? Int ?: igStatus
                     val recordId = when (val id = data["id"]) {
                         is Long -> id.toString()
                         is Int -> id.toString()
@@ -2721,11 +2551,6 @@ class BackgroundService : Service() {
             isSyncing = false
             Log.e(TAG, "ERROR: Sync to server completed")
         }
-    }
-
-    // NEW METHOD: Get current igStatus
-    fun getCurrentIgStatus(): Int {
-        return igStatus
     }
     
     // NEW METHOD: Get current configuration for debugging
@@ -2848,7 +2673,7 @@ class BackgroundService : Service() {
             carPowerManager?.debugPowerStates()
             
             // NEW: Use CarPowerManager's force update method
-            carPowerManager?.forceUpdateIgStatus()
+//            carPowerManager?.forceUpdateIgStatus()
             
             // Get current power state from CarPowerManager
             val currentPowerState = carPowerManager?.getCurrentAccState() ?: false
@@ -3023,49 +2848,6 @@ class BackgroundService : Service() {
         }
     }
 
-    // NEW METHOD: Request location update for valid coordinates
-    private fun requestLocationUpdate() {
-        try {
-            Log.d(TAG, "📍 REQUESTING LOCATION UPDATE FOR VALID COORDINATES")
-            
-            if (::fusedLocationClient.isInitialized) {
-                // Request a single location update
-                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
-                    .setMinUpdateIntervalMillis(5000L)
-                    .setMaxUpdateDelayMillis(10000L)
-                    .build()
-
-                fusedLocationClient.requestLocationUpdates(
-                    locationRequest,
-                    object : LocationCallback() {
-                        override fun onLocationResult(locationResult: LocationResult) {
-                            locationResult.lastLocation?.let { location ->
-                                Log.d(TAG, "✅ Got location update for valid coordinates")
-                                Log.d(TAG, "   - Latitude: ${location.latitude}")
-                                Log.d(TAG, "   - Longitude: ${location.longitude}")
-                                Log.d(TAG, "   - Accuracy: ${location.accuracy}")
-                                
-                                // Now try sending igStatus again with valid coordinates
-                                sendIgStatusDirectlyToServer()
-                                
-                                // Remove this callback after getting location
-                                fusedLocationClient.removeLocationUpdates(this)
-                            }
-                        }
-                    },
-                    Looper.getMainLooper()
-                )
-                
-                Log.d(TAG, "📍 Location update requested")
-            } else {
-                Log.w(TAG, "⚠️ Location client not initialized, cannot request location update")
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error requesting location update", e)
-        }
-    }
-
     // NEW: Update all records with IMEI = "unknown" once IMEI is available
     private fun updateUnknownImeiRecords() {
         try {
@@ -3148,6 +2930,7 @@ class BackgroundService : Service() {
     }
 
     // NEW METHOD: Force update reason for ignition state change
+    @SuppressLint("MissingPermission")
     private fun forceIgnitionReasonUpdate(newIgStatus: Int) {
         try {
             Log.d(TAG, "🚗 FORCING IGNITION REASON UPDATE")
@@ -3197,6 +2980,7 @@ class BackgroundService : Service() {
     }
 
     // NEW METHOD: Test data collection and sync
+    @SuppressLint("MissingPermission")
     private fun testDataCollection() {
         try {
             Log.d(TAG, "🧪 TESTING DATA COLLECTION AND SYNC")
@@ -3286,7 +3070,7 @@ class BackgroundService : Service() {
                 Log.d(TAG, "✅ CarPowerManager is initialized")
             } else {
                 Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
-                initializeCarPowerManager()
+//                initializeCarPowerManager()
             }
             
             // Ensure wake locks are held
@@ -3351,7 +3135,7 @@ class BackgroundService : Service() {
                         Log.d(TAG, "✅ CarPowerManager is initialized")
                     } else {
                         Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
-                        initializeCarPowerManager()
+//                        initializeCarPowerManager()
                     }
                     
                     // Check wake locks
@@ -3431,7 +3215,7 @@ class BackgroundService : Service() {
                         Log.d(TAG, "✅ CarPowerManager is initialized")
                     } else {
                         Log.w(TAG, "⚠️ CarPowerManager not initialized - reinitializing")
-                        initializeCarPowerManager()
+//                        initializeCarPowerManager()
                     }
                     
                     // Check wake locks
@@ -3715,7 +3499,7 @@ class BackgroundService : Service() {
             
             // Schedule all mechanisms
             val currentTime = SystemClock.elapsedRealtime()
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
@@ -3749,55 +3533,11 @@ class BackgroundService : Service() {
                     longIntervalPendingIntent
                 )
             }
-            
+
             Log.d(TAG, "✅ Multiple restart mechanisms scheduled")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error scheduling multiple restart mechanisms: $e")
-        }
-    }
-
-    // NEW METHOD: Get engine start analysis from BackgroundService
-    fun getEngineStartAnalysis(): Map<String, Any> {
-        val analysis = mutableMapOf<String, Any>()
-        
-        // Get analysis from CarPowerManager
-        val carPowerAnalysis = carPowerManager?.getEngineStartAnalysis() ?: mapOf<String, Any>()
-        analysis.putAll(carPowerAnalysis)
-        
-        // Add BackgroundService specific info
-        analysis["serviceIgStatus"] = igStatus
-        analysis["serviceLastIgStatus"] = lastIgStatus
-        analysis["serviceIsIgStatusReady"] = isIgStatusReady
-        analysis["serviceIsCarPowerAvailable"] = isCarPowerAvailable
-        
-        // Add power state history if available
-        val powerStateHistory = carPowerManager?.getPowerStateHistory() ?: listOf<Map<String, Any>>()
-        analysis["powerStateHistory"] = powerStateHistory
-        
-        Log.d(TAG, "📊 Engine start analysis: $analysis")
-        
-        return analysis
-    }
-
-    // NEW METHOD: Simulate engine start scenario from service
-    fun simulateEngineStartScenario() {
-        try {
-            Log.d(TAG, "🧪 SIMULATING ENGINE START SCENARIO FROM SERVICE")
-            
-            carPowerManager?.simulateEngineStartScenario()
-            
-            // Log the simulation
-            dbHelper.insertIgnitionLog(
-                "Engine start scenario simulation initiated",
-                "Testing power diversion during engine start",
-                "engine_start_simulation"
-            )
-            
-            Log.d(TAG, "✅ Engine start scenario simulation completed")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error simulating engine start scenario", e)
         }
     }
 
@@ -3838,6 +3578,7 @@ class BackgroundService : Service() {
     }
 
     // NEW: Enhanced ignition state change handling
+    @SuppressLint("MissingPermission")
     private fun handleIgnitionStateChange(oldStatus: Int, newStatus: Int) {
         try {
             val currentTime = System.currentTimeMillis()
@@ -4054,24 +3795,5 @@ class BackgroundService : Service() {
         return status
     }
 
-    // NEW METHOD: Reset engine start detection from service
-    fun resetEngineStartDetection() {
-        try {
-            Log.d(TAG, "🔄 RESETTING ENGINE START DETECTION FROM SERVICE")
-            
-            carPowerManager?.resetEngineStartDetection()
-            
-            // Log the reset
-            dbHelper.insertIgnitionLog(
-                "Engine start detection reset",
-                "Manual reset of engine start detection state",
-                "engine_start_reset"
-            )
-            
-            Log.d(TAG, "✅ Engine start detection reset completed")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error resetting engine start detection", e)
-        }
-    }
+
 }

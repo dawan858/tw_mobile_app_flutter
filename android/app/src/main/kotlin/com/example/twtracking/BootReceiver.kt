@@ -31,7 +31,7 @@ class BootReceiver : BroadcastReceiver() {
             "android.intent.action.TIMEZONE_CHANGED",
             "android.bluetooth.adapter.action.STATE_CHANGED",
             DELAYED_START_ACTION -> {
-                Log.d(TAG, "✅ Auto-start trigger: ${intent.action}")
+                Log.e(TAG, "✅ Auto-start trigger: ${intent.action}")
                 startIndependentBackgroundService(context, intent.action ?: "unknown")
             }
             else -> {

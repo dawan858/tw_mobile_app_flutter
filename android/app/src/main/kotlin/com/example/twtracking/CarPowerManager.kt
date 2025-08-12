@@ -9,12 +9,13 @@ import android.util.Log
 import bw.car.Car
 import bw.car.CarNotConnectedException
 import bw.car.power.CarPowerManager
+import bw.car.power.CarPowerManager.CarPowerStateListener
 import java.util.concurrent.Executor
 
 class CarPowerManager(private val context: Context) {
     private var car: Car? = null
     private var carPowerManager: bw.car.power.CarPowerManager? = null
-    private var powerStateListener: CarPowerManager.CarPowerStateListener? = null
+    private var powerStateListener: CarPowerStateListener? = null
     private var isConnected = false
     private var isInitialized = false
     private var accStateCallback: ((Boolean) -> Unit)? = null
@@ -29,13 +30,13 @@ class CarPowerManager(private val context: Context) {
     private var accOffRunnable: Runnable? = null
 
     // Enhanced power state tracking for engine start scenarios
-    private var lastPowerStateChangeTime: Long = 0
+//    private var lastPowerStateChangeTime: Long = 0
     private var powerStateHistory = mutableListOf<Pair<Int, Long>>()
     private val maxHistorySize = 10
-    private var isEngineStartInProgress = false
-    private var engineStartStartTime: Long = 0
-    private val engineStartTimeout = 15000L // 15 seconds for engine start process
-    private val powerFluctuationThreshold = 3000L // 3 seconds for power fluctuation detection
+//    private var isEngineStartInProgress = false
+//    private var engineStartStartTime: Long = 0
+//    private val engineStartTimeout = 15000L // 15 seconds for engine start process
+//    private val powerFluctuationThreshold = 3000L // 3 seconds for power fluctuation detection
 
     companion object {
         private const val TAG = "CarPowerManager"
@@ -104,7 +105,6 @@ class CarPowerManager(private val context: Context) {
                 Log.e("CarPowerManager", "ERROR: This is expected for non-automotive devices")
                 Log.w(TAG, "   - igStatus will be 0 (ACC OFF) on this device")
                 Log.e("CarPowerManager", "ERROR: igStatus will be 0 (ACC OFF) on this device")
-                tryFallbackInitialization()
                 return
             }
             
@@ -128,17 +128,14 @@ class CarPowerManager(private val context: Context) {
                             }
                         } else {
                             Log.e(TAG, "❌ Failed to get car power manager - null returned")
-                            tryFallbackInitialization()
                         }
                         
                     } catch (e: CarNotConnectedException) {
                         Log.e(TAG, "❌ CarNotConnectedException getting car power manager", e)
-                        tryFallbackInitialization()
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Unexpected error getting car power manager", e)
                         Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
                         Log.e(TAG, "   - Exception message: ${e.message}")
-                        tryFallbackInitialization()
                     }
                 }
 
@@ -169,24 +166,18 @@ class CarPowerManager(private val context: Context) {
             Log.e(TAG, "❌ Failed to initialize CarPowerManager", e)
             Log.e(TAG, "   - Exception type: ${e.javaClass.simpleName}")
             Log.e(TAG, "   - Exception message: ${e.message}")
-            
-            // Try fallback initialization
-            tryFallbackInitialization()
         }
     }
 
     private fun setupPowerStateListener() {
         try {
             Log.d(TAG, "🔄 Setting up power state listener...")
-            
-            powerStateListener = object : CarPowerManager.CarPowerStateListener {
-                override fun onPowerStateChanged(state: Int) {
-                    try {
-                        val timestamp = System.currentTimeMillis()
-                        handlePowerStateChange(state, timestamp)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error in onPowerStateChanged", e)
-                    }
+            powerStateListener = CarPowerStateListener { state ->
+                try {
+                    val timestamp = System.currentTimeMillis()
+                    handlePowerStateChange(state, timestamp)
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in onPowerStateChanged", e)
                 }
             }
             
@@ -280,90 +271,6 @@ class CarPowerManager(private val context: Context) {
             
             isInitialized = true
             Log.e("CarPowerManager", "ERROR: ✅ CarPowerManager initialization completed with exception fallback. Final igStatus: $currentIgStatus")
-        }
-    }
-
-    private fun tryFallbackInitialization() {
-        try {
-            Log.d(TAG, "🔄 Trying fallback initialization...")
-            Log.e("CarPowerManager", "ERROR: Starting fallback initialization for BWIC devices")
-            
-            // Check if this is a BWIC device (any model in the BWIC lineup)
-            val isBwicDevice = android.os.Build.MANUFACTURER.contains("BWIC", ignoreCase = true)
-            
-            Log.e("CarPowerManager", "ERROR: Is BWIC device: $isBwicDevice")
-            
-            if (isBwicDevice) {
-                Log.e("CarPowerManager", "ERROR: Using BWIC car framework for BWIC device")
-                
-                // Try to use BWIC car framework directly
-                try {
-                    car = Car.createCar(context, object : android.content.ServiceConnection {
-                        override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
-                            try {
-                                Log.e("CarPowerManager", "ERROR: BWIC car service connected in fallback")
-                                
-                                // Get car power manager using BWIC framework
-                                carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as bw.car.power.CarPowerManager
-                                
-                                if (carPowerManager != null) {
-                                    Log.e("CarPowerManager", "ERROR: BWIC car power manager obtained successfully")
-                                    isConnected = true
-                                    
-                                    // Get current power state from BWIC car framework
-                                    val powerState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
-                                    val isAccOn = isPowerStateAccOn(powerState)
-                                    currentAccState = isAccOn
-                                    currentIgStatus = if (isAccOn) 1 else 0
-                                    
-                                    Log.e("CarPowerManager", "ERROR: BWIC fallback - power state: $powerState, ACC ON: $isAccOn, igStatus: $currentIgStatus")
-                                    
-                                    // Setup power state listener
-                                    setupPowerStateListener()
-                                    
-                                } else {
-                                    Log.e("CarPowerManager", "ERROR: BWIC car power manager is null")
-                                    useCustomBwicDetection()
-                                }
-                                
-                            } catch (e: Exception) {
-                                Log.e("CarPowerManager", "ERROR: Exception in BWIC fallback: ${e.message}")
-                                useCustomBwicDetection()
-                            }
-                        }
-
-                        override fun onServiceDisconnected(name: android.content.ComponentName?) {
-                            Log.e("CarPowerManager", "ERROR: BWIC car service disconnected")
-                        }
-                    })
-                    
-                    car?.connect()
-                    
-                } catch (e: Exception) {
-                    Log.e("CarPowerManager", "ERROR: Failed to use BWIC car framework: ${e.message}")
-                    useCustomBwicDetection()
-                }
-                
-            } else {
-                // Use default fallback for other devices
-                Log.e("CarPowerManager", "ERROR: Using default fallback for non-BWIC device")
-                currentAccState = false
-                // Don't override currentIgStatus - preserve the actual detected state
-                Log.e("CarPowerManager", "ERROR: Non-BWIC device fallback, but preserving current igStatus: $currentIgStatus")
-                
-                mainHandler.post {
-                    accStateCallback?.invoke(false)
-                    Log.e("CarPowerManager", "ERROR: Default fallback callback invoked with: false")
-                }
-            }
-            
-            isInitialized = true
-            Log.e("CarPowerManager", "ERROR: Fallback initialization completed. Final igStatus: $currentIgStatus")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Fallback initialization also failed", e)
-            Log.e("CarPowerManager", "ERROR: Fallback initialization failed: ${e.message}")
-            isInitialized = true
         }
     }
 
@@ -630,16 +537,13 @@ class CarPowerManager(private val context: Context) {
                     
                     // Try to reinitialize if there was an error
                     Log.d(TAG, "🔄 Attempting to reinitialize after error...")
-                    initialize()
                 }
             } else {
                 Log.w(TAG, "⚠️ carPowerManager is null or not connected, attempting reinitialization")
                 Log.w(TAG, "   - carPowerManager: ${carPowerManager != null}")
                 Log.w(TAG, "   - isConnected: $isConnected")
                 Log.w(TAG, "   - isInitialized: $isInitialized")
-                
-                // Try to reinitialize
-                initialize()
+
                 
                 // Return current status as fallback
                 Log.d(TAG, "   - Returning current igStatus as fallback: $currentIgStatus")
@@ -922,81 +826,61 @@ class CarPowerManager(private val context: Context) {
             Log.e("CarPowerManager", "ERROR: ❌ Failed to save igStatus to prefs: ${e.message}")
         }
     }
-
-    // NEW METHOD: Load igStatus from SharedPreferences
-    private fun loadIgStatusFromPrefs(): Int {
-        try {
-            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val savedIgStatus = prefs.getInt("current_ig_status", -1)
-            val timestamp = prefs.getLong("ig_status_timestamp", 0)
-            
-            if (savedIgStatus != -1) {
-                Log.e("CarPowerManager", "ERROR: 📥 Loaded igStatus from prefs: $savedIgStatus (timestamp: $timestamp)")
-                return savedIgStatus
-            } else {
-                Log.e("CarPowerManager", "ERROR: 📥 No saved igStatus found in prefs")
-                return 0 // Default to ACC OFF
-            }
-        } catch (e: Exception) {
-            Log.e("CarPowerManager", "ERROR: ❌ Failed to load igStatus from prefs: ${e.message}")
-            return 0 // Default to ACC OFF
-        }
-    }
-
-    // NEW: Enhanced power state detection for engine start scenarios
-    private fun isEngineStartScenario(state: Int, timestamp: Long): Boolean {
-        // Check if we're in the middle of an engine start process
-        if (isEngineStartInProgress) {
-            val elapsed = timestamp - engineStartStartTime
-            if (elapsed > engineStartTimeout) {
-                // Engine start timeout - reset
-                isEngineStartInProgress = false
-                Log.e("CarPowerManager", "ERROR: Engine start timeout - resetting")
-                return false
-            }
-            return true
-        }
-
-        // Detect potential engine start initiation
-        if (state == POWER_STATE_OFF && currentIgStatus == 1) {
-            // We were ON, now OFF - could be engine start
-            val timeSinceLastChange = timestamp - lastPowerStateChangeTime
-            if (timeSinceLastChange < powerFluctuationThreshold) {
-                // Quick power fluctuation - likely engine start
-                isEngineStartInProgress = true
-                engineStartStartTime = timestamp
-                Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START DETECTED - Power fluctuation during ACC ON state")
-                return true
-            }
-        }
-
-        return false
-    }
+//
+//    // NEW: Enhanced power state detection for engine start scenarios
+//    private fun isEngineStartScenario(state: Int, timestamp: Long): Boolean {
+//        // Check if we're in the middle of an engine start process
+//        if (isEngineStartInProgress) {
+//            val elapsed = timestamp - engineStartStartTime
+//            if (elapsed > engineStartTimeout) {
+//                // Engine start timeout - reset
+//                isEngineStartInProgress = false
+//                Log.e("CarPowerManager", "ERROR: Engine start timeout - resetting")
+//                return false
+//            }
+//            return true
+//        }
+//
+//        // Detect potential engine start initiation
+//        if (state == POWER_STATE_OFF && currentIgStatus == 1) {
+//            // We were ON, now OFF - could be engine start
+//            val timeSinceLastChange = timestamp - lastPowerStateChangeTime
+//            if (timeSinceLastChange < powerFluctuationThreshold) {
+//                // Quick power fluctuation - likely engine start
+//                isEngineStartInProgress = true
+//                engineStartStartTime = timestamp
+//                Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START DETECTED - Power fluctuation during ACC ON state")
+//                return true
+//            }
+//        }
+//
+//        return false
+//    }
 
     // NEW: Analyze power state history for engine start patterns
-    private fun analyzePowerStateHistory(): Boolean {
-        if (powerStateHistory.size < 3) return false
-
-        val recentStates = powerStateHistory.takeLast(3)
-        val stateSequence = recentStates.map { it.first }
-        
-        // Engine start pattern: ON -> OFF -> ON (within short time)
-        if (stateSequence.size >= 3) {
-            val pattern = stateSequence.takeLast(3)
-            if (pattern[0] == POWER_STATE_ON && 
-                pattern[1] == POWER_STATE_OFF && 
-                pattern[2] == POWER_STATE_ON) {
-                
-                val timeSpan = recentStates.last().second - recentStates.first().second
-                if (timeSpan < engineStartTimeout) {
-                    Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START PATTERN DETECTED: ON->OFF->ON in ${timeSpan}ms")
-                    return true
-                }
-            }
-        }
-        
-        return false
-    }
+//    private fun analyzePowerStateHistory(): Boolean {
+//        if (powerStateHistory.size < 3) return false
+//
+//        val recentStates = powerStateHistory.takeLast(3)
+//        val stateSequence = recentStates.map { it.first }
+//
+//        // Engine start pattern: ON -> OFF -> ON (within short time)
+//        if (stateSequence.size >= 3) {
+//            val pattern = stateSequence.takeLast(3)
+//            if (pattern[0] == POWER_STATE_ON &&
+//                pattern[1] == POWER_STATE_OFF &&
+//                pattern[2] == POWER_STATE_ON) {
+//
+//                val timeSpan = recentStates.last().second - recentStates.first().second
+//                if (timeSpan < engineStartTimeout) {
+//                    Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START PATTERN DETECTED: ON->OFF->ON in ${timeSpan}ms")
+//                    return true
+//                }
+//            }
+//        }
+//
+//        return false
+//    }
 
     // NEW: Enhanced power state change handling
     private fun handlePowerStateChange(state: Int, timestamp: Long) {
@@ -1007,181 +891,102 @@ class CarPowerManager(private val context: Context) {
         }
 
         val isAccOn = isPowerStateAccOn(state)
-        val newIgStatus = if (isAccOn) 1 else 0
-        val oldIgStatus = currentIgStatus
+//        val newIgStatus = if (isAccOn) 1 else 0
+//        val oldIgStatus = currentIgStatus
 
-        Log.e("CarPowerManager", "ERROR: 🚗 POWER STATE CHANGED (State: $state, ACC: $isAccOn)")
 
         // Check for engine start scenario
-        val isEngineStart = isEngineStartScenario(state, timestamp)
-        
-        if (isEngineStart) {
-            Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START SCENARIO - Ignoring temporary ACC OFF")
-            
-            // Don't change igStatus during engine start
-            // Keep the previous ON state
-            currentIgStatus = 1
-            currentAccState = true
-            
-            // Cancel any pending OFF events
-            accOffRunnable?.let {
-                accOffHandler.removeCallbacks(it)
-                Log.e("CarPowerManager", "ERROR: ❌ Cancelled pending ACC OFF event during engine start")
-            }
-            accOffRunnable = null
-            
-            // Don't trigger callback - maintain ON state
-            return
-        }
+//        val isEngineStart = isEngineStartScenario(state, timestamp)
+
+//        if (isEngineStart) {
+//            Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START SCENARIO - Ignoring temporary ACC OFF")
+//
+//            // Don't change igStatus during engine start
+//            // Keep the previous ON state
+//            currentIgStatus = 1
+//            currentAccState = true
+//
+//            // Cancel any pending OFF events
+//            accOffRunnable?.let {
+//                accOffHandler.removeCallbacks(it)
+//                Log.e("CarPowerManager", "ERROR: ❌ Cancelled pending ACC OFF event during engine start")
+//            }
+//            accOffRunnable = null
+//
+//            // Don't trigger callback - maintain ON state
+//            return
+//        }
 
         // Check for engine start completion
-        if (isEngineStartInProgress && isAccOn) {
-            Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START COMPLETED - ACC back to ON")
-            isEngineStartInProgress = false
-            currentIgStatus = 1
-            currentAccState = true
-            saveIgStatusToPrefs(1)
-            accStateCallback?.invoke(true)
+//        if (isEngineStartInProgress && isAccOn) {
+//            Log.e("CarPowerManager", "ERROR: 🚗 ENGINE START COMPLETED - ACC back to ON")
+//            isEngineStartInProgress = false
+            currentIgStatus = state
+            currentAccState = state==1
+            saveIgStatusToPrefs(state)
+            accStateCallback?.invoke(state==1)
+            Log.e("CarPowerManager", " 🚗 POWER STATE CHANGED (State: $state, ACC: $isAccOn)")
             return
         }
 
         // Normal state change handling
-        if (newIgStatus != oldIgStatus) {
-            if (newIgStatus == 1) { // Transitioning to ON
-                // Cancel any pending OFF event
-                accOffRunnable?.let {
-                    accOffHandler.removeCallbacks(it)
-                    Log.e("CarPowerManager", "ERROR: ❌ Cancelled pending ACC OFF event.")
-                }
-                accOffRunnable = null
-                
-                // Update state immediately
-                currentIgStatus = 1
-                currentAccState = true
-                saveIgStatusToPrefs(1)
-                Log.e("CarPowerManager", "ERROR: ✅ igStatus changed to ON (1)")
-                accStateCallback?.invoke(true)
+//        if (newIgStatus != oldIgStatus) {
+//            if (newIgStatus == 1) { // Transitioning to ON
+//                // Cancel any pending OFF event
+//                accOffRunnable?.let {
+//                    accOffHandler.removeCallbacks(it)
+//                    Log.e("CarPowerManager", "ERROR: ❌ Cancelled pending ACC OFF event.")
+//                }
+//                accOffRunnable = null
+//
+//                // Update state immediately
+//                currentIgStatus = 1
+//                currentAccState = true
+//                saveIgStatusToPrefs(1)
+//                Log.e("CarPowerManager", "ERROR: ✅ igStatus changed to ON (1)")
+//                accStateCallback?.invoke(true)
+//
+//            } else { // Transitioning to OFF
+//                // Enhanced OFF detection with engine start consideration
+//                val shouldDelayOff = analyzePowerStateHistory()
+//
+//                if (shouldDelayOff) {
+//                    Log.e("CarPowerManager", "ERROR: ⚠️ ACC OFF detected but potential engine start - extending delay to 10 seconds")
+//                    // Extended delay for potential engine start scenarios
+//                    accOffRunnable = Runnable {
+//                        Log.e("CarPowerManager", "ERROR: ✅ Extended countdown complete. igStatus confirmed OFF (0).")
+//                        currentIgStatus = 0
+//                        currentAccState = false
+//                        saveIgStatusToPrefs(0)
+//                        accStateCallback?.invoke(false)
+//                        accOffRunnable = null
+//                    }
+//                    accOffHandler.postDelayed(accOffRunnable!!, 10000) // 10 second delay for engine start scenarios
+//                } else {
+//                    Log.e("CarPowerManager", "ERROR: ⚠️ ACC OFF detected. Starting 5-second countdown.")
+//                    // Normal delay
+//                    accOffRunnable = Runnable {
+//                        Log.e("CarPowerManager", "ERROR: ✅ 5-second countdown complete. igStatus confirmed OFF (0).")
+//                        currentIgStatus = 0
+//                        currentAccState = false
+//                        saveIgStatusToPrefs(0)
+//                        accStateCallback?.invoke(false)
+//                        accOffRunnable = null
+//                    }
+//                    accOffHandler.postDelayed(accOffRunnable!!, 5000) // 5 second delay
+//                }
+//            }
+//        } else {
+//             Log.e("CarPowerManager", "ERROR: ℹ️ igStatus state confirmed: $newIgStatus")
+//        }
 
-            } else { // Transitioning to OFF
-                // Enhanced OFF detection with engine start consideration
-                val shouldDelayOff = analyzePowerStateHistory()
-                
-                if (shouldDelayOff) {
-                    Log.e("CarPowerManager", "ERROR: ⚠️ ACC OFF detected but potential engine start - extending delay to 10 seconds")
-                    // Extended delay for potential engine start scenarios
-                    accOffRunnable = Runnable {
-                        Log.e("CarPowerManager", "ERROR: ✅ Extended countdown complete. igStatus confirmed OFF (0).")
-                        currentIgStatus = 0
-                        currentAccState = false
-                        saveIgStatusToPrefs(0)
-                        accStateCallback?.invoke(false)
-                        accOffRunnable = null
-                    }
-                    accOffHandler.postDelayed(accOffRunnable!!, 10000) // 10 second delay for engine start scenarios
-                } else {
-                    Log.e("CarPowerManager", "ERROR: ⚠️ ACC OFF detected. Starting 5-second countdown.")
-                    // Normal delay
-                    accOffRunnable = Runnable {
-                        Log.e("CarPowerManager", "ERROR: ✅ 5-second countdown complete. igStatus confirmed OFF (0).")
-                        currentIgStatus = 0
-                        currentAccState = false
-                        saveIgStatusToPrefs(0)
-                        accStateCallback?.invoke(false)
-                        accOffRunnable = null
-                    }
-                    accOffHandler.postDelayed(accOffRunnable!!, 5000) // 5 second delay
-                }
-            }
-        } else {
-             Log.e("CarPowerManager", "ERROR: ℹ️ igStatus state confirmed: $newIgStatus")
-        }
-
-        lastPowerStateChangeTime = timestamp
+//        lastPowerStateChangeTime = timestamp
     }
 
-    // NEW METHOD: Get engine start status for debugging
-    fun getEngineStartStatus(): Map<String, Any> {
-        return mapOf(
-            "isEngineStartInProgress" to isEngineStartInProgress,
-            "engineStartStartTime" to engineStartStartTime,
-            "elapsedTime" to (System.currentTimeMillis() - engineStartStartTime),
-            "powerStateHistorySize" to powerStateHistory.size,
-            "lastPowerStateChangeTime" to lastPowerStateChangeTime,
-            "currentIgStatus" to currentIgStatus,
-            "currentAccState" to currentAccState
-        )
-    }
 
-    // NEW METHOD: Reset engine start detection (for debugging)
-    fun resetEngineStartDetection() {
-        isEngineStartInProgress = false
-        engineStartStartTime = 0
-        powerStateHistory.clear()
-        Log.e("CarPowerManager", "ERROR: Engine start detection reset")
-    }
-
-    // NEW METHOD: Simulate engine start scenario for testing
-    fun simulateEngineStartScenario() {
-        Log.e("CarPowerManager", "ERROR: 🧪 SIMULATING ENGINE START SCENARIO")
-        
-        // Simulate the power state sequence: ON -> OFF -> ON
-        val currentTime = System.currentTimeMillis()
-        
-        // Step 1: ACC ON (Stage 2)
-        handlePowerStateChange(POWER_STATE_ON, currentTime)
-        Log.e("CarPowerManager", "ERROR: Step 1: ACC ON (Stage 2)")
-        
-        // Step 2: Power diversion during engine start (after 2 seconds)
-        mainHandler.postDelayed({
-            handlePowerStateChange(POWER_STATE_OFF, System.currentTimeMillis())
-            Log.e("CarPowerManager", "ERROR: Step 2: Power diversion (engine start)")
-        }, 2000)
-        
-        // Step 3: Engine start completed, ACC back ON (after 4 seconds)
-        mainHandler.postDelayed({
-            handlePowerStateChange(POWER_STATE_ON, System.currentTimeMillis())
-            Log.e("CarPowerManager", "ERROR: Step 3: Engine start completed, ACC back ON")
-        }, 4000)
-    }
-
-    // NEW METHOD: Get power state history for debugging
-    fun getPowerStateHistory(): List<Map<String, Any>> {
-        return powerStateHistory.map { (state, timestamp) ->
-            mapOf(
-                "state" to state,
-                "stateName" to getPowerStateName(state),
-                "timestamp" to timestamp,
-                "timeAgo" to (System.currentTimeMillis() - timestamp)
-            )
-        }
-    }
 
     // NEW METHOD: Check if current state suggests engine start in progress
-    fun isCurrentlyInEngineStart(): Boolean {
-        return isEngineStartInProgress
-    }
+//    fun isCurrentlyInEngineStart(): Boolean {
+//        return isEngineStartInProgress
+//    }
 
-    // NEW METHOD: Get detailed engine start analysis
-    fun getEngineStartAnalysis(): Map<String, Any> {
-        val analysis = mutableMapOf<String, Any>()
-        
-        analysis["isEngineStartInProgress"] = isEngineStartInProgress
-        analysis["engineStartStartTime"] = engineStartStartTime
-        analysis["elapsedTime"] = System.currentTimeMillis() - engineStartStartTime
-        analysis["powerStateHistorySize"] = powerStateHistory.size
-        
-        if (powerStateHistory.isNotEmpty()) {
-            val recentStates = powerStateHistory.takeLast(3)
-            analysis["recentStatePattern"] = recentStates.map { 
-                "${getPowerStateName(it.first)}(${it.second})" 
-            }
-            analysis["hasEngineStartPattern"] = analyzePowerStateHistory()
-        }
-        
-        analysis["currentIgStatus"] = currentIgStatus
-        analysis["currentAccState"] = currentAccState
-        analysis["lastPowerStateChangeTime"] = lastPowerStateChangeTime
-        
-        return analysis
-    }
-}

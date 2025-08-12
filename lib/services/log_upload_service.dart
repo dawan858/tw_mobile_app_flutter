@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'database_helper.dart';
+import 'logs.dart';
 
 class LogUploadService {
   static final LogUploadService _instance = LogUploadService._internal();
@@ -99,7 +102,7 @@ class LogUploadService {
     if (_deviceImei == null || _deviceImei == 'unknown') {
       await _loadDeviceImei();
     }
-    
+
     // Check if this is a duplicate of the last uploaded ignition log
     if (_lastUploadedIgnitionLog == message) {
       print('⏭️ Skipping duplicate ignition log: ${message.substring(0, message.length > 30 ? 30 : message.length)}...');
@@ -113,6 +116,7 @@ class LogUploadService {
       'log_type': 'Ignition',
       'timestamp': timestamp,
     };
+
     
     _uploadQueue.add(logData);
     _lastUploadedIgnitionLog = message;
@@ -127,10 +131,11 @@ class LogUploadService {
     if (_isUploading || _uploadQueue.isEmpty) {
       return;
     }
-    
+
+
     // Small delay to prevent rapid successive calls
     await Future.delayed(const Duration(milliseconds: 100));
-    
+
     // Double-check after delay
     if (_isUploading || _uploadQueue.isEmpty) {
       return;
@@ -144,7 +149,6 @@ class LogUploadService {
       _uploadQueue.clear();
       
       print('📤 Uploading ${logsToUpload.length} logs to endpoint...');
-      
       for (final logData in logsToUpload) {
         await _uploadSingleLog(logData);
       }
@@ -152,6 +156,15 @@ class LogUploadService {
       print('✅ Successfully uploaded ${logsToUpload.length} logs');
       
     } catch (e) {
+      Fluttertoast.showToast(
+          msg: "❌ Error processing upload queue: $e",
+          toastLength: Toast.LENGTH_SHORT,
+          gravity: ToastGravity.CENTER,
+          timeInSecForIosWeb: 1,
+          backgroundColor: Colors.red,
+          textColor: Colors.white,
+          fontSize: 16.0
+      );
       print('❌ Error processing upload queue: $e');
       // Re-add failed logs to queue for retry
       if (logsToUpload.isNotEmpty) {
@@ -176,12 +189,13 @@ class LogUploadService {
         },
         body: jsonEncode(logData),
       ).timeout(const Duration(seconds: 30));
-      
+      appendLog('📤 :_uploadSingleLog\n $_logEndpoint ${response.body} :::: $logData');
+
+
       print('📤 Response status: ${response.statusCode}');
       print('📤 Response body: ${response.body}');
       
       if (response.statusCode == 200 || response.statusCode == 201) {
-        print('✅ Log uploaded successfully: ${logData['message']?.toString().substring(0, 30)}...');
         return;
       } else {
         throw Exception('HTTP ${response.statusCode}: ${response.body}');
@@ -198,7 +212,6 @@ class LogUploadService {
       } else {
         // Max retries reached, add back to queue
         _uploadQueue.add(logData);
-        print('⚠️ Log added back to queue after max retries: ${logData['message']?.toString().substring(0, 30)}...');
       }
     }
   }

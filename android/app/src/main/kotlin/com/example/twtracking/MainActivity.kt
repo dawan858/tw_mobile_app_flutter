@@ -76,9 +76,9 @@ class MainActivity : FlutterActivity() {
         // Initialize car power manager for sleep monitoring
         Log.d(TAG, "Initializing CarPowerManager...")
         carPowerManager = CarPowerManager(this)
-        carPowerManager.initialize()
+//        carPowerManager.initialize()
         Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
-        
+
         registerTerminationReceiver()
         registerLogUploadReceiver()
         // BackgroundService is auto-started and persistent - no need to start manually
@@ -187,7 +187,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "SERVICE_CHANNEL method called: ${call.method}")
             Log.d(TAG, "CarPowerManager available: ${::carPowerManager.isInitialized}")
-            
+
             when (call.method) {
                 "startService" -> {
                     Log.d(TAG, "Starting GPS tracking service from Flutter")
@@ -283,10 +283,10 @@ class MainActivity : FlutterActivity() {
                 "triggerPowerStateCheck" -> {
                     try {
                         Log.d(TAG, "🔄 Triggering power state check from Flutter service channel")
-                        
-                        // NEW: Use force update method for more reliable igStatus detection
-                        carPowerManager.forceUpdateIgStatus()
-                        
+//
+//                        // NEW: Use force update method for more reliable igStatus detection
+//                        carPowerManager.forceUpdateIgStatus()
+
                         // Trigger BackgroundService to check power state
                         val serviceIntent = Intent(this, BackgroundService::class.java).apply {
                             action = "CHECK_POWER_STATE"
@@ -389,13 +389,13 @@ class MainActivity : FlutterActivity() {
                         Log.d(TAG, "🔍 Getting CarPowerManager status from service channel")
                         val status = carPowerManager.getDetailedStatus()
                         val isProperlyInitialized = carPowerManager.isProperlyInitialized()
-                        
+
                         Log.d(TAG, "✅ CarPowerManager status:")
                         status.forEach { (key, value) ->
                             Log.d(TAG, "   - $key: $value")
                         }
                         Log.d(TAG, "   - isProperlyInitialized: $isProperlyInitialized")
-                        
+
                         result.success(mapOf(
                             "status" to status,
                             "isProperlyInitialized" to isProperlyInitialized
@@ -430,10 +430,10 @@ class MainActivity : FlutterActivity() {
                 "testAccStateDetection" -> {
                     try {
                         Log.d(TAG, "🧪 Testing ACC state detection from Flutter")
-                        
+
                         // Test CarPowerManager
                         carPowerManager.debugPowerStates()
-                        
+
                         // Trigger BackgroundService test
                         val serviceIntent = Intent(this, BackgroundService::class.java).apply {
                             action = "TEST_ACC_STATE_DETECTION"
@@ -481,7 +481,7 @@ class MainActivity : FlutterActivity() {
                         val packageManager = packageManager
                         val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
                         Log.e("MainActivity", "ERROR: Car service available: $carServiceAvailable")
-                        
+
                         // Also try to initialize CarPowerManager
                         if (::carPowerManager.isInitialized) {
                             Log.e("MainActivity", "ERROR: CarPowerManager is initialized, calling test methods")
@@ -490,7 +490,7 @@ class MainActivity : FlutterActivity() {
                         } else {
                             Log.e("MainActivity", "ERROR: CarPowerManager is not initialized")
                         }
-                        
+
                         result.success("Logs forced successfully")
                     } catch (e: Exception) {
                         Log.e("MainActivity", "ERROR: Exception in forceLogs: ${e.message}")
@@ -500,7 +500,7 @@ class MainActivity : FlutterActivity() {
                 "testBwicIgnition" -> {
                     try {
                         Log.e("MainActivity", "ERROR: Testing BWIC ignition detection from Flutter")
-                        
+
                         if (::carPowerManager.isInitialized) {
                             carPowerManager.testBwicIgnitionDetection()
                             result.success("BWIC ignition test completed")
@@ -608,7 +608,7 @@ class MainActivity : FlutterActivity() {
                                 "isProperlyInitialized" to false
                             )
                         }
-                        
+
                         val status = mapOf(
                             "isRunning" to isRunning,
                             "currentIgStatus" to currentIgStatus,
@@ -847,7 +847,7 @@ class MainActivity : FlutterActivity() {
                         Log.d(TAG, "🔄 Triggering power state check from Flutter AVN sleep channel")
                         
                         // NEW: Use force update method for more reliable igStatus detection
-                        carPowerManager.forceUpdateIgStatus()
+//                        carPowerManager.forceUpdateIgStatus()
                         
                         // Trigger BackgroundService to check power state
                         val serviceIntent = Intent(this, BackgroundService::class.java).apply {
@@ -1420,8 +1420,7 @@ class MainActivity : FlutterActivity() {
                         val logType = intent.getStringExtra("logType") ?: "info"
                         val timestamp = intent.getStringExtra("timestamp") ?: ""
                         
-                        Log.d(TAG, "📤 Forwarding ignition log to Flutter: $message")
-                        
+
                         // Forward to Flutter via method channel
                         flutterEngine?.let { engine ->
                             MethodChannel(engine.dartExecutor.binaryMessenger, "log_broadcast_channel").invokeMethod(
@@ -1433,6 +1432,7 @@ class MainActivity : FlutterActivity() {
                                     "timestamp" to timestamp
                                 )
                             )
+                        Log.e(TAG, "📤 Forwarding ignition log to Flutter: $message")
                         }
                     }
                     "UPLOAD_EXCEPTION_LOG" -> {
