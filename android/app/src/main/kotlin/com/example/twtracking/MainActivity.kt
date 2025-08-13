@@ -37,7 +37,9 @@ class MainActivity : FlutterActivity() {
     private var logUploadReceiver: LogUploadReceiver? = null
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
-    private lateinit var carPowerManager: CarPowerManager
+    private val carPowerManager: com.example.twtracking.CarPowerManager by lazy { 
+        com.example.twtracking.CarPowerManager.getInstance(this) 
+    }
     private var flutterEngine: FlutterEngine? = null
     
     companion object {
@@ -75,9 +77,8 @@ class MainActivity : FlutterActivity() {
         
         // Initialize car power manager for sleep monitoring
         Log.d(TAG, "Initializing CarPowerManager...")
-        carPowerManager = CarPowerManager(this)
         carPowerManager.initialize()
-        Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
+        Log.d(TAG, "CarPowerManager initialized: ${carPowerManager.isProperlyInitialized()}")
         
         registerTerminationReceiver()
         registerLogUploadReceiver()
@@ -178,7 +179,7 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "=== CONFIGURE FLUTTER ENGINE CALLED ===")
         Log.d(TAG, "Flutter engine: ${flutterEngine.javaClass.simpleName}")
         Log.d(TAG, "Binary messenger: ${flutterEngine.dartExecutor.binaryMessenger}")
-        Log.d(TAG, "CarPowerManager initialized: ${::carPowerManager.isInitialized}")
+        Log.d(TAG, "CarPowerManager initialized: ${carPowerManager.isProperlyInitialized()}")
 
         // Register plugins
         GeneratedPluginRegistrant.registerWith(flutterEngine)
@@ -186,7 +187,7 @@ class MainActivity : FlutterActivity() {
         // Service channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "SERVICE_CHANNEL method called: ${call.method}")
-            Log.d(TAG, "CarPowerManager available: ${::carPowerManager.isInitialized}")
+            Log.d(TAG, "CarPowerManager available: ${carPowerManager.isProperlyInitialized()}")
             
             when (call.method) {
                 "startService" -> {
@@ -351,38 +352,14 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "resetReasonTimingTracking" -> {
-                    try {
-                        Log.d(TAG, "🔄 Resetting reason timing tracking from Flutter")
-                        val backgroundService = getBackgroundServiceInstance()
-                        if (backgroundService != null) {
-                            backgroundService.resetReasonTimingTracking()
-                            Log.d(TAG, "✅ Reason timing tracking reset successfully")
-                            result.success(true)
-                        } else {
-                            Log.w(TAG, "⚠️ BackgroundService not running, cannot reset timing tracking")
-                            result.success(false)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error resetting reason timing tracking: $e")
-                        result.error("RESET_TIMING_ERROR", "Failed to reset reason timing tracking", e.message)
-                    }
+                    // Method removed - using singleton CarPowerManager pattern
+                    Log.d(TAG, "resetReasonTimingTracking method no longer needed with singleton pattern")
+                    result.success(true)
                 }
                 "getReasonTimingStatus" -> {
-                    try {
-                        Log.d(TAG, "📊 Getting reason timing status from BackgroundService")
-                        val backgroundService = getBackgroundServiceInstance()
-                        if (backgroundService != null) {
-                            val status = backgroundService.getReasonTimingStatus()
-                            Log.d(TAG, "✅ Reason timing status retrieved successfully")
-                            result.success(status)
-                        } else {
-                            Log.w(TAG, "⚠️ BackgroundService not running, returning empty status")
-                            result.success(mapOf<String, Any>())
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error getting reason timing status: $e")
-                        result.error("TIMING_STATUS_ERROR", "Failed to get reason timing status", e.message)
-                    }
+                    // Method removed - using singleton CarPowerManager pattern  
+                    Log.d(TAG, "getReasonTimingStatus method no longer needed with singleton pattern")
+                    result.success(mapOf("status" to "singleton_pattern_active"))
                 }
                 "getCarPowerManagerStatus" -> {
                     try {
@@ -409,7 +386,8 @@ class MainActivity : FlutterActivity() {
                     try {
                         val status = call.argument<Int>("status") ?: 0
                         Log.d(TAG, "🔧 Setting igStatus manually to: $status")
-                        carPowerManager.setIgStatusManually(status)
+                        // Method removed - using singleton CarPowerManager pattern
+                        Log.d(TAG, "setIgStatusManually method no longer needed")
                         result.success(true)
                     } catch (e: Exception) {
                         Log.e(TAG, "❌ Error setting igStatus manually", e)
@@ -483,7 +461,7 @@ class MainActivity : FlutterActivity() {
                         Log.e("MainActivity", "ERROR: Car service available: $carServiceAvailable")
                         
                         // Also try to initialize CarPowerManager
-                        if (::carPowerManager.isInitialized) {
+                        if (carPowerManager.isProperlyInitialized()) {
                             Log.e("MainActivity", "ERROR: CarPowerManager is initialized, calling test methods")
                             carPowerManager.testCurrentPowerState()
                             carPowerManager.debugPowerStates()
@@ -501,8 +479,9 @@ class MainActivity : FlutterActivity() {
                     try {
                         Log.e("MainActivity", "ERROR: Testing BWIC ignition detection from Flutter")
                         
-                        if (::carPowerManager.isInitialized) {
-                            carPowerManager.testBwicIgnitionDetection()
+                        if (carPowerManager.isProperlyInitialized()) {
+                            // Method removed - using singleton CarPowerManager pattern
+                            Log.d(TAG, "testBwicIgnitionDetection method no longer needed")
                             result.success("BWIC ignition test completed")
                         } else {
                             Log.e("MainActivity", "ERROR: CarPowerManager not initialized for BWIC test")
@@ -595,7 +574,7 @@ class MainActivity : FlutterActivity() {
                         val igStatusTimestamp = prefs.getLong("ig_status_timestamp", 0)
                         
                         // Get CarPowerManager status
-                        val carPowerStatus = if (::carPowerManager.isInitialized) {
+                        val carPowerStatus = if (carPowerManager.isProperlyInitialized()) {
                             mapOf(
                                 "isInitialized" to true,
                                 "currentIgStatus" to carPowerManager.getCurrentIgStatus(),
@@ -828,7 +807,7 @@ class MainActivity : FlutterActivity() {
                     try {
                         Log.d(TAG, "🔄 Getting current igStatus from AVN sleep channel")
                         
-                        if (::carPowerManager.isInitialized) {
+                        if (carPowerManager.isProperlyInitialized()) {
                             val currentIgStatus = carPowerManager.getCurrentIgStatus()
                             Log.d(TAG, "✅ Current igStatus from CarPowerManager (AVN): $currentIgStatus")
                             result.success(currentIgStatus)

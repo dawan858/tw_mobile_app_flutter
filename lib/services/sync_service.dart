@@ -368,8 +368,8 @@ class SyncService {
     print('🔄 Starting full sync of all pending data...');
     
     try {
-      // Get filtered unsynced data based on reason timing rules
-      final allUnsyncedData = await _getFilteredUnsyncedData(limit: 1000); // Get filtered data
+      // Get all unsynced data for full sync
+      final allUnsyncedData = await _dbHelper.getUnsyncedData(limit: 1000);
       
       if (allUnsyncedData.isEmpty) {
         print('ℹ️ No pending data to sync');
@@ -682,11 +682,9 @@ class SyncService {
         }
       }
 
-      // NEW: Use filtered data based on reason timing rules
+      // SIMPLIFIED: Use single efficient batch retrieval
       final adaptiveBatchSize = _getAdaptiveBatchSize();
-      final unsyncedData = _isServerDown 
-          ? await _getPrioritizedUnsyncedData(limit: adaptiveBatchSize)
-          : await _getFilteredUnsyncedData(limit: adaptiveBatchSize);
+      final unsyncedData = await _getUnsyncedDataForBatch(limit: adaptiveBatchSize);
           
       if (unsyncedData.isEmpty) {
         print('No unsynced data to upload');
@@ -694,130 +692,16 @@ class SyncService {
       }
 
       print('Found ${unsyncedData.length} records to sync (batch size: $adaptiveBatchSize)');
-      final List<int> syncedIds = [];
-      int successCount = 0;
-      int failureCount = 0;
-
-      for (var data in unsyncedData) {
-        try {
-          // Remove the id field from data before sending
-          final dataToSend = Map<String, dynamic>.from(data);
-          dataToSend.remove('id');
-          dataToSend.remove('sync_status');
-          
-          // Convert createdAt to createAt (camelCase) and format properly
-          if (dataToSend.containsKey('created_at')) {
-            DateTime createdAtDateTime;
-            
-            // Handle both int (milliseconds) and String (formatted) cases
-            if (dataToSend['created_at'] is int) {
-              final createdAtMillis = dataToSend['created_at'] as int;
-              createdAtDateTime = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
-            } else if (dataToSend['created_at'] is String) {
-              // If it's already a formatted string, try to parse it
-              try {
-                createdAtDateTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(dataToSend['created_at'] as String);
-              } catch (e) {
-                // If parsing fails, use current time as fallback
-                print('Warning: Could not parse created_at string: ${dataToSend['created_at']}, using current time');
-                createdAtDateTime = DateTime.now();
-              }
-            } else {
-              // Fallback to current time
-              print('Warning: created_at is neither int nor String, using current time');
-              createdAtDateTime = DateTime.now();
-            }
-            
-            // Remove the snake_case key and add camelCase key
-            dataToSend.remove('created_at');
-            dataToSend['createAt'] = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").format(createdAtDateTime);
-          }
-
-          print('=== SENDING DATA TO SERVER ===');
-          print('Server URL: $serverUrl');
-          print('Record ID: ${data['id']}');
-          print('igStatus: ${dataToSend['igStatus']}');
-          print('Data to send: ${jsonEncode(dataToSend)}');
-
-          bool syncSuccess = false;
-          // NEW: Adaptive retry logic based on server status
-          final maxRetriesForRecord = _isServerDown ? 2 : maxRetries; // Fewer retries when server is down
-          
-          for (int retry = 0; retry < maxRetriesForRecord; retry++) {
-            try {
-              print('Attempt ${retry + 1}/$maxRetriesForRecord for record ${data['id']} (Phase: $_currentPhase)');
-              
-              final response = await http.post(
-                Uri.parse(serverUrl),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'User-Agent': 'TrackingWorld-Mobile-App',
-                },
-                body: jsonEncode(dataToSend),
-              ).timeout(const Duration(seconds: 30));
-
-              print('Server response status: ${response.statusCode}');
-              print('Server response body: ${response.body}');
-              print('Server response headers: ${response.headers}');
-
-              if (response.statusCode == 200 || response.statusCode == 201) {
-                syncedIds.add(data['id']);
-                successCount++;
-                syncSuccess = true;
-                print('✅ Successfully synced record ID: ${data['id']} with igStatus: ${dataToSend['igStatus']}');
-                break;
-              } else {
-                print('❌ Server error for record ${data['id']}: ${response.statusCode}');
-                print('Error response body: ${response.body}');
-                if (retry == maxRetriesForRecord - 1) {
-                  failureCount++;
-                  await _dbHelper.insertExceptionLog(
-                    main: 'Sync Server Error',
-                    details: 'Record ID: ${data['id']}, Status: ${response.statusCode}, Body: ${response.body}, Phase: $_currentPhase',
-                  );
-                }
-              }
-            } catch (e) {
-              print('❌ Network error for record ${data['id']} (attempt ${retry + 1}): $e');
-              if (retry == maxRetriesForRecord - 1) {
-                failureCount++;
-                await _dbHelper.insertExceptionLog(
-                  main: 'Sync Network Error',
-                  details: 'Record ID: ${data['id']}, Error: $e, Phase: $_currentPhase',
-                );
-              }
-              
-              // NEW: Adaptive delay based on phase
-              if (retry < maxRetriesForRecord - 1) {
-                final delay = _isServerDown ? Duration(seconds: 5) : Duration(seconds: (retry + 1) * 2);
-                await Future.delayed(delay);
-              }
-            }
-          }
-
-          // NEW: Continue processing other records even if this one fails
-          if (!syncSuccess) {
-            print('⚠️ Record ${data['id']} failed to sync, continuing with next record...');
-            // Don't break - continue with other records
-          }
-
-        } catch (e) {
-          print('Unexpected error syncing record ${data['id']}: $e');
-          failureCount++;
-          await _dbHelper.insertExceptionLog(
-            main: 'Sync Unexpected Error',
-            details: 'Record ID: ${data['id']}, Error: $e',
-          );
-          break; // Stop on unexpected errors
-        }
-      }
-
-      // Mark successfully synced records
-      if (syncedIds.isNotEmpty) {
-        await _dbHelper.markAsSynced(syncedIds);
-        print('Marked ${syncedIds.length} records as synced');
-        
-        // Clean up old synced data periodically
+      
+      // SIMPLIFIED: Use existing batch sync method
+      final batchResult = await _syncBatch(unsyncedData);
+      final successCount = batchResult['success'] ?? 0;
+      final failureCount = batchResult['failed'] ?? 0;
+      
+      print('Batch sync completed: $successCount successful, $failureCount failed');
+      
+      // Clean up old synced data periodically
+      if (successCount > 0) {
         await _dbHelper.deleteOldSyncedData(keepRecentCount: 100);
       }
 
@@ -1015,11 +899,6 @@ class SyncService {
       'monitoringInterval': '${_serverMonitoringInterval.inSeconds} seconds',
       'normalSyncInterval': '${_normalSyncInterval.inMinutes} minutes',
       // NEW: Reason timing information
-      'idleConsecutiveTimeout': '${_idleConsecutiveTimeout.inSeconds} seconds',
-      'moveConsecutiveTimeout': '${_moveConsecutiveTimeout.inSeconds} seconds',
-      'lastIdleSyncTime': _lastIdleSyncTime?.toIso8601String(),
-      'lastMoveSyncTime': _lastMoveSyncTime?.toIso8601String(),
-      'lastSyncedReason': _lastSyncedReason,
       // NEW: Native timing information
       'nativeTimingStatus': await getNativeReasonTimingStatus(),
     };
@@ -1111,20 +990,6 @@ class SyncService {
     print('✅ Server down detection forced');
   }
 
-  // NEW: Reset reason timing tracking for testing
-  Future<void> resetReasonTimingTracking() async {
-    print('🔄 Resetting reason timing tracking...');
-    _lastIdleSyncTime = null;
-    _lastMoveSyncTime = null;
-    _lastSyncedReason = null;
-    
-    await _dbHelper.insertExceptionLog(
-      main: 'Reset Reason Timing',
-      details: 'Reason timing tracking reset for testing purposes',
-    );
-    
-    print('✅ Reason timing tracking reset');
-  }
 
   // NEW: Test reason timing functionality
   Future<Map<String, dynamic>> testReasonTimingFunctionality() async {
@@ -1133,11 +998,8 @@ class SyncService {
     try {
       print('🧪 === TESTING REASON TIMING FUNCTIONALITY ===');
       
-      // Test 1: Check current timing settings
-      results['idleTimeout'] = '${_idleConsecutiveTimeout.inSeconds} seconds';
-      results['moveTimeout'] = '${_moveConsecutiveTimeout.inSeconds} seconds';
-      results['lastIdleSync'] = _lastIdleSyncTime?.toIso8601String();
-      results['lastMoveSync'] = _lastMoveSyncTime?.toIso8601String();
+      // Test 1: Check current timing settings from native service
+      results['timingHandledByNativeService'] = true;
       
       // Test 2: Get native service timing status
       try {
@@ -1162,10 +1024,10 @@ class SyncService {
       }
       results['reasonDistribution'] = reasons;
       
-      // Test 5: Test filtered data
-      final filteredData = await _getFilteredUnsyncedData(limit: 5);
-      results['filteredDataCount'] = filteredData.length;
-      results['filteredReasons'] = filteredData.map((r) => r['reason']).toList();
+      // Test 5: Test sample unsynced data
+      final sampleData = await _dbHelper.getUnsyncedData(limit: 5);
+      results['sampleDataCount'] = sampleData.length;
+      results['sampleReasons'] = sampleData.map((r) => r['reason']).toList();
       
       print('✅ Reason timing functionality test completed');
       
@@ -1494,166 +1356,36 @@ class SyncService {
     }
   }
 
-  // NEW: Reason-based timing checks
-  static const Duration _idleConsecutiveTimeout = Duration(seconds: 120); // 120 seconds for consecutive idle
-  static const Duration _moveConsecutiveTimeout = Duration(seconds: 30); // 30 seconds for consecutive move
-  
-  // Track last sync times for different reasons
-  DateTime? _lastIdleSyncTime;
-  DateTime? _lastMoveSyncTime;
-  String? _lastSyncedReason;
 
-  // NEW: Check if we should sync based on reason timing rules
-  Future<bool> _shouldSyncBasedOnReason(String currentReason) async {
-    try {
-      // Get the most recent unsynced record with the same reason
-      final db = await _dbHelper.database;
-      final recentRecords = await db.rawQuery('''
-        SELECT reason, createAt FROM location_data 
-        WHERE sync_status = 0 AND reason = ? 
-        ORDER BY createAt DESC 
-        LIMIT 2
-      ''', [currentReason]);
-      
-      if (recentRecords.length < 2) {
-        // Not enough records to check for consecutive reasons
-        print('📊 Not enough records for consecutive check: ${recentRecords.length} records with reason: $currentReason');
-        return true; // Allow sync
-      }
-      
-      // Check if we have consecutive records with the same reason
-      final firstRecord = recentRecords[0];
-      final secondRecord = recentRecords[1];
-      
-      if (firstRecord['reason'] == secondRecord['reason']) {
-        // We have consecutive records with the same reason
-        print('📊 Found consecutive $currentReason records');
-        
-        // Parse the timestamps
-        DateTime? firstTime;
-        DateTime? secondTime;
-        
-        try {
-          firstTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(firstRecord['createAt'] as String);
-          secondTime = DateFormat("dd/MM/yyyy HH:mm:ss.SSS").parse(secondRecord['createAt'] as String);
-        } catch (e) {
-          print('❌ Error parsing timestamps: $e');
-          return true; // Allow sync if we can't parse timestamps
-        }
-        
-        final timeDifference = firstTime.difference(secondTime);
-        print('📊 Time difference between consecutive $currentReason records: ${timeDifference.inSeconds} seconds');
-        
-        // Apply timing rules based on reason
-        if (currentReason == 'Idle') {
-          if (timeDifference.inSeconds >= _idleConsecutiveTimeout.inSeconds) {
-            print('✅ Idle consecutive timeout reached (${_idleConsecutiveTimeout.inSeconds}s), allowing sync');
-            _lastIdleSyncTime = DateTime.now();
-            return true;
-          } else {
-            print('⏳ Idle consecutive timeout not reached yet (${timeDifference.inSeconds}s < ${_idleConsecutiveTimeout.inSeconds}s), skipping sync');
-            return false;
-          }
-        } else if (currentReason == 'Move') {
-          if (timeDifference.inSeconds >= _moveConsecutiveTimeout.inSeconds) {
-            print('✅ Move consecutive timeout reached (${_moveConsecutiveTimeout.inSeconds}s), allowing sync');
-            _lastMoveSyncTime = DateTime.now();
-            return true;
-          } else {
-            print('⏳ Move consecutive timeout not reached yet (${timeDifference.inSeconds}s < ${_moveConsecutiveTimeout.inSeconds}s), skipping sync');
-            return false;
-          }
-        }
-      }
-      
-      // Different reasons or not enough consecutive records
-      print('📊 Different reasons or not consecutive, allowing sync');
-      return true;
-      
-    } catch (e) {
-      print('❌ Error checking reason timing: $e');
-      return true; // Allow sync on error
-    }
-  }
 
-  // NEW: Get filtered unsynced data based on reason timing rules
-  Future<List<Map<String, dynamic>>> _getFilteredUnsyncedData({int limit = 50}) async {
+  // SIMPLIFIED: Get unsynced data with single optimized query
+  Future<List<Map<String, dynamic>>> _getUnsyncedDataForBatch({int limit = 50}) async {
     try {
       final db = await _dbHelper.database;
       
-      // Get all unsynced data
-      final allUnsyncedData = await db.query(
-        'location_data',
-        where: 'sync_status = ?',
-        whereArgs: [0],
-        orderBy: 'createAt ASC',
-        limit: limit * 2, // Get more data to filter from
-      );
+      // Single optimized query - prioritize critical events, then get others
+      final unsyncedData = await db.rawQuery('''
+        SELECT * FROM location_data 
+        WHERE sync_status = 0 
+        ORDER BY 
+          CASE 
+            WHEN reason IN ('Ignition On', 'Ignition Off') THEN 1
+            WHEN reason = 'Distance' THEN 2
+            WHEN reason = 'Turn' THEN 3
+            WHEN reason = 'Over Speeding' THEN 4
+            ELSE 5
+          END,
+          createAt ASC
+        LIMIT ?
+      ''', [limit]);
       
-      if (allUnsyncedData.isEmpty) {
-        return [];
-      }
-      
-      final filteredData = <Map<String, dynamic>>[];
-      
-      for (final record in allUnsyncedData) {
-        final reason = record['reason'] as String? ?? 'Unknown';
-        
-        // Skip reason-based timing checks for critical events
-        if (reason == 'Ignition On' || reason == 'Ignition Off' || reason == 'Distance') {
-          filteredData.add(record);
-          continue;
-        }
-        
-        // Apply timing rules for Idle and Move reasons
-        if (reason == 'Idle' || reason == 'Move') {
-          final shouldSync = await _shouldSyncBasedOnReason(reason);
-          if (shouldSync) {
-            filteredData.add(record);
-          } else {
-            print('⏭️ Skipping $reason record due to timing rule');
-          }
-        } else {
-          // For other reasons (Timer, etc.), allow sync
-          filteredData.add(record);
-        }
-        
-        // Stop if we have enough filtered data
-        if (filteredData.length >= limit) {
-          break;
-        }
-      }
-      
-      print('📊 Filtered data: ${filteredData.length} records (from ${allUnsyncedData.length} total)');
-      return filteredData;
+      print('📊 Retrieved ${unsyncedData.length} unsynced records for batch sync');
+      return unsyncedData;
       
     } catch (e) {
-      print('❌ Error getting filtered unsynced data: $e');
-      // Fallback to regular unsynced data
+      print('❌ Error getting unsynced data: $e');
       return await _dbHelper.getUnsyncedData(limit: limit);
     }
   }
 
-  // NEW: Check if we should sync based on last sync time for specific reasons
-  bool _shouldSyncBasedOnLastSyncTime(String reason) {
-    final now = DateTime.now();
-    
-    if (reason == 'Idle' && _lastIdleSyncTime != null) {
-      final timeSinceLastSync = now.difference(_lastIdleSyncTime!);
-      if (timeSinceLastSync < _idleConsecutiveTimeout) {
-        print('⏳ Idle sync skipped - last sync was ${timeSinceLastSync.inSeconds}s ago (need ${_idleConsecutiveTimeout.inSeconds}s)');
-        return false;
-      }
-    }
-    
-    if (reason == 'Move' && _lastMoveSyncTime != null) {
-      final timeSinceLastSync = now.difference(_lastMoveSyncTime!);
-      if (timeSinceLastSync < _moveConsecutiveTimeout) {
-        print('⏳ Move sync skipped - last sync was ${timeSinceLastSync.inSeconds}s ago (need ${_moveConsecutiveTimeout.inSeconds}s)');
-        return false;
-      }
-    }
-    
-    return true;
-  }
 }

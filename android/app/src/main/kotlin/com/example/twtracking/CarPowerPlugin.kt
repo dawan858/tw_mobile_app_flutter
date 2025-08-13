@@ -12,7 +12,7 @@ class CarPowerPlugin(
     private val context: Context,
     private val messenger: BinaryMessenger
 ) : MethodCallHandler {
-    private val carPowerManager = CarPowerManager(context)
+    private val carPowerManager = com.example.twtracking.CarPowerManager.getInstance(context)
     private val channel = MethodChannel(messenger, CHANNEL_NAME)
 
     companion object {
