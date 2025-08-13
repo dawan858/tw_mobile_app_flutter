@@ -81,16 +81,16 @@ class SyncService {
       final retryCounter = prefs.getInt('flutter.retryCounter') ?? 10;
       _batchSize = (retryCounter / 2).round().clamp(10, 100); // Use half of retry counter as batch size
       
-      print('🔄 Sync configuration loaded: interval=${_syncIntervalSeconds}s, batchSize=$_batchSize, normalInterval=${_normalSyncInterval.inSeconds}s');
+      // Sync configuration loaded
     } catch (e) {
-      print('❌ Error loading sync configuration: $e');
+      // Error loading sync configuration
     }
   }
 
   void _initConnectivityListener() {
     _connectivity.onConnectivityChanged.listen((ConnectivityResult result) async {
       if (result != ConnectivityResult.none) {
-        print('Network connection restored, starting sync...');
+        // Network connection restored
         
         // Check if server is actually reachable after network restoration
         final hasInternet = await _hasInternetConnection();
@@ -104,9 +104,9 @@ class SyncService {
                 details: 'Data is synced with the server',
               );
               _connectionRestoredLogged = true;
-              print('✅ Connection restored - data is synced with the server');
+              // Connection restored - data synced
             } else {
-              print('✅ Connection already restored, skipping duplicate log');
+              // Connection already restored
             }
           } else {
             // Log server not responding even with internet
@@ -114,7 +114,7 @@ class SyncService {
               main: 'Server Not Responding',
               details: 'Server down - network available but server unreachable',
             );
-            print('❌ Server not responding - server down');
+            // Server not responding
           }
         } else {
           // Log connection error - no internet
@@ -122,12 +122,12 @@ class SyncService {
             main: 'Connection Error',
             details: 'Unit is not connected to server - no internet connection',
           );
-          print('❌ Connection error - unit is not connected to server');
+          // Connection error
         }
         
         _startSync();
       } else {
-        print('Network connection lost');
+        // Network connection lost
         // Reset connection restored flag when network is lost
         _connectionRestoredLogged = false;
         // Log connection error when network is lost

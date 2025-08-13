@@ -132,7 +132,7 @@ class BackgroundService : Service() {
     // Timing thresholds for different reasons
     private val idleTimeout: Long = 120000L // 120 seconds for Idle
     private val moveTimeout: Long = 30000L // 30 seconds for Move
-    private val turnTimeout: Long = 30000L // 30 seconds for Turn
+    private val turnTimeout: Long = 15000L // 15 seconds for Turn
     private val overSpeedingTimeout: Long = 45000L // 45 seconds for Over Speeding
 
     private val accStateListener: (Boolean) -> Unit = { isAccOn ->
@@ -2074,19 +2074,13 @@ class BackgroundService : Service() {
         
         if (igStatus == expectedIgStatus) {
             // Reason and igStatus match - this is a valid ignition event
-            Log.e(TAG, "ERROR: ✅ VALID IGNITION EVENT - Reason: $reason, igStatus: $igStatus")
-            Log.e(TAG, "ERROR:    - Reason and igStatus match perfectly")
-            Log.e(TAG, "ERROR:    - No timing restrictions for valid ignition events")
+            // Valid ignition event - allowing save
             return true
         } else {
             // Reason and igStatus mismatch - CORRECT THE REASON based on actual igStatus
             val correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
             
-            Log.e(TAG, "ERROR: 🚨 IGNITION EVENT MISMATCH DETECTED!")
-            Log.e(TAG, "ERROR:    - Original Reason: $reason (expects igStatus: $expectedIgStatus)")
-            Log.e(TAG, "ERROR:    - Current igStatus: $igStatus")
-            Log.e(TAG, "ERROR:    - CORRECTED Reason: $correctedReason")
-            Log.e(TAG, "ERROR:    - This suggests a missed ignition state change")
+            Log.e(TAG, "IGNITION MISMATCH: Reason $reason expects igStatus $expectedIgStatus but current is $igStatus")
             
             
             // CRITICAL: Update the reason to match the actual igStatus
@@ -2103,35 +2097,25 @@ class BackgroundService : Service() {
                  // ENHANCED: Additional safety check for non-ignition events
          // If reason is "Ignition Off" but igStatus is 1, this indicates a missed ignition ON event
          if (reason == "Ignition Off" && igStatus == 1) {
-             Log.e(TAG, "ERROR: 🚨 CRITICAL IGNITION STATE MISMATCH!")
-             Log.e(TAG, "ERROR:    - Reason: $reason (expects igStatus: 0)")
-             Log.e(TAG, "ERROR:    - Current igStatus: $igStatus (indicates ignition is ON)")
-             Log.e(TAG, "ERROR:    - This suggests ignition ON was missed - forcing data transmission")
-             Log.e(TAG, "ERROR:    - Data will be sent to prevent missing ignition events")
-             
+             Log.e(TAG, "IGNITION MISMATCH: Off reason but igStatus is 1 - forcing transmission")
              return true
          }
          
          // If reason is "Ignition On" but igStatus is 0, this indicates a missed ignition OFF event
          if (reason == "Ignition On" && igStatus == 0) {
-             Log.e(TAG, "ERROR: 🚨 CRITICAL IGNITION STATE MISMATCH!")
-             Log.e(TAG, "ERROR:    - Reason: $reason (expects igStatus: 1)")
-             Log.e(TAG, "ERROR:    - Current igStatus: $igStatus (indicates ignition is OFF)")
-             Log.e(TAG, "ERROR:    - This suggests ignition OFF was missed - forcing data transmission")
-             Log.e(TAG, "ERROR:    - Data will be sent to prevent missing ignition events")
-             
+             Log.e(TAG, "IGNITION MISMATCH: On reason but igStatus is 0 - forcing transmission")
              return true
          }
         
         // Always save critical events (except Over Speeding which has timing rules)
         if (reason == "Distance" || reason == "Turn") {
-            Log.d(TAG, "✅ Allowing save for critical reason: $reason")
+            // Allowing save for critical reason
             return true
         }
         
         // Immediate reasons (no timing restrictions)
         if (reason == "Ignition On" || reason == "Ignition Off" || reason == "Distance") {
-            Log.d(TAG, "✅ Allowing immediate save for critical reason: $reason")
+            // Allowing immediate save for critical reason
             return true
         }
         
@@ -2143,11 +2127,11 @@ class BackgroundService : Service() {
                 if (lastIdleSyncTime > 0) {
                     val timeSinceLastSync = currentTime - lastIdleSyncTime
                     if (timeSinceLastSync < idleTimeout) {
-                        Log.d(TAG, "⏳ Skipping Idle save - last sync was ${timeSinceLastSync / 1000}s ago (need ${idleTimeout / 1000}s)")
+                        // Skipping Idle save due to timing constraint
                         return false
                     }
                 }
-                Log.d(TAG, "✅ Allowing Idle save - ${idleTimeout / 1000}s threshold met")
+                // Allowing Idle save - threshold met
                 lastIdleSyncTime = currentTime
                 return true
             }
@@ -2156,11 +2140,11 @@ class BackgroundService : Service() {
                 if (lastMoveSyncTime > 0) {
                     val timeSinceLastSync = currentTime - lastMoveSyncTime
                     if (timeSinceLastSync < moveTimeout) {
-                        Log.d(TAG, "⏳ Skipping Move save - last sync was ${timeSinceLastSync / 1000}s ago (need ${moveTimeout / 1000}s)")
+                        // Skipping Move save due to timing constraint
                         return false
                     }
                 }
-                Log.d(TAG, "✅ Allowing Move save - ${moveTimeout / 1000}s threshold met")
+                // Allowing Move save - threshold met
                 lastMoveSyncTime = currentTime
                 return true
             }
@@ -2169,11 +2153,11 @@ class BackgroundService : Service() {
                 if (lastTurnSyncTime > 0) {
                     val timeSinceLastSync = currentTime - lastTurnSyncTime
                     if (timeSinceLastSync < turnTimeout) {
-                        Log.d(TAG, "⏳ Skipping Turn save - last sync was ${timeSinceLastSync / 1000}s ago (need ${turnTimeout / 1000}s)")
+                        // Skipping Turn save due to timing constraint
                         return false
                     }
                 }
-                Log.d(TAG, "✅ Allowing Turn save - ${turnTimeout / 1000}s threshold met")
+                // Allowing Turn save - threshold met
                 lastTurnSyncTime = currentTime
                 return true
             }
@@ -2182,17 +2166,17 @@ class BackgroundService : Service() {
                 if (lastOverSpeedingSyncTime > 0) {
                     val timeSinceLastSync = currentTime - lastOverSpeedingSyncTime
                     if (timeSinceLastSync < overSpeedingTimeout) {
-                        Log.d(TAG, "⏳ Skipping Over Speeding save - last sync was ${timeSinceLastSync / 1000}s ago (need ${overSpeedingTimeout / 1000}s)")
+                        // Skipping Over Speeding save due to timing constraint
                         return false
                     }
                 }
-                Log.d(TAG, "✅ Allowing Over Speeding save - ${overSpeedingTimeout / 1000}s threshold met")
+                // Allowing Over Speeding save - threshold met
                 lastOverSpeedingSyncTime = currentTime
                 return true
             }
             
             else -> {
-                Log.d(TAG, "✅ Allowing save for other reason: $reason")
+                // Allowing save for other reason
                 return true
             }
         }
@@ -2326,9 +2310,6 @@ class BackgroundService : Service() {
                 if (igStatus != expectedIgStatus) {
                     // Correct the reason to match the actual igStatus
                     correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
-                    Log.e(TAG, "ERROR: 🔧 REASON CORRECTED IN saveLocationDataWithReason:")
-                    Log.e(TAG, "ERROR:    - Original: $reason → Corrected: $correctedReason")
-                    Log.e(TAG, "ERROR:    - igStatus: $igStatus (actual state)")
                 }
             }
             
@@ -2339,23 +2320,19 @@ class BackgroundService : Service() {
                 
                 // Force correct ignition reason based on actual igStatus
                 correctedReason = if (igStatus == 1) "Ignition On" else "Ignition Off"
-                Log.e(TAG, "ERROR: 🔧 FORCED IGNITION REASON CORRECTION:")
-                Log.e(TAG, "ERROR:    - Original reason: $reason (contains ignition reference)")
-                Log.e(TAG, "ERROR:    - Forced correction: $correctedReason (based on igStatus: $igStatus)")
-                Log.e(TAG, "ERROR:    - This ensures ignition state consistency")
             }
             
             // Data is always transmitted when ACC is ON (igStatus == 1)
             if (igStatus == 0 && correctedReason != "Ignition Off") {
-                Log.d(TAG, "Ignition is OFF - skipping data transmission (except for Ignition Off reason)")
+                // Ignition OFF - skipping transmission except for Ignition Off
                 return
             }
 
             // PRIORITY 2: After ignition reason correction, apply normal timing rules for all reasons
             // This ensures other reasons (Idle, Move, Turn, Over Speeding, Distance) follow their configs
             if (!shouldSaveDataBasedOnReason(correctedReason)) {
-                Log.d(TAG, "⏭️ Skipping save for corrected reason: $correctedReason (timing rule applied)")
-                Log.d(TAG, "📋 Note: Reason corrected to match igStatus, but timing rule prevents save")
+                // Skipping save due to timing rule
+                // Reason corrected but timing prevents save
                 return
             }
 
@@ -2368,7 +2345,7 @@ class BackgroundService : Service() {
             // Allow saving with IMEI = "unknown" (buffer until IMEI is available)
             val currentIgStatus = this.igStatus
             
-            Log.d(TAG, "💾 Saving location data with reason: $correctedReason, igStatus: $currentIgStatus")
+            // Saving location data
             if (reason != correctedReason) {
                 Log.e(TAG, "ERROR: 📝 FINAL REASON CORRECTION:")
                 Log.e(TAG, "ERROR:    - Original reason: $reason")
@@ -2401,9 +2378,9 @@ class BackgroundService : Service() {
             val db = dbHelper.writableDatabase
             val id = db.insert("location_data", null, values)
             
-            Log.e(TAG, "ERROR: 💾 SAVED LOCATION DATA - ID: $id, IMEI: $imei, Reason: $correctedReason, Speed: ${String.format("%.1f", fixedSpeed)} km/h")
+            Log.i(TAG, "SAVED: ID=$id, IMEI=$imei, Reason=$correctedReason, Speed=${String.format("%.1f", fixedSpeed)}km/h, igStatus=$currentIgStatus")
             if (reason != correctedReason) {
-                Log.e(TAG, "ERROR: 📝 REASON WAS CORRECTED: $reason → $correctedReason (igStatus: $currentIgStatus)")
+                Log.w(TAG, "REASON CORRECTED: $reason → $correctedReason (igStatus: $currentIgStatus)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "ERROR: Exception in saveLocationData: ${e.message}")
