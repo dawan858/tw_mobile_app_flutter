@@ -42,11 +42,18 @@ class CarPowerManager private constructor(private val context: Context) {
         private const val POWER_STATE_HIBERNATION_EXIT = 13
     }
 
+    // Single Car instance managed by singleton
+    @Volatile
     private var car: Car? = null
+    
+    // Single CarPowerManager instance derived from car
+    @Volatile
     private var carPowerManager: bw.car.power.CarPowerManager? = null
+    
     private var powerStateListener: bw.car.power.CarPowerManager.CarPowerStateListener? = null
     private var isConnected = false
     private var isInitialized = false
+    private var isCarCreated = false
     private var accStateCallback: ((Boolean) -> Unit)? = null
     private var sleepStateCallback: ((Boolean) -> Unit)? = null
     private var ignitionLogCallback: ((String, String, String) -> Unit)? = null
@@ -61,9 +68,38 @@ class CarPowerManager private constructor(private val context: Context) {
             return
         }
 
-        try {
-            Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER ===")
+        synchronized(this) {
+            if (isInitialized) return // Double-check locking
             
+            try {
+                Log.d(TAG, "=== INITIALIZING CAR POWER MANAGER (SINGLE INSTANCE) ===")
+                
+                // Create Car instance only once
+                if (car == null && !isCarCreated) {
+                    createCarInstance()
+                }
+                
+                // If car creation failed, try fallback
+                if (car == null) {
+                    Log.w(TAG, "Car instance is null - using fallback mode")
+                    tryFallbackInitialization()
+                    return
+                }
+                
+                // Connect to car service if not already connected
+                if (!isConnected) {
+                    connectToCarService()
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize CarPowerManager", e)
+                tryFallbackInitialization()
+            }
+        }
+    }
+    
+    private fun createCarInstance() {
+        try {
             // Check if car service is available
             val packageManager = context.packageManager
             val carServiceAvailable = packageManager.hasSystemFeature("android.hardware.type.automotive")
@@ -71,42 +107,61 @@ class CarPowerManager private constructor(private val context: Context) {
             val isAutomotiveDevice = carServiceAvailable || isBwicDevice
             
             if (!isAutomotiveDevice) {
-                Log.w(TAG, "Car service not available - using fallback mode")
-                tryFallbackInitialization()
+                Log.w(TAG, "Car service not available")
+                isCarCreated = true // Mark as attempted
                 return
             }
             
-            car = Car.createCar(context, object : android.content.ServiceConnection {
-                override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
-                    try {
-                        Log.d(TAG, "Car service connected successfully")
+            Log.d(TAG, "Creating single Car instance...")
+            car = Car.createCar(context, createServiceConnection())
+            isCarCreated = true
+            Log.d(TAG, "Car instance created successfully")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create Car instance", e)
+            isCarCreated = true // Mark as attempted even on failure
+        }
+    }
+    
+    private fun createServiceConnection(): android.content.ServiceConnection {
+        return object : android.content.ServiceConnection {
+            override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
+                try {
+                    Log.d(TAG, "Car service connected successfully")
+                    
+                    // Get CarPowerManager from existing car instance
+                    if (carPowerManager == null) {
+                        carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as? bw.car.power.CarPowerManager
+                        Log.d(TAG, "CarPowerManager instance obtained from Car")
+                    }
+                    
+                    if (carPowerManager != null) {
+                        Log.d(TAG, "Car power manager obtained successfully")
+                        isConnected = true
                         
-                        carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as bw.car.power.CarPowerManager
-                        
-                        if (carPowerManager != null) {
-                            Log.d(TAG, "Car power manager obtained successfully")
-                            isConnected = true
-                            
-                            mainHandler.post {
-                                setupPowerStateListener()
-                            }
-                        } else {
-                            Log.e(TAG, "Failed to get car power manager - null returned")
-                            tryFallbackInitialization()
+                        mainHandler.post {
+                            setupPowerStateListener()
                         }
-                        
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error getting car power manager", e)
+                    } else {
+                        Log.e(TAG, "Failed to get car power manager - null returned")
                         tryFallbackInitialization()
                     }
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error getting car power manager", e)
+                    tryFallbackInitialization()
                 }
+            }
 
-                override fun onServiceDisconnected(name: android.content.ComponentName?) {
-                    Log.w(TAG, "Car service disconnected")
-                    disconnect()
-                }
-            })
-            
+            override fun onServiceDisconnected(name: android.content.ComponentName?) {
+                Log.w(TAG, "Car service disconnected")
+                disconnect()
+            }
+        }
+    }
+    
+    private fun connectToCarService() {
+        try {
             Log.d(TAG, "Connecting to car service...")
             car?.connect()
             
@@ -119,7 +174,7 @@ class CarPowerManager private constructor(private val context: Context) {
             }, 3000)
             
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize CarPowerManager", e)
+            Log.e(TAG, "Failed to connect to car service", e)
             tryFallbackInitialization()
         }
     }
@@ -215,43 +270,58 @@ class CarPowerManager private constructor(private val context: Context) {
                 Log.d(TAG, "Using BWIC car framework for BWIC device")
                 
                 try {
-                    car = Car.createCar(context, object : android.content.ServiceConnection {
-                        override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
-                            try {
-                                Log.d(TAG, "BWIC car service connected in fallback")
-                                
-                                carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as bw.car.power.CarPowerManager
-                                
-                                if (carPowerManager != null) {
-                                    Log.d(TAG, "BWIC car power manager obtained successfully")
-                                    isConnected = true
+                    // Only create new Car instance if current one is null
+                    if (car == null) {
+                        Log.d(TAG, "Creating fallback Car instance for BWIC")
+                        car = Car.createCar(context, object : android.content.ServiceConnection {
+                            override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
+                                try {
+                                    Log.d(TAG, "BWIC car service connected in fallback")
                                     
-                                    val powerState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
-                                    val isAccOn = isPowerStateAccOn(powerState)
-                                    currentAccState = isAccOn
-                                    currentIgStatus = if (isAccOn) 1 else 0
+                                    // Use existing carPowerManager or create new one
+                                    if (carPowerManager == null) {
+                                        carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as? bw.car.power.CarPowerManager
+                                        Log.d(TAG, "BWIC CarPowerManager instance created")
+                                    }
                                     
-                                    Log.d(TAG, "BWIC fallback - power state: $powerState, ACC ON: $isAccOn, igStatus: $currentIgStatus")
+                                    if (carPowerManager != null) {
+                                        Log.d(TAG, "BWIC car power manager obtained successfully")
+                                        isConnected = true
+                                        
+                                        val powerState = carPowerManager?.getPowerState() ?: POWER_STATE_OFF
+                                        val isAccOn = isPowerStateAccOn(powerState)
+                                        currentAccState = isAccOn
+                                        currentIgStatus = if (isAccOn) 1 else 0
+                                        
+                                        Log.d(TAG, "BWIC fallback - power state: $powerState, ACC ON: $isAccOn, igStatus: $currentIgStatus")
+                                        
+                                        setupPowerStateListener()
+                                        
+                                    } else {
+                                        Log.e(TAG, "BWIC car power manager is null")
+                                        useCustomBwicDetection()
+                                    }
                                     
-                                    setupPowerStateListener()
-                                    
-                                } else {
-                                    Log.e(TAG, "BWIC car power manager is null")
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Exception in BWIC fallback: ${e.message}")
                                     useCustomBwicDetection()
                                 }
-                                
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Exception in BWIC fallback: ${e.message}")
-                                useCustomBwicDetection()
                             }
-                        }
 
-                        override fun onServiceDisconnected(name: android.content.ComponentName?) {
-                            Log.e(TAG, "BWIC car service disconnected")
+                            override fun onServiceDisconnected(name: android.content.ComponentName?) {
+                                Log.e(TAG, "BWIC car service disconnected")
+                            }
+                        })
+                        
+                        car?.connect()
+                    } else {
+                        Log.d(TAG, "Using existing Car instance for BWIC fallback")
+                        // Try to get CarPowerManager from existing car
+                        if (carPowerManager == null) {
+                            carPowerManager = car?.getCarManager(Car.POWER_SERVICE) as? bw.car.power.CarPowerManager
                         }
-                    })
-                    
-                    car?.connect()
+                        useCustomBwicDetection()
+                    }
                     
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to use BWIC car framework: ${e.message}")
@@ -560,33 +630,43 @@ class CarPowerManager private constructor(private val context: Context) {
     }
 
     fun disconnect() {
-        try {
-            powerStateListener?.let { listener ->
-                try {
-                    carPowerManager?.unregisterPowerStateListener(listener)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error unregistering power state listener", e)
+        synchronized(this) {
+            try {
+                powerStateListener?.let { listener ->
+                    try {
+                        carPowerManager?.unregisterPowerStateListener(listener)
+                        Log.d(TAG, "Power state listener unregistered")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error unregistering power state listener", e)
+                    }
                 }
+                
+                car?.disconnect()
+                
+                // Reset all instances
+                car = null
+                carPowerManager = null
+                powerStateListener = null
+                isConnected = false
+                isInitialized = false
+                isCarCreated = false
+                
+                Log.d(TAG, "CarPowerManager disconnected and instances reset")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disconnecting CarPowerManager", e)
             }
-            
-            car?.disconnect()
-            car = null
-            carPowerManager = null
-            powerStateListener = null
-            
-            
-            Log.d(TAG, "CarPowerManager disconnected")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error disconnecting CarPowerManager", e)
         }
     }
 
     fun cleanup() {
-        try {
-            disconnect()
-            car?.disconnect()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during cleanup", e)
+        synchronized(this) {
+            try {
+                Log.d(TAG, "Starting CarPowerManager cleanup...")
+                disconnect()
+                Log.d(TAG, "CarPowerManager cleanup completed")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during cleanup", e)
+            }
         }
     }
 }
